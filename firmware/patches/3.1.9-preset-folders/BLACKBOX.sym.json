@@ -1,0 +1,20 @@
+{
+ "fm_init": "0x080f1e80",
+ "set_presets": "0x080f1ebc",
+ "ensure": "0x080f1eac",
+ "is_top": "0x080f1ec6",
+ "pop_comp": "0x080f1ed8",
+ "push_comp": "0x080f1efe",
+ "fm_boot": "0x080f1f36",
+ "hook_join": "0x080f1f46",
+ "hook_xml": "0x080f1f6e",
+ "hook_scan": "0x080f1f8e",
+ "hook_dotdot": "0x080f1fa2",
+ "hook_tryload": "0x080f1fc6",
+ "hook_ui_load": "0x080f1ffc",
+ "hook_disp": "0x080f20b6",
+ "fm_check": "0x080f20f0",
+ "stat": "0x080f20d0",
+ "hook_pop": "0x080f21d4",
+ "s_dotdot": "0x080f220c"
+}

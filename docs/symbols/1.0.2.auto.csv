@@ -1,0 +1,21 @@
+address,name,comment
+# carried from 3.1.9 by tools/carry_names.py
+0x08040EE8,defaultTask,via string from 3.1.9 0x08043DEC
+0x08041270,main,via string from 3.1.9 0x08044188
+0x08041E78,ring_advance,via callee from 3.1.9 0x08040BAC
+0x08043C00,log_printf,via callee from 3.1.9 0x08043DE4
+0x08044DA8,str_clear,via callee from 3.1.9 0x08046034
+0x08044DF0,str_assign,via shape from 3.1.9 0x0804607C
+0x08044E12,str_copy,via shape from 3.1.9 0x0804609E
+0x08051054,ff_clst2sect,via shape from 3.1.9 0x08084242
+0x08054468,FATFS_UnLinkDriver,via shape from 3.1.9 0x080878F4
+0x08054754,SVC_Handler_rtos,via shape from 3.1.9 0x08087FB8
+0x0805F346,ui_draw_cstring,via callee from 3.1.9 0x080C3B98
+0x08063F84,BitmapFile_SaveToFile,via string from 3.1.9 0x0808BF90
+0x080700DC,SessionMgr_LoadBank,via string from 3.1.9 0x0809E218
+0x08072ED4,SessionMgr_FinalizeBankLoading,via string from 3.1.9 0x0809CB4C
+0x08094A38,snprintf,via shape from 3.1.9 0x080C89F4
+0x08094BA2,strncpy,via callee from 3.1.9 0x080C8B86
+0x08094CFC,memcpy,via shape from 3.1.9 0x080C8D0C
+0x08094D50,memset,via shape from 3.1.9 0x080C8D5E
+0x08094EB8,_svfprintf_r,via callee from 3.1.9 0x080C8E70

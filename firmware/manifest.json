@@ -1,0 +1,431 @@
+{
+  "device": "1010music blackbox",
+  "collected_at": "2026-09-28T20:57:55Z",
+  "source_index": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads",
+  "history_threads": [
+    "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/9790-blackbox-firmware-update-history-2019",
+    "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/15940-blackbox-firmware-update-history-2020"
+  ],
+  "versions": [
+    {
+      "version": "gamechanger-0.1.2",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/23600-gamechanger-for-blackbox-0-1-2",
+      "zip": "gamechanger012.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2021/03/gamechanger012.zip",
+      "zip_path": "firmware/zips/gamechanger012.zip",
+      "zip_size": 2699998,
+      "zip_sha256": "ddbf971adf1b019aca02ff5b168bcb43e23e606d517d449d032527a72d1051e0",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/gamechanger/0.1.2/BLACKBOX.BIN",
+          "size": 389884,
+          "sha256": "97824afe6e809da86a6ad7a25b1a965f910e5d50b78e3e7e8a299fb36372bf37"
+        }
+      ],
+      "notes": "On April Fools Day, we announced a bogus technology called Gamechanger. We made up various silly claims in our press release and video. We also demonstrated a real port of Doom for blackbox that we are making available below. Please consider this work bonus freebie and something that will only be available on a limited basis. We believe we have the rights to distribute this work under the open source and shareware licenses on the material. But, that is subject to change based on the large amount of other work included. Here is more detail on what we built:\n\nGamechanger for blackbox makes use of the following:Doom open source code on GitHub\nChocolate Doom\nChocolate Doom for the STM32F4 Discovery Board\nDoom 1.8 Shareware Edition for the publicly available game levels\nAs a starting point, we had working Doom code for a sister platform to the blackbox. One key omission was the sound. We created a basic audio playback engine to bring the sound effects to life. We also connected the MIDI input to enable you to play each sound effect with MIDI note on messages. The game includes a General MIDI sound track that remains silent in our version.\n\nYou may be wondering why we don't make our work available as open source. What we built is an ugly prototype--not something suitable for external review and consumption. We took various shortcuts to make something playable in a few days. For example, we used a bunch of our test code meant for internal use. We did not want to spend the extra time and effort to build something we could publish as open source. This work is just an Easter egg and April Fools' prank.\n\nInstalling Gamechanger for blackbox is very similar to installing blackbox firmware: Unpack the ZIP file and copy the contents onto a micro SD card. Unlike blackbox firmware, please make sure to also copy the \"doom\" folder and its contents onto the micro SD card or it won't boot up.\n\nHere are the key mappings:BACK: Esc\nINFO: Enter\nPADS: Fire\nKEYS: Open\nMIX: Left Arrow\nPSET: Up Arrow\nTOOLS: Right Arrow\nREC: Strafe Left\nPLAY: Strafe Right\nSTOP: Down Arrow\nSEQS: Maps\nOne noteworthy omission is the Weapon select keys, normally 1-7. We did not have sufficient buttons available to map them.\n\nLastly, please know that we are making this runtime available a fun bonus treat. We won't be providing support for those having trouble or installing or using it. You are on your own. Please help each other out. Also, while it may be fun to post ideas about how we could make this project better--please do so with the expectation that we have far more pressing work to do and do not plan to make any updates whatsoever.\n\nWe hope you enjoy Gamechanger for blackbox:\n\nDownload Gamechanger 0.1.2"
+    },
+    {
+      "version": "1.0.2",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/3976-blackbox-version-1-0-2",
+      "zip": "Blackbox102.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2019/04/Blackbox102.zip",
+      "zip_path": "firmware/zips/Blackbox102.zip",
+      "zip_size": 320226,
+      "zip_sha256": "e7d90e8048ee921f343b6be6cb62715a85c695b71546a0434718978020e44b43",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.0.2/BLACKBOX.BIN",
+          "size": 468776,
+          "sha256": "155b5503b5a9af71a4d8d26373eca3bdabb2ef7857987ac94dbc947a6819512d"
+        }
+      ],
+      "notes": "Hello all,\n\nWe are finalizing the firmware in preparation for our next round of production. Here is a release candidate of version 1.0. We would love to get your feedback on this new version during the next few days so that we can be confident it is solid.\n\nHere is what's new:Swing control at the top of the song page\nSupport for cue points embedded in WAV files for slice markers. (See Reaper and SoundForge as methods to create these points)\nSupport for loop points embedded in WAV files\nFX1 and FX2 are now effects busses and controlled from the FX screen. Each pad can send 0-100% of its signal to FX1 and FX2.\nRecording now has an input gain control\nRecording now has an output destination for the record monitoring\nMIDI output from the SEQ cells will now send note numbers corresponding to to Blackbox and Bitbox pads\nOf course, there are lots of bug fixes, too numerous to mention.\n\nDownload blackbox 1.0.2\n\nThanks very much for your support. We look forward to hearing what you think."
+    },
+    {
+      "version": "1.0.6",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/4813-blackbox-1-0-6",
+      "zip": "Blackbox106.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2019/06/Blackbox106.zip",
+      "zip_path": "firmware/zips/Blackbox106.zip",
+      "zip_size": 315341,
+      "zip_sha256": "b151dd75872f2b55deeb213a5e88be4c790ca83603b61d7477a192d40e168d1c",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.0.6/BLACKBOX.BIN",
+          "size": 465796,
+          "sha256": "e30166b32c9dda92a329a429dde1c103191ff677dad1eba0c834406ba93db059"
+        }
+      ],
+      "notes": "Version 1.0.6 is a minor update. Here are the differences since 1.0.2:Fixed bug where sometimes noise will appear on the output when attempting to record samples\nUpdated Reverb algorithm with damping control. Now capable of longer, more sustained reverberations and CPU utilization is better.\nUpdated FX1 and FX2 send curves to make the algorithms more audible at lower amounts. This will mean presets created on version 1.0.2. will now have a little more FX than before.\nAdded fix for MIDI controllers taking too much CPU performance while connected. (first appeared in version 1.0.3).\n\nDownload Blackbox 1.0.6"
+    },
+    {
+      "version": "1.1.1-beta",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/5858-blackbox-1-1-beta",
+      "zip": "Blackbox111.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2019/07/Blackbox111.zip",
+      "zip_path": "firmware/zips/Blackbox111.zip",
+      "zip_size": 325410,
+      "zip_sha256": "180aa0a6a8de09e502855f07f56f606b4190fae8ec0e936db36f232d127af431",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.1.1-beta/BLACKBOX.BIN",
+          "size": 483408,
+          "sha256": "cba04ff0a7472140f17def0267475d1677ae41c48c0b38640ebcb71dd7cba574"
+        }
+      ],
+      "notes": "We are pleased to make available our first feature update to blackbox. Version 1.1 includes the following:Destructive editing. You can now trim a sample using the start and length controls in sample mode\nWAV file saving. You can embed loops, root note, beat count, and slice markers into WAV files for future use\nControl of the root note of a sample for matching the internal keyboard and MIDI\nControl of the beat count of a clip for those recordings with odd beat counts and far tempo jumps\nMIDI thru. You can now play external MIDI from the touch screen. Inbound MIDI will also route to the active SEQ and its MIDI channel.\nClips will now hold until you press the Play button. This allows you to stage several at once and unleash them in time.\nImproved capture of SEQ changes when recording song sections.\nVersion 1.1 includes the following bug fixes:There was digital bleed through from the Out 3 signal to the headphones and vice versa.\n\nWe appreciate your support. Thanks for all the suggestions, comments, bug reports, and love.\n\n(this has been superceded by version 1.1.1, below)"
+    },
+    {
+      "version": "1.2.2-beta",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/6812-blackbox-1-2-beta",
+      "zip": "blackbox122.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2019/08/blackbox122.zip",
+      "zip_path": "firmware/zips/blackbox122.zip",
+      "zip_size": 389215,
+      "zip_sha256": "1be6a56badd20f03499d660b18b20a1bbdc05f4c12bc03452c6a3f4c009ac8a6",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.2.2-beta/BLACKBOX.BIN",
+          "size": 581988,
+          "sha256": "4704bde6abdfdff16fd5f64dd426261125e6d951118138e638644a5146200dba"
+        }
+      ],
+      "notes": "Thanks for all the suggestions and feedback. Based on your input we are pleased to make available our next beta release, version 1.2. Here is the list of what's new:Simple granular synthesis. We built this enhancement in response to requests for loop crossfading--it takes the idea much further. Look for a new option in the Sample/Clip/Slicer drop down menu. Granular mode works as an extension to sample mode. You can define the pitch, start, stop, length, loop mode, etc. You also get these parameters per voice:Grain size: 1024 to 16384, which is about 10ms to about 200ms\nGrain count: 2-8. Running 8 grains sounds cool but eats up the processor\nSpread: The amount of randomization in grain position surrounding the playhead\nSpeed: How quickly the playhead advances through the waveform.\n\nCopy and paste of PADS. From the PADS screen, turn the lower right knob to the right as you will see a new control panel.\nRecording templates: Configure the pad mode, launch mode, envelope, and MIDI setup--before recording the sample\nMIDI Keys channel. Hook a keyboard to the blackbox and it will play the active pad directly.\nKnob control of the event step as well as pitch and duration in the SEQ editor.\nMIDI output channel per pad\nControl of the edit position in the text edit window. You can finally change the beginning of a file or preset name.\nPressing the grid button in the upper left corner of most control panels lets you switch PADS or SEQS directly without returning to the main screen\nNew navigation style for PADS. There are now only two main pages per pad: The Waveform and the Control Panel. The control panel has several sub pages directly accessible by a toolbar at the bottom\nBug fixes:Saving or Trimming WAV files a few minutes in length would crash the box\nSometimes the knobs, particularly the upper right one, would jitter\nSometimes the thruing of MIDI controllers would alter the value slightly\nOn short envelopes, there was aliasing\nDownload blackbox 1.2.2\n\nPlease check it out and let us know what you think. Thank you for your support\n\nThe 1010music Team"
+    },
+    {
+      "version": "1.3.5-beta",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/8747-blackbox-1-3-5-beta",
+      "zip": "blackbox135.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2019/11/blackbox135.zip",
+      "zip_path": "firmware/zips/blackbox135.zip",
+      "zip_size": 395845,
+      "zip_sha256": "4abb8a93c6367a72e497d830dd0e22a0590848b607101f81ea61295ab471b9e9",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.3.5-beta/BLACKBOX.BIN",
+          "size": 591792,
+          "sha256": "f9cc3c2cf4df9e7b6a080208caca2d2b7318533c7b0ec048bb73f73bf8ede337"
+        }
+      ],
+      "notes": "Version 1.3.5 fixes the following bugs in 1.3:Reverse mode in sample mode starts from the wrong position (introduced in version 1.2)\nThe octave number on the piano roll doesn't match the KEYS screen\nThe HighQ interpolation setting does not work on empty cells, for use in templates\nThe MIDI Keys and Pads options don't match the operation in the manual\nDownload blackbox 1.3.5"
+    },
+    {
+      "version": "1.3.6",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/9120-blackbox-version-1-3-6",
+      "zip": "blackbox136.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2019/12/blackbox136.zip",
+      "zip_path": "firmware/zips/blackbox136.zip",
+      "zip_size": 395768,
+      "zip_sha256": "f2116b541ba334d25d49080eba8930f3f4f66e949301b3113cf6d88b184a2a99",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.3.6/BLACKBOX.BIN",
+          "size": 591552,
+          "sha256": "2cefc86b6b4b124ea9b77d83b2560fe21be3050b2a2596a24e77ef86d08e29e9"
+        }
+      ],
+      "notes": "Version 1.3.6 includes the following bug fixes:When using MIDI sync with a changing tempo, the blackbox was slow to catch up. It would sometimes take 5-10 seconds for sync to resume.\nThe Beat Synchronized delay would not update following a tempo change.\nProgram Change messages were only accepted on the PADS MIDI channel.\nDownload Blackbox 1.3.6"
+    },
+    {
+      "version": "1.4.0",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/9914-blackbox-1-4-0",
+      "zip": "blackbox140.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2020/01/blackbox140.zip",
+      "zip_path": "firmware/zips/blackbox140.zip",
+      "zip_size": 403206,
+      "zip_sha256": "86e72baf1886c1443b96d48f8256fe17c10d0f1efc69c31a46bd8ba8873eca41",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.4.0/BLACKBOX.BIN",
+          "size": 602884,
+          "sha256": "1dc46e3170b0904474daaa39d0b0595c62de3899c0501f3df74f064d47fc3fd9"
+        }
+      ],
+      "notes": "In preparation for NAMM, we are pleased to make this new version available to you. Here's whats new:Enhanced slicer mode with the ability to play into adjacent slices, quantize, choke, and sync with the master clock. One way to think of this is as random access clip mode.\nGrid based keyboard with scale control. Press KEYS a second time to see it.\nAlternative grid keyboard for slicer cells that lets you trigger slices more accurately\nSwipe to play adjacent keys in the original and new grid KEYS mode.\nThe load screen now displays directories first followed by files\nYou can now choose which MIDI note will trigger a pad on the MIDI pads channel\nBug fixes:The system would offer no warning when the micro SD card is running out of space. (You will see red text in the header when there is less than 256MB. Look for the available space on the Tools page.)\nWhen using the MIDI keys feature to route incoming notes to a specific cell, notes would hang if you switched cells while playing\nThe file system could not handle directories with a period in the name\nWhen using the slice sequencer, the cell would not begin with the first slice after loading a preset.\n\n[Version 1.4.0 has been superseded by version 1.4.3]\nhttps://forum.1010music.com/forum/ta...blackbox-1-4-3",
+      "collection_note": "Forum link pointed at superseded 1.4.1 zip (404); recovered blackbox140.zip from 2020/01 path"
+    },
+    {
+      "version": "1.4.3",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/10877-blackbox-1-4-3",
+      "zip": "blackbox143.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2020/03/blackbox143.zip",
+      "zip_path": "firmware/zips/blackbox143.zip",
+      "zip_size": 404138,
+      "zip_sha256": "84ea819cf2edff8805a6c245671df41920db42820c6d4d3af08a7587d2f5f58f",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.4.3/BLACKBOX.BIN",
+          "size": 604340,
+          "sha256": "fbf0b397f9cfcf41b64094b96a06072b7c4c1e44ea710838227776ea66af8768"
+        }
+      ],
+      "notes": "Version 1.4.3 fixes some newly introduced issues from 1.4:Some WAV files would not play (specifically those with uncommon WAVEFORMATEXTENSIBLE tags)\nIt was not possible to load files from directories with a period in the name\n\nDownload blackbox 1.4.3"
+    },
+    {
+      "version": "1.5.1",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/11797-blackbox-1-5-release-version",
+      "zip": "blackbox151.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2020/03/blackbox151.zip",
+      "zip_path": "firmware/zips/blackbox151.zip",
+      "zip_size": 355780,
+      "zip_sha256": "a6b894b45878f13dcc4735009f4d26729abf7d7869ecbe46001565ec3a1e0d30",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.5.1/BLACKBOX.BIN",
+          "size": 558940,
+          "sha256": "49c94fe819a67467b088c9cf3f95f78b0a06991c70d8dbbf0c6219074ccdf636"
+        }
+      ],
+      "notes": "We are pleased to make available a new update to blackbox that reorganizes presets based on your input. Version 1.5 includes these features:Presets are now stored in sub folders under the \\Presets path. For example: \\Presets\\DrumKit\\, \\Presets\\Piano\\, etc.\nRecordings are now captured in the current preset folder instead of the root directory\nThere is a new Pack command that will copy all the files used by a preset into the current preset folder\nThere is a new Clean command that will delete any unused files in the current preset folder\nIn summary, you can now easily consolidate your presets into folders for archival and copying. We agree that this is a better way to work.\nPLEASE MAKE A BACKUP OF YOUR MICRO SD CARD BEFORE TRYING THIS NEW VERSION\n\nWe have done several extra rounds of testing with this new version to be extra careful with your precious data. However, the possibility remains that something bad may happen in the migration process. Please make a backup.\n\nDownload blackbox 1.5.1\n\nSince this is a complex topic, we have also prepared a short user guide to help.\n\nThank you for your support."
+    },
+    {
+      "version": "1.6.5",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/15617-blackbox-1-6-release-version",
+      "zip": "blackbox165.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2020/07/blackbox165.zip",
+      "zip_path": "firmware/zips/blackbox165.zip",
+      "zip_size": 369428,
+      "zip_sha256": "62dc78b9f21632e576acbe84cf035122ea66a1845afe1ac5723079e60ae7f77e",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.6.5/BLACKBOX.BIN",
+          "size": 581780,
+          "sha256": "22f058a76810c42c965f45854bf5a6fe9c6969cdb8821a54aef09479063c19de"
+        }
+      ],
+      "notes": "Blackbox 1.6 has been a long time in the making. It is the debut of a number of new features, including the following:Automated mutlisample recording. Use the internal wizard to sample a MIDI or CV+Gate synth. Please note that the feature will allow you to record up to 127 notes by 16 velocity layers. The firmware will only support 64 samples per pad--so choose wisely.\nLoop crossfading\nShared voice pool for sample mode provides up to 16 voices per pad\nImproved micro SD streaming for up to 16 streamed pads at once\nThe ability to delete a directory and well as a file\nLots of bug fixes\nThank you for your support. We hope you enjoy the new version.\n\n(updated link below)"
+    },
+    {
+      "version": "1.7.4",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/19305-blackbox-1-7",
+      "zip": "blackbox174.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2021/01/blackbox174.zip",
+      "zip_path": "firmware/zips/blackbox174.zip",
+      "zip_size": 383828,
+      "zip_sha256": "5abc6fb41ca6c2790401ebe4607cfd8895cabccbc17861a5497e6ed9ca345832",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.7.4/BLACKBOX.BIN",
+          "size": 611068,
+          "sha256": "d79fd5cba351c4d7d20d4b7d89cd1371e6d1b7cb40fdd67d6f63342a78c8624d"
+        }
+      ],
+      "notes": "We are pleased to make some new features available to you:\n\nNew in version 1.7.0:Off grid recording and editing. Look for the Step Mode parameter on the SEQ info page. With Step Mode = OFF notes will no longer be quantized to the grid.\nSEQ note probability control\nSEQ velocity Editing\nChoice of clock divisions (PPQ) on input and output. Look in the TOOLS section\nNew polyphony modes (Mono, Poly 2, Poly 4, Poly 6, Poly 8 and Poly X). Dial in the polyphony per pad to optimize your use of the box\nFaster micro SD interface. In the past when we tried to speed this up, some users had problems booting. Please let us know how it works this time.\nBugs fixed:Sometimes the filter cutoff is not correct on new voices\nRetriggering the same note would cut of the previous note at the same pitch. Notes will now retrigger, subject to the polyphony mode\nProgram change messages will crash the box on the MIXER screen\nSome USB devices crash the box (introduced in 1.6.6)\n(download a newer version below)"
+    },
+    {
+      "version": "1.7.F",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/19305-blackbox-1-7",
+      "zip": "blackbox17f.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2021/04/blackbox17f.zip",
+      "zip_path": "firmware/zips/blackbox17f.zip",
+      "zip_size": 404023,
+      "zip_sha256": "1c2e54c0492fdd2ef2a4f3ee2c7c189ab35903abb0be20f58dd09c753115eb42",
+      "bins": [
+        {
+          "file": "BLACKBOX.BIN",
+          "path": "firmware/bins/1.7.F/BLACKBOX.BIN",
+          "size": 633148,
+          "sha256": "dbe18d8ed7cdbb954ade80070b3e958aa17fd44b07e70368b456eedaa5a8f9ba"
+        }
+      ],
+      "notes": "We are pleased to make some new features available to you:\n\nNew in version 1.7.0:Off grid recording and editing. Look for the Step Mode parameter on the SEQ info page. With Step Mode = OFF notes will no longer be quantized to the grid.\nSEQ note probability control\nSEQ velocity Editing\nChoice of clock divisions (PPQ) on input and output. Look in the TOOLS section\nNew polyphony modes (Mono, Poly 2, Poly 4, Poly 6, Poly 8 and Poly X). Dial in the polyphony per pad to optimize your use of the box\nFaster micro SD interface. In the past when we tried to speed this up, some users had problems booting. Please let us know how it works this time.\nBugs fixed:Sometimes the filter cutoff is not correct on new voices\nRetriggering the same note would cut of the previous note at the same pitch. Notes will now retrigger, subject to the polyphony mode\nProgram change messages will crash the box on the MIXER screen\nSome USB devices crash the box (introduced in 1.6.6)\n(download a newer version below)"
+    },
+    {
+      "version": "2.0.E",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/28352-blackbox-2-1-5-and-2-1-5l",
+      "zip": "BLACKBOX20E.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2022/03/BLACKBOX20E.zip",
+      "zip_path": "firmware/zips/BLACKBOX20E.zip",
+      "zip_size": 434123,
+      "zip_sha256": "c1bb7b1f2462d2e9f31e03e3ca94486d1fe55989b17d5bb932685e7f57abbc51",
+      "bins": [
+        {
+          "file": "BLACKBOX.bin",
+          "path": "firmware/bins/2.0.E/BLACKBOX.bin",
+          "size": 666348,
+          "sha256": "8598ff628591dc83575372433804f4dde09a254fe579b303e9bd289da7b2ab8d"
+        }
+      ],
+      "notes": "Version 2.0 is now available. It is the same functionality as 1.9 with lots of bug fixes. In case you missed it, the new features include:Tap Tempo. Be sure to look for the small tempo button in the upper left of the SONG page. Press this button at least three times to change the current tempo\nLFO per voice with the option for beat sync. This applies to sample, clip, granular, and slicer modes\n4-band Parametric EQ on the master output. Press the FX button twice to find it.\nModulation of the envelope Attack, Decay, and Release, including control via MIDI CC\nResonance control on the filter, including the ability to modulate it\nEnhanced Delay algorithm with integrated band-pass filter and the ability to play just a single echo\nMore advanced granular controls, including density, scatter, and pan spread\nMIDI-only sequences. Choose MIDI as the cell type in the upper left and the sequence will not play internal pads.\nMIDI based recording of cells. Be sure to switch MIDI Rec to ON in the TOOLS/Rec page. Here is the layout for notes received on the MIDI Pads channel(s) :Notes 68-83: Record pads 1-16. The pad needs to be empty in order for recording to happen.\nNotes 84-99: Clear pads 1-16\nNote 100: Select the previous pad\nNote 101: Select the next pad\nNote 102: Play the currently selected pad\nNote 103: Record the currently selected pad assuming it is empty\nNote 104: Clear the currently selected pad\n\nNew, more convenient layouts with onscreen knobs and fewer screens\nThank you for your support.",
+      "collection_note": "Linked from 2.1.5 thread as prior version 2.0.E"
+    },
+    {
+      "version": "2.1.5",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/28352-blackbox-2-1-5-and-2-1-5l",
+      "zip": "BLACKBOX215.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2022/08/BLACKBOX215.zip",
+      "zip_path": "firmware/zips/BLACKBOX215.zip",
+      "zip_size": 427274,
+      "zip_sha256": "8ff6f7fb5c62c64592b14f30d0a2ae7bcd87d914e455b812333011aec5d54058",
+      "bins": [
+        {
+          "file": "BLACKBOX.bin",
+          "path": "firmware/bins/2.1.5/BLACKBOX.bin",
+          "size": 672164,
+          "sha256": "2bd6eb247a2e1074537049c40e39d2add01871ea3bc58500a95268b516d66779"
+        }
+      ],
+      "notes": "Version 2.0 is now available. It is the same functionality as 1.9 with lots of bug fixes. In case you missed it, the new features include:Tap Tempo. Be sure to look for the small tempo button in the upper left of the SONG page. Press this button at least three times to change the current tempo\nLFO per voice with the option for beat sync. This applies to sample, clip, granular, and slicer modes\n4-band Parametric EQ on the master output. Press the FX button twice to find it.\nModulation of the envelope Attack, Decay, and Release, including control via MIDI CC\nResonance control on the filter, including the ability to modulate it\nEnhanced Delay algorithm with integrated band-pass filter and the ability to play just a single echo\nMore advanced granular controls, including density, scatter, and pan spread\nMIDI-only sequences. Choose MIDI as the cell type in the upper left and the sequence will not play internal pads.\nMIDI based recording of cells. Be sure to switch MIDI Rec to ON in the TOOLS/Rec page. Here is the layout for notes received on the MIDI Pads channel(s) :Notes 68-83: Record pads 1-16. The pad needs to be empty in order for recording to happen.\nNotes 84-99: Clear pads 1-16\nNote 100: Select the previous pad\nNote 101: Select the next pad\nNote 102: Play the currently selected pad\nNote 103: Record the currently selected pad assuming it is empty\nNote 104: Clear the currently selected pad\n\nNew, more convenient layouts with onscreen knobs and fewer screens\nThank you for your support."
+    },
+    {
+      "version": "2.1.5L",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/28352-blackbox-2-1-5-and-2-1-5l",
+      "zip": "BLACKBOX215L.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2023/04/BLACKBOX215L.zip",
+      "zip_path": "firmware/zips/BLACKBOX215L.zip",
+      "zip_size": 438347,
+      "zip_sha256": "52bc2f899ec8568f41a7b0379b1db73cc337b6885ad809bd827de7ce0cf88e14",
+      "bins": [
+        {
+          "file": "BLACKBOX.bin",
+          "path": "firmware/bins/2.1.5L/BLACKBOX.bin",
+          "size": 671740,
+          "sha256": "488ad3fbdaa83c93c4067f99ea91bc74cfc60f56bc62c6dbe190c0df71c35610"
+        }
+      ],
+      "notes": "Version 2.0 is now available. It is the same functionality as 1.9 with lots of bug fixes. In case you missed it, the new features include:Tap Tempo. Be sure to look for the small tempo button in the upper left of the SONG page. Press this button at least three times to change the current tempo\nLFO per voice with the option for beat sync. This applies to sample, clip, granular, and slicer modes\n4-band Parametric EQ on the master output. Press the FX button twice to find it.\nModulation of the envelope Attack, Decay, and Release, including control via MIDI CC\nResonance control on the filter, including the ability to modulate it\nEnhanced Delay algorithm with integrated band-pass filter and the ability to play just a single echo\nMore advanced granular controls, including density, scatter, and pan spread\nMIDI-only sequences. Choose MIDI as the cell type in the upper left and the sequence will not play internal pads.\nMIDI based recording of cells. Be sure to switch MIDI Rec to ON in the TOOLS/Rec page. Here is the layout for notes received on the MIDI Pads channel(s) :Notes 68-83: Record pads 1-16. The pad needs to be empty in order for recording to happen.\nNotes 84-99: Clear pads 1-16\nNote 100: Select the previous pad\nNote 101: Select the next pad\nNote 102: Play the currently selected pad\nNote 103: Record the currently selected pad assuming it is empty\nNote 104: Clear the currently selected pad\n\nNew, more convenient layouts with onscreen knobs and fewer screens\nThank you for your support.",
+      "collection_note": "Legacy/compatibility build alongside 2.1.5"
+    },
+    {
+      "version": "2.9.1-beta",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/39025-blackbox-3-0-beta",
+      "zip": "BLACKBOX291.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2022/12/BLACKBOX291.zip",
+      "zip_path": "firmware/zips/BLACKBOX291.zip",
+      "zip_size": 445586,
+      "zip_sha256": "d718011066191487995dd1e255dcdc0139553fabe1a70a8984fe52968b9af620",
+      "bins": [
+        {
+          "file": "BLACKBOX.bin",
+          "path": "firmware/bins/2.9.1-beta/BLACKBOX.bin",
+          "size": 684428,
+          "sha256": "75c2acad1af14e277d835df2c6fda61ca0f7d3e9db0299f5cb17588ea74576cd"
+        }
+      ],
+      "notes": "We are pleased to make available a preview version of blackbox 3.0. The focus of this release is on Song mode and sequencer workflow. We hope this update represents a big step forward. Please let us know.\n\nPlease note that this new version is only partially compatible with existing presets--please make a back up of your work for safe keeping. Please consider this version a beta for evaluation only. We do not believe this version is ready for a performance. Here are some of the included features:\n\nReimagined Song Mode:\n\nWe started fresh with song mode in a effort to make it much more straightforward and useful. Each song now consists of up to 16 scenes that can launch any available clips and sequences. You get a visual snapshot of which items will launch as well as the ability to edit them. You can create scenes manually or use the snapshot feature to grab what is currently playing. You can play the scenes from start to finish or launch them manually in any order you like. You can also loop scenes or preprogram them to loop a specific number of times. Finally, the keep feature lets you update some clips and sequences in a scene without impacting others that are already playing.\n\nQuadruple the number of sequences:\n\nWe have greatly improved the functionality of each sequence cell. Each one now has 4 layers for making separate parts and switching between them in a quantized manner. From the main SEQ screen turn the lower right knob to see the ABCD toolbar. The new song mode can launch sequences along with the specified layer. In this way you can chain patterns and create complex arrangements.\n\nTrue MIDI sequences:\n\nEach MIDI sequence has four layers and can record notes from the touch screen or external MIDI. All of this can be done independently of the existing pads. Look for the SEQ mode on the KEYS screen. Also check out the MIDI Seq input channel on TOOLS - MIDI In. Both these options give you a direct way to play and record notes using external MIDI devices.\n\nHere are some quick tips on things that have changed and how to work in the new model:MIDI Input. There are three ways in the door:TOOLS - MIDI In - MIDI Pads channel. Use this channel for controlling blackbox overall, including pads and various options, like pad recording, etc.\nPAD MIDI In. Use this per PAD connection to play a pad melodically via MIDI\nTOOLS - MIDI In - MIDI Seq channel. This new method connects inbound MIDI directly to the currently selected sequence. Use it for playing and recording pitched sequences internally.\n\nMIDI Output. This is now handled entirely from SEQ cells. Each one can have its own individual MIDI output channel. The 4 layers per sequence will all use the same MIDI output channel.\nSEQS in KEYS mode. Each sequence cell in KEYS mode now maps to a single pad, played chromatically. This simplifies recording and routing in that you specify where the notes will go for all 4 layers. You can record into a KEYS sequence from the MIDI Seq channel and from the KEYS screen when in SEQ mode.\n\nAt this point we really want to know what you think. Have we solved the various sequencing traps that plagued the previous versions? Have we missed anything important? Does this new version help you be more creative?\n\nPlease let us know here.\u200b\n\nRead the preliminary documentation here.",
+      "collection_note": "Early 3.0 beta build (BLACKBOX291) from 3.0 beta thread"
+    },
+    {
+      "version": "3.0.1",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/39025-blackbox-3-0-beta",
+      "zip": "BLACKBOX301.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2023/02/BLACKBOX301.zip",
+      "zip_path": "firmware/zips/BLACKBOX301.zip",
+      "zip_size": 448760,
+      "zip_sha256": "51f2c74512f27c472714737c4e15810ba447fcd66498fb88566ef0b027abd743",
+      "bins": [
+        {
+          "file": "BLACKBOX.bin",
+          "path": "firmware/bins/3.0.1/BLACKBOX.bin",
+          "size": 689404,
+          "sha256": "11f6d80926b7d100e9aa1b7970c0eec219510030fa0f8e2e6ffc8aa4b5209c07"
+        }
+      ],
+      "notes": "We are pleased to make available a preview version of blackbox 3.0. The focus of this release is on Song mode and sequencer workflow. We hope this update represents a big step forward. Please let us know.\n\nPlease note that this new version is only partially compatible with existing presets--please make a back up of your work for safe keeping. Please consider this version a beta for evaluation only. We do not believe this version is ready for a performance. Here are some of the included features:\n\nReimagined Song Mode:\n\nWe started fresh with song mode in a effort to make it much more straightforward and useful. Each song now consists of up to 16 scenes that can launch any available clips and sequences. You get a visual snapshot of which items will launch as well as the ability to edit them. You can create scenes manually or use the snapshot feature to grab what is currently playing. You can play the scenes from start to finish or launch them manually in any order you like. You can also loop scenes or preprogram them to loop a specific number of times. Finally, the keep feature lets you update some clips and sequences in a scene without impacting others that are already playing.\n\nQuadruple the number of sequences:\n\nWe have greatly improved the functionality of each sequence cell. Each one now has 4 layers for making separate parts and switching between them in a quantized manner. From the main SEQ screen turn the lower right knob to see the ABCD toolbar. The new song mode can launch sequences along with the specified layer. In this way you can chain patterns and create complex arrangements.\n\nTrue MIDI sequences:\n\nEach MIDI sequence has four layers and can record notes from the touch screen or external MIDI. All of this can be done independently of the existing pads. Look for the SEQ mode on the KEYS screen. Also check out the MIDI Seq input channel on TOOLS - MIDI In. Both these options give you a direct way to play and record notes using external MIDI devices.\n\nHere are some quick tips on things that have changed and how to work in the new model:MIDI Input. There are three ways in the door:TOOLS - MIDI In - MIDI Pads channel. Use this channel for controlling blackbox overall, including pads and various options, like pad recording, etc.\nPAD MIDI In. Use this per PAD connection to play a pad melodically via MIDI\nTOOLS - MIDI In - MIDI Seq channel. This new method connects inbound MIDI directly to the currently selected sequence. Use it for playing and recording pitched sequences internally.\n\nMIDI Output. This is now handled entirely from SEQ cells. Each one can have its own individual MIDI output channel. The 4 layers per sequence will all use the same MIDI output channel.\nSEQS in KEYS mode. Each sequence cell in KEYS mode now maps to a single pad, played chromatically. This simplifies recording and routing in that you specify where the notes will go for all 4 layers. You can record into a KEYS sequence from the MIDI Seq channel and from the KEYS screen when in SEQ mode.\n\nAt this point we really want to know what you think. Have we solved the various sequencing traps that plagued the previous versions? Have we missed anything important? Does this new version help you be more creative?\n\nPlease let us know here.\u200b\n\nRead the preliminary documentation here.",
+      "collection_note": "Posted in blackbox 3.0 beta thread"
+    },
+    {
+      "version": "3.0.9",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/42426-blackbox-3-0-9-release-version",
+      "zip": "BLACKBOX309.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2023/04/BLACKBOX309.zip",
+      "zip_path": "firmware/zips/BLACKBOX309.zip",
+      "zip_size": 449436,
+      "zip_sha256": "c4a63b242921a9443a3b437e68b8a96b554b3af0c68440fa0b388a70763acc79",
+      "bins": [
+        {
+          "file": "BLACKBOX.bin",
+          "path": "firmware/bins/3.0.9/BLACKBOX.bin",
+          "size": 691452,
+          "sha256": "e68b5345acf9b752fc36ca4d98d480c499bea15b1bba1a6babe340a01f1627e5"
+        }
+      ],
+      "notes": "Dear all,\n\nThanks for your feedback. Version 3.0.7 is now considered a stable release.\n\nHave any 3.0.7 feedback? please let us know here.\n\nWe prepared a document outlining everything in 3.0 compared to 2.1.5. You can read that here.\n\nThere are a number of changes in this build compared to 3.0.2. Here are some quick highlights:Based on popular demand, the global MIDI Seq channel is back. We heard you say this is an easier way to work.\nUSB MIDI output is also back--with some special options to help with routing and troubleshooting.\nUSB MIDI input was unreliable and would sometimes drop notes.\nSequence data was lost when switching between KEYS and MIDI modes\nThe currently active sequence pattern (A-D) is forgotten when reloading a preset.\nWe appreciate your support and can't wait to hear what you make with the blackbox.\n\nThe 1010music team"
+    },
+    {
+      "version": "3.0.15-beta",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/45151-blackbox-3-0-15-beta",
+      "zip": "BLACKBOX3015.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2024/01/BLACKBOX3015.zip",
+      "zip_path": "firmware/zips/BLACKBOX3015.zip",
+      "zip_size": 452908,
+      "zip_sha256": "f0f02f53273bb9edfae67ff8e0d4c9926f362efdb0a856bd656dd3b3859015e5",
+      "bins": [
+        {
+          "file": "BLACKBOX.bin",
+          "path": "firmware/bins/3.0.15-beta/BLACKBOX.bin",
+          "size": 695968,
+          "sha256": "0518b3edae53a7b4a35d1746d007059585ba94a0593a0697c277927c8e9c5fc4"
+        }
+      ],
+      "notes": "Dear all,\n\nBased on popular demand, we have changed how sample recording works regarding the auto creation of files. As of 3.0.10, the rules are now as follows:When threshold based recording is active (RecThres: ON), you will create a Sample by default.\nWhen record quantization (Rec Quant) is anything but none, you will always record a clip and the length in beats will be embedded in the WAV file for future use.\nYou can now create clips that are non-power of two length. Use recording quantization as desired and Length: Custom to capture. The result will default to Clip Mode and automatic playback (RecToPlay) will work as expected."
+    },
+    {
+      "version": "3.1.2",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/49019-blackbox-3-1-2-release-version",
+      "zip": "BLACKBOX312.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2024/02/BLACKBOX312.zip",
+      "zip_path": "firmware/zips/BLACKBOX312.zip",
+      "zip_size": 452944,
+      "zip_sha256": "fa69f5d7f4292b6e9cb12df0c96d207966e077e8eea587a93ffde0d414ceff48",
+      "bins": [
+        {
+          "file": "BLACKBOX.bin",
+          "path": "firmware/bins/3.1.2/BLACKBOX.bin",
+          "size": 695920,
+          "sha256": "caf5bfd9e76ce84891e2532fc69e34142b70b53a061119f3d9da0bfe4f09ddc8"
+        }
+      ],
+      "notes": "blackbox 3.1 is now available. Here is what's new compared to version 3.0. (These new features already appeared in beta version 3.0.15)Supports import of multisample sets using the filename to set the root note and velocity\nSample pool is now 576 samples instead of 80 samples\nLoads loop points embedded into multisample sets. A great source for this kind of material is Samples From Mars.\nSleep mode: Hold the BACK button to put the unit to sleep\nWhen threshold based recording is active (RecThres: ON), you will create a Sample by default.\nWhen record quantization (Rec Quant) is anything but none, you will always record a clip and the length in beats will be embedded in the WAV file for future use.\nYou can now create clips that are non-power of two length. Use recording quantization as desired and Length: Custom to capture. The result will default to Clip Mode and automatic playback (RecToPlay) will work as expected.\nVersion 3.1.2 includes a couple of bug fixes over 3.0.15:Importing sets with velocity layers would not play correctly.\nPlease let us know what you think in this thread.\n\nDownload blackbox 3.1.2"
+    },
+    {
+      "version": "3.1.9",
+      "thread": "https://1010music.com/downloads",
+      "zip": "blackbox-3.1.9.zip",
+      "zip_url": "https://1010music.com/wp-content/uploads/2026/07/blackbox-3.1.9.zip",
+      "zip_path": "firmware/zips/blackbox-3.1.9.zip",
+      "zip_size": 477305,
+      "zip_sha256": "8da2001fad35d57efc76682fe9e57391380eaf4bbf4a0417613b90e31715f95d",
+      "bins": [
+        {
+          "file": "BLACKBOX.bin",
+          "path": "firmware/bins/3.1.9/BLACKBOX.bin",
+          "size": 728696,
+          "sha256": "281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d"
+        }
+      ],
+      "notes": "Here is what's new compared to version 3.0.\n\n- DJ FX with XY control including repeater, gater, echo, bitcrusher, and flanger\n- Per pad overdrive algorithm\n- Multiselect and editing in the piano roll sequence editor\n- Supports import of multisample sets using the filename to set the root note and velocity\n- Sample pool is now 576 samples instead of 80 samples\n- Loads loop points embedded into multisample sets. A great source for this kind of material is Samples From Mars.\n- Sleep mode: Hold the BACK button to put the unit to sleep\n- When threshold based recording is active (RecThres: ON), you will create a Sample by default.\n- When record quantization (Rec Quant) is anything but none, you will always record a clip and the length in beats will be embedded in the WAV file for future use.\n- You can now create clips that are non-power of two length. Use recording quantization as desired and Length: Custom to capture. The result will default to Clip Mode and automatic playback (RecToPlay) will work as expected.\n- Importing sets with velocity layers would not play correctly.\n"
+    }
+  ],
+  "missing": [
+    {
+      "version": "1.9-beta",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/27308-blackbox-1-9-beta",
+      "reason": "ZIP download removed from thread (only upgrade guide PDF remains); forum points users to 2.1.5 thread"
+    },
+    {
+      "version": "1.7.0",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/19305-blackbox-1-7",
+      "zip_url_dead": "https://1010music.com/wp-content/uploads/2020/12/blackbox170.zip",
+      "reason": "Linked ZIP returns 404; 1.7.4 and 1.7.F from same thread are archived"
+    },
+    {
+      "version": "1.4.1",
+      "thread": "https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads/10762-blackbox-1-4-1",
+      "zip_url_dead": "http://1010music.com/wp-content/uploads/2020/02/blackbox141.zip",
+      "reason": "Linked ZIP returns 404; 1.4.0 and 1.4.3 are archived"
+    }
+  ]
+}

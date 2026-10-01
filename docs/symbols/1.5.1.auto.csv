@@ -1,0 +1,28 @@
+address,name,comment
+# carried from 3.1.9 by tools/carry_names.py
+0x08040CF0,defaultTask,via string from 3.1.9 0x08043DEC
+0x080410C4,main,via string from 3.1.9 0x08044188
+0x08041ADC,ring_advance,via callee from 3.1.9 0x08040BAC
+0x08043778,log_printf,via callee from 3.1.9 0x08043DE4
+0x08044AF4,str_clear,via callee from 3.1.9 0x08046034
+0x08044B3C,str_assign,via shape from 3.1.9 0x0804607C
+0x08044B5E,str_copy,via shape from 3.1.9 0x0804609E
+0x08050D80,ff_clst2sect,via shape from 3.1.9 0x08084242
+0x08054414,FATFS_UnLinkDriver,via shape from 3.1.9 0x080878F4
+0x08054700,SVC_Handler_rtos,via shape from 3.1.9 0x08087FB8
+0x0805CC24,ui_draw_cstring,via callee from 3.1.9 0x080C3B98
+0x08060AC8,BitmapFile_SaveToFile,via string from 3.1.9 0x0808BF90
+0x08074B18,SessionMgr_FinalizeBankLoading,via string from 3.1.9 0x0809CB4C
+0x08076F90,app_new_preset,via shape from 3.1.9 0x0809E160
+0x08077048,SessionMgr_LoadBank,via string from 3.1.9 0x0809E218
+0x0807EAE8,app_post_cmd,via string from 3.1.9 0x08090B78
+0x0807F3A4,unique_name,via string from 3.1.9 0x08091244
+0x0807FA80,preset_xml_path,via string from 3.1.9 0x08091860
+0x0807FF20,PresetMgr_CopyFile,via string from 3.1.9 0x08091D80
+0x0808001C,PresetMgr_SaveAs,via string from 3.1.9 0x08091E80
+0x0808049C,PresetMgr_PackPreset,via string from 3.1.9 0x080922E4
+0x080A1888,snprintf,via shape from 3.1.9 0x080C89F4
+0x080A19F2,strncpy,via callee from 3.1.9 0x080C8B86
+0x080A1B4C,memcpy,via shape from 3.1.9 0x080C8D0C
+0x080A1BA0,memset,via shape from 3.1.9 0x080C8D5E
+0x080A1D08,_svfprintf_r,via callee from 3.1.9 0x080C8E70

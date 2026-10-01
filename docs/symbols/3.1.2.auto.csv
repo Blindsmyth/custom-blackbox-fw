@@ -1,0 +1,37 @@
+address,name,comment
+# carried from 3.1.9 by tools/carry_names.py
+0x08040E10,defaultTask,via string from 3.1.9 0x08043DEC
+0x08041184,main,via string from 3.1.9 0x08044188
+0x08041E64,ring_advance,via callee from 3.1.9 0x08040BAC
+0x08043BC4,log_printf,via callee from 3.1.9 0x08043DE4
+0x08044D24,str_clear,via callee from 3.1.9 0x08046034
+0x08044D6C,str_assign,via shape from 3.1.9 0x0804607C
+0x08044D8E,str_copy,via shape from 3.1.9 0x0804609E
+0x08044E50,SDMgr_CheckMount,via shape from 3.1.9 0x08042C90
+0x08054678,ff_clst2sect,via shape from 3.1.9 0x08084242
+0x080570C6,f_close,via shape from 3.1.9 0x08086D76
+0x08057542,f_findfirst,via shape from 3.1.9 0x0808722E
+0x08057BD4,FATFS_UnLinkDriver,via shape from 3.1.9 0x080878F4
+0x08057FD0,SVC_Handler_rtos,via shape from 3.1.9 0x08087FB8
+0x0805FD06,ui_draw_cstring,via callee from 3.1.9 0x080C3B98
+0x08060FBC,ui_post_event_up,via shape from 3.1.9 0x080AED14
+0x08064AC4,BitmapFile_SaveToFile,via string from 3.1.9 0x0808BF90
+0x0807C7F4,SessionMgr_FinalizeBankLoading,via string from 3.1.9 0x0809CB4C
+0x0807DF00,SessionMgr_LoadBank,via string from 3.1.9 0x0809E218
+0x0807E3C8,SessionMgr_LoadNewPreset,via string from 3.1.9 0x0809E784
+0x08083F18,doc_open,via string from 3.1.9 0x08096AD8
+0x0808B1A0,PresetMgr_RequestList,via shape from 3.1.9 0x0809067C
+0x0808B9DC,app_post_cmd,via string from 3.1.9 0x08090B78
+0x0808BF60,PresetMgr_RequestLoadSettings,via shape from 3.1.9 0x08090DD4
+0x0808C010,PresetMgr_Request12,via shape from 3.1.9 0x08090E84
+0x0808C3DC,unique_name,via string from 3.1.9 0x08091244
+0x0808CAD0,preset_xml_path,via string from 3.1.9 0x08091860
+0x0808D050,PresetMgr_CopyFile,via string from 3.1.9 0x08091D80
+0x0808D150,PresetMgr_SaveAs,via string from 3.1.9 0x08091E80
+0x0808D5F8,PresetMgr_PackPreset,via string from 3.1.9 0x080922E4
+0x0808DB28,PresetMgr_CleanDelete,via string from 3.1.9 0x0809283C
+0x080C2B68,snprintf,via shape from 3.1.9 0x080C89F4
+0x080C2CFC,strncpy,via callee from 3.1.9 0x080C8B86
+0x080C2E9A,memcpy,via shape from 3.1.9 0x080C8D0C
+0x080C2EEC,memset,via shape from 3.1.9 0x080C8D5E
+0x080C3040,_svfprintf_r,via callee from 3.1.9 0x080C8E70

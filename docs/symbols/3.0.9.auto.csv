@@ -1,0 +1,36 @@
+address,name,comment
+# carried from 3.1.9 by tools/carry_names.py
+0x08040CE4,defaultTask,via string from 3.1.9 0x08043DEC
+0x08041058,main,via string from 3.1.9 0x08044188
+0x08041C8C,ring_advance,via callee from 3.1.9 0x08040BAC
+0x08043A70,log_printf,via callee from 3.1.9 0x08043DE4
+0x08044B80,str_clear,via callee from 3.1.9 0x08046034
+0x08044BC8,str_assign,via shape from 3.1.9 0x0804607C
+0x08044BEA,str_copy,via shape from 3.1.9 0x0804609E
+0x08044CAC,SDMgr_CheckMount,via shape from 3.1.9 0x08042C90
+0x08054208,ff_clst2sect,via shape from 3.1.9 0x08084242
+0x08056CE0,f_close,via shape from 3.1.9 0x08086D76
+0x08057200,f_findfirst,via shape from 3.1.9 0x0808722E
+0x080578BC,FATFS_UnLinkDriver,via shape from 3.1.9 0x080878F4
+0x08057CB8,SVC_Handler_rtos,via shape from 3.1.9 0x08087FB8
+0x0805F9B4,ui_draw_cstring,via callee from 3.1.9 0x080C3B98
+0x08060C6C,ui_post_event_up,via shape from 3.1.9 0x080AED14
+0x080646D8,BitmapFile_SaveToFile,via string from 3.1.9 0x0808BF90
+0x0807C00C,SessionMgr_FinalizeBankLoading,via string from 3.1.9 0x0809CB4C
+0x0807D678,SessionMgr_LoadBank,via string from 3.1.9 0x0809E218
+0x0807DB40,SessionMgr_LoadNewPreset,via string from 3.1.9 0x0809E784
+0x080836BC,doc_open,via string from 3.1.9 0x08096AD8
+0x0808B118,app_post_cmd,via string from 3.1.9 0x08090B78
+0x0808B6A0,PresetMgr_RequestLoadSettings,via shape from 3.1.9 0x08090DD4
+0x0808B750,PresetMgr_Request12,via shape from 3.1.9 0x08090E84
+0x0808BB1C,unique_name,via string from 3.1.9 0x08091244
+0x0808C214,preset_xml_path,via string from 3.1.9 0x08091860
+0x0808C794,PresetMgr_CopyFile,via string from 3.1.9 0x08091D80
+0x0808C894,PresetMgr_SaveAs,via string from 3.1.9 0x08091E80
+0x0808CD3C,PresetMgr_PackPreset,via string from 3.1.9 0x080922E4
+0x0808D264,PresetMgr_CleanDelete,via string from 3.1.9 0x0809283C
+0x080C1C80,snprintf,via shape from 3.1.9 0x080C89F4
+0x080C1DDE,strncpy,via callee from 3.1.9 0x080C8B86
+0x080C1F2E,memcpy,via shape from 3.1.9 0x080C8D0C
+0x080C1F80,memset,via shape from 3.1.9 0x080C8D5E
+0x080C20D0,_svfprintf_r,via callee from 3.1.9 0x080C8E70

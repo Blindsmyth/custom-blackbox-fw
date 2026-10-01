@@ -1,0 +1,155 @@
+address,name,comment
+# Names for 3.1.9 (VA = 0x08040000 + file offset). Comment prefix "data;" makes a label instead of a function.
+# Evidence and confidence for each group: docs/map-319.md
+# --- startup / RTOS
+0x080403C0,Reset_Handler,copies .data, zeroes .bss, sets heap, calls main
+0x08077858,SystemInit,RCC AHB2ENR SRAM1-3 on, VTOR
+0x08044188,main,MPU, drivers, 3x osThreadCreate, osKernelStart
+0x0804409C,MPU_Config,0x24060000/0x24070000 64K non-cacheable, SDRAM 64M, SRAM1-3 512K
+0x08043DEC,defaultTask,UI task: input -> App vtbl+8 -> draw loop
+0x08043E64,audioTask_entry,-> 0x08041470
+0x08041470,audioTask_loop,realtime prio; waits on queue, audio DMA halves
+0x08043E74,pcmStreamer_entry,-> 0x080743B0
+0x080743B0,pcmStreamer_loop,SD streaming task; runs preset_cmd_dispatch (all preset file I/O)
+0x08087A70,osThreadCreate,CMSIS-RTOS v1; prio+3 -> FreeRTOS prio
+0x08087A44,osKernelStart,
+0x08087B80,osMessageCreate,
+0x08088756,xQueueReceive,
+0x08088AD8,xTaskCreate,
+0x08088D20,osKernelSysTick,
+0x08087FB8,SVC_Handler_rtos,
+0x08088054,PendSV_Handler_rtos,
+# --- FatFs R0.13/0.14 (STM32Cube), FF_FS_TINY=1, FF_FS_REENTRANT=0, exFAT, LFN static, CP437
+0x080864E8,f_mount,
+0x08086534,f_open,
+0x08086866,f_read,
+0x08086A06,f_write,
+0x08086C28,f_sync,
+0x08086D76,f_close,
+0x08086D96,f_lseek,
+0x080870F6,f_opendir,
+0x0808718C,f_closedir,
+0x080871A0,f_readdir,
+0x080871F0,f_findnext,
+0x0808722E,f_findfirst,
+0x0808724A,f_stat,
+0x08087290,f_getfree,
+0x080873C8,f_truncate,
+0x0808748E,f_unlink,
+0x08087558,f_mkdir,
+0x080876C8,f_rename,
+0x08085408,ff_mount_volume,find_volume / mount_volume
+0x08086134,ff_follow_path,
+0x080848CA,ff_get_fileinfo,
+0x080844CE,ff_move_window,loads a sector into fs->win (shared by all files: FF_FS_TINY)
+0x08084486,ff_sync_window,
+0x08084440,ff_validate,
+0x08084AC2,ff_get_fat,
+0x08084242,ff_clst2sect,
+0x080843EA,ff_get_ldnumber,
+0x080840F0,disk_initialize,ff_gen_drv dispatch
+0x080840D8,disk_status,
+0x08084118,disk_read,
+0x08084138,disk_write,
+0x08084158,disk_ioctl,
+0x0808788C,FATFS_LinkDriverEx,
+0x080878F4,FATFS_UnLinkDriver,
+# --- SDMgr wrappers (BoomboxFramework SDMgr.cpp)
+0x08042C90,SDMgr_CheckMount,remounts when the card changed; +0x15 mounted flag
+0x08042F64,SDMgr_ScanNames,(sd, dir, pattern, dirs_only, list): dir entries stored as \name
+0x08042CD0,SDMgr_ListDirs,directory walk used only by clean/delete; never patch
+0x08042E3A,SDMgr_Mkdir,
+0x08042E44,SDMgr_FileSize,f_stat with 0x120-byte FILINFO; 0 when missing
+0x08042E24,SDMgr_Rename,
+0x08042E68,SDMgr_FreeSpace,
+0x08043284,SDMgr_DeleteTree,
+0x080431A4,path_join,
+0x0804311C,path_strip_ext,
+# --- containers / strings
+0x0804274C,list_clear,
+0x08042752,list_add,
+0x0804290C,list_get,(list, index, out) -> bool
+0x0804607C,str_assign,
+0x080460BA,str_cstr,
+0x08046070,str_is_empty,
+0x08046034,str_clear,
+0x0804609E,str_copy,
+0x08040BAC,ring_advance,atomic-ish index++
+# --- PresetMgr (object 0x2401F508), runs in pcmStreamer
+0x08092F5C,preset_cmd_dispatch,pops one command from +0x20 ring (read +0x120, write +0x124)
+0x08091BB8,PresetMgr_BuildList,cmd 0x10: root *.xml + Presets\*. dirs -> +0x32C; <preset>\*.wav -> +0x2EC
+0x08091988,PresetMgr_Load,cmd 0x22: TryLoad(name); on failure loads the first list row that works
+0x080918C8,PresetMgr_TryLoad,preset.xml via doc_open; legacy root <name>.xml is migrated (writes!)
+0x080915A0,preset_path_join,dest = Presets + \ + component
+0x08091588,preset_legacy_xml_path,
+0x08091860,preset_xml_path,joins preset.xml onto the preset folder
+0x08091E80,PresetMgr_SaveAs,cmd 0x20/0x21
+0x08091D80,PresetMgr_CopyFile,
+0x080922E4,PresetMgr_PackPreset,cmd 0x23
+0x0809283C,PresetMgr_CleanDelete,cmd 0x24; logs Deleting Dir: / Deleting:
+0x08091A74,PresetMgr_LoadSettings,cmd 4
+0x08091A5C,PresetMgr_SaveSettings,cmd 5
+0x08091B3A,PresetMgr_EvtListDone,posts event 0x11
+0x08091B68,PresetMgr_EvtFreeSpace,posts event 0x0F
+0x080905D0,PresetMgr_PopEvent,UI side; event 3 success copies +0x390 -> +0x394
+0x0809067C,PresetMgr_RequestList,UI side; posts cmd 0x10 with +0x394 current name
+0x08090A48,PresetMgr_RequestSave,cmd 0x20
+0x08090AD8,PresetMgr_RequestSaveAs,cmd 0x21
+0x08090B78,PresetMgr_RequestLoad,cmd 0x22; rejects when +0x390 pending is set
+0x08090C1C,PresetMgr_Request19,cmd 0x19
+0x08090CBC,PresetMgr_RequestSaveSettings,cmd 5 (deduplicated)
+0x08090DD4,PresetMgr_RequestLoadSettings,cmd 4
+0x08090E84,PresetMgr_Request12,cmd 0x12
+0x08090F0C,PresetMgr_Request14,cmd 0x14
+0x08090FBC,PresetMgr_Request15,cmd 0x15
+0x0809103C,PresetMgr_Request16,cmd 0x16
+0x080910BC,PresetMgr_Request17,cmd 0x17
+0x0809113C,PresetMgr_RequestPack,cmd 0x23
+0x080911C0,PresetMgr_RequestClean,cmd 0x24
+0x08091244,unique_name,untitled / %s %d
+0x08096AD8,doc_open,XML document open
+0x08096754,doc_save,
+# --- SessionMgr / App (UI task)
+0x0809E218,SessionMgr_LoadBank,(app, index, flag): clears pads, then RequestLoad(list[index])
+0x0809E160,app_new_preset,posts 0x15 then 0x22 then clears pads
+0x0809E784,SessionMgr_LoadNewPreset,
+0x0809CB4C,SessionMgr_FinalizeBankLoading,
+0x0809E518,settings_load,startup settings.tml loader; auto-loads last preset
+0x0809ACEC,pads_clear,
+0x080A2258,App_Update,UI pump: RequestList timer, PresetMgr events 3/6/0x0F/0x11/0x13
+0x080A2E60,App_HandleInput,
+0x0808BF90,BitmapFile_SaveToFile,screenshot; the only stock FatFs use in the UI task
+0x08043DE4,log_printf,PresetMgr/SessionMgr log output
+0x080C3B98,ui_draw_cstring,draws a C string on the panel
+0x080BD928,preset_screen_key,preset screen key handler; case 0x18 = Load
+0x080BD7D4,preset_screen_draw,(screen, index, force)
+0x080AED14,ui_post_event_up,posts an event up the widget tree
+0x080B5758,ui_post_event,
+# --- libc (newlib)
+0x080C8D5E,memset,
+0x080C8D0C,memcpy,
+0x080C8B86,strncpy,
+0x080C8B48,strncmp,
+0x080C8DC4,strcmp,
+0x080C8E10,strlen,
+0x080C8BB8,strnlen,
+0x080C8AE2,strncat,
+0x080C89F4,snprintf,
+0x080C8E70,_svfprintf_r,
+0x080C8494,__aeabi_ldivmod,
+0x080C88CC,_sbrk,heap 0x2402F214..0x2405FF54
+# --- data
+0x240021A4,sd_drive,data; SDMgr object (mounted flag at +0x15)
+0x2401F508,PresetMgr_obj,data; PresetMgr object
+0x2401F834,PresetMgr_list,data; PresetMgr+0x32C display list
+0x2401F898,PresetMgr_pending,data; PresetMgr+0x390 pending load name
+0x2401F89C,PresetMgr_current,data; PresetMgr+0x394 current preset name
+0x2400A9C0,engine_obj,data; audio engine / file queue owner
+0x24020084,shared_FIL_ptr,data; global FIL pointer (firmware memsets 0x58 bytes)
+0x080CEBC4,str_Presets,data; "Presets"
+0x080CF290,str_version,data; "3.1.9"
+0x0804604A,str_reset,posters call it on staging strings +8/+0xC before str_assign
+0x0804CA94,streamer_wake,thunk to 0x080711E0; posters call it with the engine object
+0x080A1718,App_HandleUiEvent,UI event handler; case 0x18/0xD8 = preset Load button (LoadBank flag 1 + screen 2)
+0x0809EAEC,App_SetScreen,(app, screen, 0, 0); 2 after a Load press
+0x08091B3A,PresetMgr_EvtListDone,posts event 0x11

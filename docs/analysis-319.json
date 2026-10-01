@@ -1,0 +1,121 @@
+{
+  "sp": 537001984,
+  "reset": 134480833,
+  "interesting": [
+    {
+      "va": 134786736,
+      "s": "Unable to FATFS_LinkDriver"
+    },
+    {
+      "va": 134786784,
+      "s": "C:\\Users\\kf6gp\\Projects\\Code\\matrixsw\\BoomboxFramework\\Src\\SDMgr.cpp"
+    },
+    {
+      "va": 134787032,
+      "s": "xml version=\"1.0\" encoding=\"UTF-8\""
+    },
+    {
+      "va": 134788272,
+      "s": "MajorVersion"
+    },
+    {
+      "va": 134788288,
+      "s": "MinorVersion"
+    },
+    {
+      "va": 134790644,
+      "s": "builddest"
+    },
+    {
+      "va": 134791660,
+      "s": "recpresetlen"
+    },
+    {
+      "va": 134802288,
+      "s": "preset"
+    },
+    {
+      "va": 134802296,
+      "s": "PresetMgr::RequestPresetLoad  --  Rejecting Stacked Load"
+    },
+    {
+      "va": 134802372,
+      "s": "Presets"
+    },
+    {
+      "va": 134802396,
+      "s": "preset.xml"
+    },
+    {
+      "va": 134802432,
+      "s": "PresetMgr::CopyFile Write Error %s"
+    },
+    {
+      "va": 134802468,
+      "s": "PresetMgr::CopyFile Unable to open write file %s"
+    },
+    {
+      "va": 134802520,
+      "s": "PresetMgr::CopyFile Unable to open read file %s"
+    },
+    {
+      "va": 134802568,
+      "s": "PresetMgr::SaveAs Insufficient Space"
+    },
+    {
+      "va": 134802608,
+      "s": "PresetMgr::PackPreset Insufficient Space"
+    },
+    {
+      "va": 134802652,
+      "s": "PresetMgr::PackPreset Failed %s"
+    },
+    {
+      "va": 134803964,
+      "s": "version"
+    },
+    {
+      "va": 134804192,
+      "s": "SessionMgr::FinalizeBankLoading"
+    },
+    {
+      "va": 134804240,
+      "s": "SessionMgr::LoadBank  --  REJECTED"
+    },
+    {
+      "va": 134804276,
+      "s": "SessionMgr::LoadBank  --  REJECTED based on file command queue"
+    },
+    {
+      "va": 134804340,
+      "s": "SessionMgr::LoadBank  --  index out of range"
+    },
+    {
+      "va": 134804388,
+      "s": "SessionMgr::LoadBank: %d"
+    },
+    {
+      "va": 134804416,
+      "s": "New Preset"
+    },
+    {
+      "va": 134804428,
+      "s": "SessionMgr Load New Preset: %s"
+    },
+    {
+      "va": 134805156,
+      "s": "Loaded %d of %d files."
+    },
+    {
+      "va": 134806028,
+      "s": "microSD card"
+    }
+  ],
+  "xrefs": {},
+  "clusters": [
+    {
+      "va": 134217728,
+      "span": 695920
+    }
+  ]
+}
