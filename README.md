@@ -26,6 +26,8 @@ CHANGELOG.md      merged history + per-release notes
 
 ## Modding workflow
 
+The full write-up is in [docs/workflow.md](docs/workflow.md).
+
 1. **Map before patching.** Import the image into Ghidra headless (`tools/ghidra_import.sh <ver>`) at base `0x08040000` with the STM32H7 memory map. Name functions in `docs/symbols/<ver>.csv` and record the facts with evidence in `docs/map-319.md`: library config, tasks, RAM use, and object layouts.
 2. **Design from the map.** File I/O only runs from the task that owns FatFs (pcmStreamer). UI-task hooks only touch RAM and post commands. Patch code never writes to the card. Patch state lives in RAM that nothing in stock firmware uses, and that includes computed addresses, not just literals.
 3. **Build** with `firmware/patches/<name>/build_patch.py`. It assembles `cave.S` with clang, links it at `0x080F1E80` (past the end of the stock image), checks the stock bytes at every hook site, patches branches, and sets the version letter.
