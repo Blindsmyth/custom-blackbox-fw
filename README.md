@@ -1,6 +1,6 @@
 # Blackbox Firmware Research and Mods
 
-Reverse-engineering notes for 1010music **blackbox** 3.1.9 and a patched build, **3.1.N**, that adds group folders to the preset browser ([firmware/patches/3.1.9-preset-folders/](firmware/patches/3.1.9-preset-folders/)). For research on hardware you own.
+Reverse-engineering notes for 1010music **blackbox** 3.1.9 and a patched build, **3.1.O**, that adds group folders to the preset browser ([firmware/patches/3.1.9-preset-folders/](firmware/patches/3.1.9-preset-folders/)). For research on hardware you own.
 
 **Firmware binaries are not in this repo.** Stock ZIPs, extracted `BLACKBOX.BIN` files, Gamechanger packages, and built patch images stay on your machine under `firmware/`. Download them yourself from 1010music and verify against `firmware/manifest.json`.
 
@@ -42,7 +42,7 @@ The full write-up is in [docs/workflow.md](docs/workflow.md).
 1. **Map before patching.** Import the image into Ghidra headless (`tools/ghidra_import.sh <ver>`) at base `0x08040000` with the STM32H7 memory map. Name functions in `docs/symbols/<ver>.csv` and record the facts with evidence in `docs/map-319.md`: library config, tasks, RAM use, and object layouts.
 2. **Design from the map.** File I/O only runs from the task that owns FatFs (pcmStreamer). UI-task hooks only touch RAM and post commands. Patch code never writes to the card. Patch state lives in RAM that nothing in stock firmware uses, and that includes computed addresses, not just literals.
 3. **Build** with `firmware/patches/<name>/build_patch.py`. It assembles `cave.S` with clang, links it at `0x080F1E80` (past the end of the stock image), checks the stock bytes at every hook site, patches branches, and sets the version letter.
-4. **Bench before the device.** Run `tools/bench/run_tests.py --image <bin>` on both the stock and the patched image. It runs the real firmware functions in Unicorn against a write-protected FAT32 image. It checks behaviour, that no write was attempted, that the card image is unchanged, and that `fsck.fat -n` is clean.
+4. **Bench before the device.** Run `tools/bench/run_tests.py --image <bin>` on both the stock and the patched image. It runs the real firmware functions in Unicorn against a FAT32 image. Read-only tests write-protect the card; Save / Delete / Rename / New / Clean tests allow writes and check the exact files that changed. Every test ends with `fsck.fat -n`.
 5. **Install** only through the SD installer: `BLACKBOX.BIN` in the card root, then power on holding BACK+INFO. Keep a stock copy on the card under another name. Never use SWD and never touch the bootloader.
 6. **When the device disagrees with the bench,** find what the bench skips, add a test that reproduces the failure, and only then fix it.
 

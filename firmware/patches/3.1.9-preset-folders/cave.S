@@ -1,15 +1,17 @@
-@ 3.1.M: group folders in the 3.1.9 preset browser.
+@ 3.1.O: group folders in the 3.1.9 preset browser.
 @
 @ State lives in SRAM4 at 0x38000000 (reset by fm_boot each boot). Not DTCM: stock's small-block
 @ allocator (0x080443A8) hands out DTCM from 0x20000000 upward. SRAM4 has no stock references and
 @ needs no clock enable.
-@   +0x000 magic, +0x004 in_load, +0x008 app pointer from the last Load press,
-@   +0x100 browse path (folder shown in the list), +0x200 base path (folder of the loaded preset).
+@   +0x000 magic, +0x004 in_load (paths resolve in the browse folder), +0x008 app pointer from the
+@   last Load press, +0x00C Save As destination name (pointer to +0x300 while a Save As runs),
+@   +0x100 browse path (folder shown in the list), +0x200 base path (folder of the loaded preset),
+@   +0x300 / +0x400 name buffers for Save As and the row commands.
 @ Both paths start as "Presets", which is the stock behaviour.
 @
-@ Task rules (docs/map-319.md): FatFs is only called from pcmStreamer (fm_check, via the
-@ command dispatcher). UI-task hooks only touch RAM and post commands. Nothing here writes
-@ to the card.
+@ Task rules (docs/map-319.md): FatFs is only called from pcmStreamer (command dispatcher and
+@ BuildList). UI-task hooks only touch RAM and post commands. Card writes only come from the stock
+@ handlers (Save As, Delete, Rename, New, Clean); the hooks only choose the folder they act on.
 
 .syntax unified
 .thumb
@@ -19,22 +21,28 @@
 .equ MAGIC,       0x4D464231
 .equ S_INLOAD,    0x004
 .equ S_APP,       0x008
+.equ S_SAVENAME,  0x00C
 .equ S_BROWSE,    0x100
 .equ S_BASE,      0x200
-.equ S_SIZE,      0x300
+.equ S_NAME,      0x300
+.equ S_NAME2,     0x400
+.equ S_SIZE,      0x500
 
 .equ PM,          0x2401F508
 .equ SD,          0x240021A4
 .equ ENGINE,      0x2400A9C0
 .equ PRESETS,     0x080CEBC4
+.equ XML_EXT,     0x080CEBC0
 .equ CMD_CHECK,   0x30
 .equ EVT_LOAD,    0x30
+.equ EVT_DONE,    0x27
 
 .equ BOOT_NEXT,   0x080778D5
 .equ LIST_GET,    0x0804290D
 .equ LIST_ADD,    0x08042753
 .equ SCAN,        0x08042F65
 .equ PATH_JOIN,   0x080431A5
+.equ LEGACY_FMT,  0x08042E79
 .equ STR_CLEAR,   0x0804604B
 .equ STR_ASSIGN,  0x0804607D
 .equ STR_COPY,    0x0804609F
@@ -46,6 +54,13 @@
 .equ BUILDLIST,   0x08091BB9
 .equ TRYLOAD,     0x080918C9
 .equ XML_PATH,    0x08091861
+.equ SAVEAS,      0x08091E81
+.equ ALS_EXPORT,  0x08091889
+.equ RENAME,      0x08092BB9
+.equ NEWPRESET,   0x08092C59
+.equ DELETE,      0x08092E69
+.equ CLEAN,       0x0809283D
+.equ UI_POST_UP,  0x080AED15
 .equ FSTAT,       0x0808724B
 .equ STRCMP,      0x080C8DC5
 .equ STRNCPY,     0x080C8B87
@@ -156,6 +171,23 @@ push_comp:
     movs r0, #0
     pop {r4, r5, r6, pc}
 
+@ Copies name into a 256-byte buffer without a leading '/' (the folder marker).
+@ r0 = buffer, r1 = name. Returns r0 = buffer.
+.thumb_func
+copy_name:
+    push {r4, lr}
+    mov r4, r0
+    ldrb r2, [r1]
+    cmp r2, #0x2F
+    it eq
+    addeq r1, #1
+    movs r2, #0xff
+    call STRNCPY
+    movs r0, #0
+    strb r0, [r4, #0xff]
+    mov r0, r4
+    pop {r4, pc}
+
 @ ---- boot (main, replaces its first call)
 
 .thumb_func
@@ -168,25 +200,133 @@ fm_boot:
 
 @ ---- path hooks (any task; RAM only)
 
-@ Replaces preset_path_join(dest, pm, comp): the folder is the browse path while a
-@ load or check is in progress, otherwise the loaded preset's folder.
+@ Picks the folder a preset name resolves in: the browse path while a load, check or row command
+@ runs, or when comp is the Save As destination buffer; otherwise the loaded preset's folder.
+@ r0 = comp. Returns r0 = folder path, r1 = comp without a leading '/'. Clobbers r2, r3, r12.
+.thumb_func
+pick:
+    push {r4, lr}
+    mov r4, r0
+    bl ensure
+    ldrb r1, [r0, #S_INLOAD]
+    cbnz r1, 2f
+    cbz r4, 1f
+    ldr r1, [r0, #S_SAVENAME]
+    cmp r1, r4
+    beq 2f
+1:
+    add r0, r0, #S_BASE
+    b 3f
+2:
+    add r0, r0, #S_BROWSE
+3:
+    mov r1, r4
+    cbz r1, 4f
+    ldrb r2, [r1]
+    cmp r2, #0x2F
+    it eq
+    addeq r1, #1
+4:
+    pop {r4, pc}
+
+@ Replaces preset_path_join(dest, pm, comp).
 .thumb_func
 hook_join:
     push {r4, r5, r6, lr}
     mov r4, r0
-    mov r5, r2
-    bl ensure
-    ldrb r1, [r0, #S_INLOAD]
-    cmp r1, #0
-    ite ne
-    addne r2, r0, #S_BROWSE
-    addeq r2, r0, #S_BASE
-    mov r3, r5
+    mov r0, r2
+    bl pick
+    mov r2, r0
+    mov r3, r1
     ldr r1, =SD
     mov r0, r4
     call PATH_JOIN
     mov r0, r4
     pop {r4, r5, r6, pc}
+
+@ Replaces preset_legacy_xml_path(dest, pm, name), which builds "name.xml" in the card root.
+@ Legacy root presets only belong to the top level: when the name resolves in a subfolder the
+@ path becomes "..", which FatFs rejects (FF_FS_RPATH = 0), so the stock unlink/rename/load of
+@ the root file does nothing.
+.thumb_func
+hook_legacy:
+    push {r4, r5, r6, lr}
+    mov r4, r0
+    mov r0, r2
+    bl pick
+    mov r5, r1
+    bl is_top
+    cbz r0, 1f
+    mov r0, r4
+    ldr r1, =SD
+    mov r2, r5
+    ldr r3, =XML_EXT
+    call LEGACY_FMT
+    b 2f
+1:
+    mov r0, r4
+    ldr r1, =s_dotdot
+    movs r2, #3
+    call STRNCPY
+2:
+    mov r0, r4
+    pop {r4, r5, r6, pc}
+
+@ ---- folder test (pcmStreamer)
+
+@ r0 = path, r1 = FILINFO (0x120). Returns FRESULT.
+.thumb_func
+stat:
+    push {r4, r5, r6, lr}
+    mov r4, r0
+    mov r5, r1
+    mov r0, r5
+    movs r1, #0
+    mov r2, #0x120
+    call MEMSET
+    mov r0, r4
+    mov r1, r5
+    call FSTAT
+    pop {r4, r5, r6, pc}
+
+@ r0 = name (no marker). Returns r0 = 1 when <browse>\name is a directory without preset.xml.
+@ Stack: FILINFO at sp, path at sp+0x120.
+.thumb_func
+is_group:
+    push {r4, r5, lr}
+    sub sp, #0x224
+    mov r5, r0
+    bl ensure
+    add r1, r0, #S_BROWSE
+    add r0, sp, #0x120
+    bl copy_name
+    mov r1, r5
+    bl push_comp
+    cbz r0, 1f
+    add r0, sp, #0x120
+    mov r1, sp
+    bl stat
+    cbnz r0, 1f
+    ldrb r0, [sp, #0xC]
+    tst r0, #0x10
+    beq 1f
+    add r0, sp, #0x120
+    ldr r1, =s_presetxml
+    bl push_comp
+    cbz r0, 1f
+    add r0, sp, #0x120
+    mov r1, sp
+    bl stat
+    cmp r0, #0
+    ite ne
+    movne r0, #1
+    moveq r0, #0
+    b 2f
+1:
+    movs r0, #0
+2:
+    add sp, #0x224
+    pop {r4, r5, pc}
 
 @ ---- BuildList hooks (pcmStreamer)
 
@@ -215,6 +355,33 @@ hook_scan:
     pop {r0, r2, r3, lr}
     ldr r12, =SCAN
     bx r12
+
+@ Replaces list_add(display list, name) for each directory row: group folders get a leading '/'.
+@ r0 = list, r1 = name.
+.thumb_func
+hook_mark:
+    push {r4, r5, r6, lr}
+    sub sp, #0x100
+    mov r4, r0
+    mov r5, r1
+    mov r0, r5
+    bl is_group
+    cbz r0, 1f
+    movs r0, #0x2F
+    strb r0, [sp]
+    add r0, sp, #1
+    mov r1, r5
+    movs r2, #0xfe
+    call STRNCPY
+    movs r0, #0
+    strb r0, [sp, #0xff]
+    mov r5, sp
+1:
+    mov r0, r4
+    mov r1, r5
+    call LIST_ADD
+    add sp, #0x100
+    pop {r4, r5, r6, pc}
 
 @ After the directory rows: add ".." below the top level. Replaces ldr.w r3, [r7, #0x2ac].
 @ sb = display list, r7 = PresetMgr.
@@ -261,26 +428,227 @@ hook_tryload:
 1:
     pop {r4, r5, r6, pc}
 
-@ ---- Load press (UI task, RAM only)
+@ ---- row commands (pcmStreamer, command dispatcher)
 
-@ Replaces SessionMgr_LoadBank(app, idx, 1) in the Load-button case of the app event
-@ handler; the following screen switch is skipped by a patched branch. Posts CMD_CHECK
-@ with the row name so pcmStreamer can decide between load and navigate.
+@ Copies the row name (without marker) to S_NAME and rejects "", ".." and, when r1 != 0, group
+@ folders. On success sets in_load so the handler resolves names in the browse folder.
+@ r0 = name, r1 = block group folders. Returns r0 = S_NAME, or 0 when rejected.
 .thumb_func
-hook_ui_load:
-    push {r4, r5, r6, r7, lr}
-    sub sp, #0x104
+row_begin:
+    push {r4, r5, r6, lr}
+    mov r5, r0
+    mov r6, r1
+    bl ensure
+    mov r4, r0
+    add r0, r4, #S_NAME
+    mov r1, r5
+    bl copy_name
+    ldrb r1, [r0]
+    cbz r1, 2f
+    ldr r1, =s_dotdot
+    call STRCMP
+    cbz r0, 2f
+    cbz r6, 1f
+    add r0, r4, #S_NAME
+    bl is_group
+    cbnz r0, 2f
+1:
+    movs r0, #1
+    strb r0, [r4, #S_INLOAD]
+    add r0, r4, #S_NAME
+    pop {r4, r5, r6, pc}
+2:
+    movs r0, #0
+    pop {r4, r5, r6, pc}
+
+@ Clears in_load. Preserves r0.
+.thumb_func
+row_end:
+    push {r0, lr}
+    bl ensure
+    movs r1, #0
+    strb r1, [r0, #S_INLOAD]
+    pop {r0, pc}
+
+@ Posts a UI event like the stock handlers do. r0 = pm, r1 = event id, r2 = value at +8.
+.thumb_func
+post_evt:
+    push {r4, lr}
+    mov r4, r0
+    ldr.w r3, [r4, #0x2ac]
+    and r3, r3, #0xf
+    add.w r3, r3, r3, lsl #1
+    lsls r3, r3, #3
+    add.w r3, r3, #0x128
+    strb r1, [r4, r3]
+    adds r3, r4, r3
+    str r2, [r3, #8]
+    movs r1, #0
+    str r1, [r3, #0xc]
+    str r1, [r3, #0x10]
+    add r0, r4, #0x2ac
+    call RING_ADV
+    pop {r4, pc}
+
+@ Replaces PresetMgr_SaveAs(pm, new, old) for cmd 0x21. The new name goes through a private
+@ buffer so hook_join can tell the destination (browse folder) from the sample sources (loaded
+@ preset's folder) even when both names are equal. Plain Save (cmd 0x20) is not hooked.
+.thumb_func
+hook_saveas:
+    push {r3, r4, r5, r6, r7, lr}
     mov r4, r0
     mov r5, r1
+    mov r6, r2
     bl ensure
-    str r4, [r0, #S_APP]
-    ldr r6, =PM
-    add r0, r6, #0x32C
+    mov r7, r0
+    add r0, r7, #S_NAME
     mov r1, r5
-    mov r2, sp
-    call LIST_GET
-    cmp r0, #0
-    beq 2f
+    bl copy_name
+    str r0, [r7, #S_SAVENAME]
+    mov r1, r0
+    mov r0, r4
+    mov r2, r6
+    call SAVEAS
+    movs r0, #0
+    str r0, [r7, #S_SAVENAME]
+    pop {r3, r4, r5, r6, r7, pc}
+
+@ Replaces the preset.als export that follows Save As (r0 = pm, r1 = new name): it belongs
+@ next to the new preset.xml in the browse folder.
+.thumb_func
+hook_saveas_als:
+    push {r4, r5, r6, lr}
+    mov r5, r0
+    mov r6, r1
+    bl ensure
+    mov r4, r0
+    movs r0, #1
+    strb r0, [r4, #S_INLOAD]
+    mov r0, r5
+    mov r1, r6
+    call ALS_EXPORT
+    movs r0, #0
+    strb r0, [r4, #S_INLOAD]
+    pop {r4, r5, r6, pc}
+
+@ Replaces the Delete handler call (cmd 0x17). r0 = pm, r1 = row name.
+.thumb_func
+hook_delete:
+    push {r4, lr}
+    mov r4, r0
+    mov r0, r1
+    movs r1, #1
+    bl row_begin
+    cbz r0, 1f
+    mov r1, r0
+    mov r0, r4
+    call DELETE
+    b 2f
+1:
+    mov r0, r4
+    movs r1, #EVT_DONE
+    movs r2, #0
+    bl post_evt
+2:
+    bl row_end
+    pop {r4, pc}
+
+@ Replaces the Clean handler call (cmd 0x24). r0 = pm, r1 = command (name string at +8).
+@ The stock handler posts no event, so a rejected Clean posts none either.
+.thumb_func
+hook_clean:
+    push {r4, r5, r6, lr}
+    mov r4, r0
+    mov r5, r1
+    add r0, r5, #8
+    call STR_CSTR
+    movs r1, #1
+    bl row_begin
+    cbz r0, 1f
+    mov r0, r4
+    mov r1, r5
+    call CLEAN
+1:
+    bl row_end
+    pop {r4, r5, r6, pc}
+
+@ Replaces the New-preset handler call (cmd 0x15). r0 = pm, r1 = name.
+.thumb_func
+hook_new:
+    push {r4, lr}
+    mov r4, r0
+    mov r0, r1
+    movs r1, #0
+    bl row_begin
+    cbz r0, 1f
+    mov r1, r0
+    mov r0, r4
+    call NEWPRESET
+    b 2f
+1:
+    mov r0, r4
+    movs r1, #EVT_DONE
+    movs r2, #0
+    bl post_evt
+2:
+    bl row_end
+    pop {r4, pc}
+
+@ Replaces the Rename handler call (cmd 0x14). r0 = pm, r1 = old row name, r2 = new name.
+@ Folders may be renamed; ".." may not. Renaming a marked row rebuilds the list so the marker
+@ follows the new name.
+.thumb_func
+hook_rename:
+    push {r3, r4, r5, r6, r7, lr}
+    mov r4, r0
+    mov r6, r2
+    ldrb r7, [r1]
+    mov r0, r1
+    movs r1, #0
+    bl row_begin
+    cbz r0, 1f
+    mov r5, r0
+    bl ensure
+    add r0, r0, #S_NAME2
+    mov r1, r6
+    bl copy_name
+    mov r6, r0
+    ldrb r1, [r0]
+    cbz r1, 1f
+    ldr r1, =s_dotdot
+    call STRCMP
+    cbz r0, 1f
+    mov r0, r4
+    mov r1, r5
+    mov r2, r6
+    call RENAME
+    bl row_end
+    cmp r7, #0x2F
+    bne 2f
+    add r0, r4, #0x394
+    call STR_CSTR
+    mov r1, r0
+    mov r0, r4
+    call BUILDLIST
+    b 2f
+1:
+    bl row_end
+    mov r0, r4
+    movs r1, #EVT_DONE
+    movs r2, #0
+    bl post_evt
+2:
+    pop {r3, r4, r5, r6, r7, pc}
+
+@ ---- UI task (RAM only)
+
+@ Posts CMD_CHECK for a row, the way PresetMgr_Request* post commands. r0 = name, r1 = row index.
+.thumb_func
+post_check:
+    push {r3, r4, r5, r6, r7, lr}
+    mov r4, r0
+    mov r5, r1
+    ldr r6, =PM
     movs r3, #0
     strb r3, [r6, #4]
     str r5, [r6]
@@ -290,7 +658,7 @@ hook_ui_load:
     add r0, r6, #0xC
     call STR_CLEAR
     add r0, r6, #8
-    mov r1, sp
+    mov r1, r4
     call STR_ASSIGN
     movs r1, #CMD_CHECK
     strb r1, [r6, #4]
@@ -315,8 +683,30 @@ hook_ui_load:
     call RING_ADV
     ldr r0, =ENGINE
     call WAKE
-    b 3f
-2:
+    pop {r3, r4, r5, r6, r7, pc}
+
+@ Replaces SessionMgr_LoadBank(app, idx, 1) in the Load-button case of the app event
+@ handler; the following screen switch is skipped by a patched branch. Posts CMD_CHECK
+@ with the row name so pcmStreamer can decide between load and navigate.
+.thumb_func
+hook_ui_load:
+    push {r4, r5, r6, lr}
+    sub sp, #0x100
+    mov r4, r0
+    mov r5, r1
+    bl ensure
+    str r4, [r0, #S_APP]
+    ldr r0, =PM
+    add r0, r0, #0x32C
+    mov r1, r5
+    mov r2, sp
+    call LIST_GET
+    cbz r0, 1f
+    mov r0, sp
+    mov r1, r5
+    bl post_check
+    b 2f
+1:
     mov r0, r4
     mov r1, r5
     movs r2, #1
@@ -326,9 +716,27 @@ hook_ui_load:
     movs r2, #0
     movs r3, #0
     call SCREEN
-3:
-    add sp, #0x104
-    pop {r4, r5, r6, r7, pc}
+2:
+    add sp, #0x100
+    pop {r4, r5, r6, pc}
+
+@ Replaces ui_post_event_up(widget, event) for the BACK key on the preset screen: below the top
+@ level BACK goes up one folder (same command as the ".." row); at the top it leaves the screen.
+.thumb_func
+hook_back:
+    push {r0, r1, r4, lr}
+    bl ensure
+    add r0, r0, #S_BROWSE
+    bl is_top
+    cbnz r0, 1f
+    ldr r0, =s_dotdot
+    movs r1, #0
+    bl post_check
+    pop {r0, r1, r4, pc}
+1:
+    pop {r0, r1, r4, lr}
+    ldr r12, =UI_POST_UP
+    bx r12
 
 @ ---- command dispatcher (pcmStreamer)
 
@@ -349,26 +757,12 @@ hook_disp:
     movs r3, #(CMD_CHECK - 4)
     bx lr
 
-@ r0 = path, r1 = FILINFO (0x120). Returns FRESULT.
-.thumb_func
-stat:
-    push {r4, r5, r6, lr}
-    mov r4, r0
-    mov r5, r1
-    mov r0, r5
-    movs r1, #0
-    mov r2, #0x120
-    call MEMSET
-    mov r0, r4
-    mov r1, r5
-    call FSTAT
-    pop {r4, r5, r6, pc}
-
 @ CMD_CHECK: r0 = pm; row name in the command string at +0x18, row index at +0x10.
 @   ".."                          -> browse up, rebuild the list
 @   <browse>\name\preset.xml      -> post EVT_LOAD (UI runs the stock load)
 @   <browse>\name is a directory  -> browse into it, rebuild the list
 @   anything else                 -> post EVT_LOAD (stock load handles it, e.g. root xml)
+@ A leading '/' (folder marker) is ignored.
 @ Stack: FILINFO at sp, name at sp+0x120, path at sp+0x220.
 .thumb_func
 fm_check:
@@ -381,11 +775,7 @@ fm_check:
     call STR_CSTR
     mov r1, r0
     add r0, sp, #0x120
-    movs r2, #0xff
-    call STRNCPY
-    movs r0, #0
-    add r1, sp, #0x120
-    strb r0, [r1, #0xff]
+    bl copy_name
 
     add r0, sp, #0x120
     ldr r1, =s_dotdot
@@ -438,21 +828,10 @@ fm_check:
     call BUILDLIST
     b 6f
 5:
-    ldr.w r3, [r4, #0x2ac]
-    and r3, r3, #0xf
-    add.w r3, r3, r3, lsl #1
-    lsls r3, r3, #3
-    add.w r3, r3, #0x128
-    adds r2, r4, r3
+    mov r0, r4
     movs r1, #EVT_LOAD
-    strb r1, [r4, r3]
-    ldr r1, [r4, #0x10]
-    str r1, [r2, #8]
-    movs r1, #0
-    str r1, [r2, #0xc]
-    str r1, [r2, #0x10]
-    add r0, r4, #0x2ac
-    call RING_ADV
+    ldr r2, [r4, #0x10]
+    bl post_evt
 6:
     add sp, #0x328
     pop {r4, r5, r6, r7, r8, pc}
@@ -491,6 +870,9 @@ hook_pop:
 .align 2
 s_dotdot:
     .asciz ".."
+.align 2
+s_presetxml:
+    .asciz "preset.xml"
 
 .align 2
 .ltorg

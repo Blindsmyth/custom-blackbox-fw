@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the 3.1.N preset-folder image from stock 3.1.9. Does not modify the stock file.
+"""Build the 3.1.O preset-folder image from stock 3.1.9. Does not modify the stock file.
 
 Writes BLACKBOX.BIN, BLACKBOX.sym.json (cave symbols, used by tools/bench) and cave.dis.
 Hook design and addresses: docs/preset-folders.md and docs/map-319.md.
@@ -23,7 +23,7 @@ BASE = 0x08040000
 CAVE_VA = 0x080F1E80
 CAVE_OFF = CAVE_VA - BASE
 VERSION_OFF = 0x8F294  # the '9' in "3.1.9"
-LETTER = "N"
+LETTER = "O"
 
 # (site, cave symbol, bl?, stock bytes at the site)
 SITES = [
@@ -37,6 +37,15 @@ SITES = [
     (0x08092FBA, "hook_disp", True, "237d043b"),      # dispatcher: command id
     (0x0809061E, "hook_pop", True, "2b78032b"),       # PopEvent: event id
     (0x080A1AC0, "hook_ui_load", True, "fcf7aafb"),   # Load button: LoadBank(app, idx, 1)
+    (0x08091588, "hook_legacy", False, "10b50446"),   # preset_legacy_xml_path entry
+    (0x08091C6A, "hook_mark", True, "b0f772fd"),      # BuildList: list_add(dir row)
+    (0x08093094, "hook_saveas", True, "fef7f4fe"),    # dispatcher cmd 0x21: PresetMgr_SaveAs
+    (0x080930AA, "hook_saveas_als", True, "fef7edfb"),  # dispatcher cmd 0x21: preset.als export
+    (0x08093124, "hook_rename", True, "fff748fd"),    # dispatcher cmd 0x14: rename
+    (0x08093136, "hook_new", True, "fff78ffd"),       # dispatcher cmd 0x15: new preset
+    (0x08093148, "hook_delete", True, "fff78efe"),    # dispatcher cmd 0x17: delete
+    (0x0809315C, "hook_clean", True, "fff76efb"),     # dispatcher cmd 0x24: clean
+    (0x080BD9F6, "hook_back", True, "f1f78df9"),      # preset screen BACK: ui_post_event_up
 ]
 # Load button: skip the screen switch (movs r3,#0 -> b.n 0x080A1A50, the case exit)
 SKIP_SCREEN = (0x080A1AC4, "0023", 0x080A1A50)

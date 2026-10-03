@@ -62,6 +62,25 @@ def exists(path, rel):
     return r.returncode == 0
 
 
+def listing(path):
+    """Every file and directory on the image, as paths like 'Presets/Alpha/preset.xml'."""
+    r = subprocess.run(["mdir", "-i", path, "-/", "-b", "::/"], capture_output=True, text=True, check=True)
+    out = set()
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("::/"):
+            line = line[3:]
+        line = line.rstrip("/")
+        if line and not line.endswith("/.") and not line.endswith("/..") and line not in (".", ".."):
+            out.add(line)
+    return out
+
+
+def read(path, rel):
+    r = subprocess.run(["mtype", "-i", path, "::/" + rel], capture_output=True, check=True)
+    return r.stdout
+
+
 if __name__ == "__main__":
     import sys
     out = build(sys.argv[1] if len(sys.argv) > 1 else "/tmp/bench-card.img")

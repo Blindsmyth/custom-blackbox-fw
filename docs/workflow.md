@@ -1,6 +1,6 @@
 # Reverse-engineering and modding workflow
 
-How the 3.1.9 preset-folder patch (3.1.N) was made, and how to make the next one.
+How the 3.1.9 preset-folder patch (now 3.1.O) was made, and how to make the next one.
 
 ## 1. Collect versions
 
@@ -27,7 +27,7 @@ These rules came out of past failures:
 - Only the task that already owns FatFs may touch files. UI hooks only change RAM and queue commands.
 - Patch code never writes to the card.
 - Patch state goes in RAM that is proven unused. That means checking for computed addresses, not just stored ones (the 3.1.M lesson, see below).
-- Measure costs before choosing a design. Checking every row while building the list would have cost about 6,000 extra sector reads for 150 presets. So the check runs only for the row you press Load on.
+- Measure costs before choosing a design. The Load-time folder check is one `f_stat` of the selected row. The `/` folder marker (3.1.O) adds two `f_stat`s per directory row while the list is built: 4,227 sector reads vs 1,049 stock on a 146-row tree (`tools/bench/time_list.py`).
 
 ## 4. Build
 
@@ -43,7 +43,7 @@ These rules came out of past failures:
 
 `tools/bench/run_tests.py --image <bin>` runs the real firmware code in Unicorn against a FAT32 card image built with `tools/bench/mkcard.py`. Only the lowest-level disk functions and a few RTOS calls are replaced.
 
-- The card is write-protected, so any write attempt fails the test. Every test also checks that the image is unchanged and passes `fsck.fat -n`.
+- The card is write-protected for read-only tests, so any write attempt fails those. Every test also checks that `fsck.fat -n` is clean. Tests of Save As, Delete, Rename, New and Clean allow writes and check the exact set of files that changed.
 - Before each test, the bench fills DTCM through the stock allocator, the way the app's startup does on the device.
 - Stock must pass too. That shows the bench behaves like the real device. For example, it reproduces stock's "loads some other preset" bug.
 - For realistic runs, mirror the real card's `\Presets` into a bench image. Keep the real preset files and stub the WAVs.
@@ -62,6 +62,8 @@ These rules came out of past failures:
 4. Only then fix it.
 
 That is how 3.1.M became 3.1.N. On the device, every preset operation failed while the UI stayed responsive. The bench was missing the app's startup allocations. Stock's small-block allocator hands out DTCM from `0x20000000`, which is where the patch kept its state. A new bench test reproduced the overwrite, and moving the state to SRAM4 (`0x38000000`) fixed it.
+
+3.1.N could enter a group folder but Save As wrote the new preset next to the loaded one, then reloaded from the browsed folder and fell back to another row. Delete, Rename, New and Clean had the same wrong-folder problem. 3.1.O wraps those dispatcher calls so they act on the folder you are browsing, and it adds BACK-to-parent and a `/` marker on group rows.
 
 ## Setup on a new machine
 
