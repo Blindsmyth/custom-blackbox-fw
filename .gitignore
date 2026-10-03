@@ -5,3 +5,12 @@ __pycache__/
 *.o
 *.img
 AGENTS.md
+
+# Proprietary 1010music firmware — keep locally, do not commit
+firmware/zips/
+firmware/bins/
+firmware/gamechanger/
+firmware/patches/*/BLACKBOX.BIN
+firmware/patches/*/BLACKBOX.bin
+/BLACKBOX*.bin
+/BLACKBOX*.BIN

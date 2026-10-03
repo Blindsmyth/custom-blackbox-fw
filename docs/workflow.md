@@ -4,7 +4,7 @@ How the 3.1.9 preset-folder patch (3.1.N) was made, and how to make the next one
 
 ## 1. Collect versions
 
-The repo archives 21 firmware versions with hashes and release notes (`firmware/manifest.json`, `CHANGELOG.md`). Older, smaller builds are easier to read and help name functions in 3.1.9. The changelog tells you when features appeared. For example, preset folders arrived in 1.5.1, and no version ever supported nested folders. See [versions.md](versions.md).
+Firmware binaries stay local (gitignored). `firmware/manifest.json` and `CHANGELOG.md` list versions, hashes, and release notes. Download ZIPs yourself into `firmware/zips/`, extract `BLACKBOX.BIN` into `firmware/bins/<ver>/`, and verify sha256. Older, smaller builds are easier to read and help name functions in 3.1.9. The changelog tells you when features appeared. For example, preset folders arrived in 1.5.1, and no version ever supported nested folders. See [versions.md](versions.md).
 
 ## 2. Map the firmware before patching
 

@@ -1,15 +1,17 @@
-# Blackbox Firmware Archive and Mods
+# Blackbox Firmware Research and Mods
 
-This repo holds an archive of 1010music **blackbox** firmware binaries and release notes. It also holds reverse-engineering work on 3.1.9 and a patched build, **3.1.N**, that adds group folders to the preset browser ([firmware/patches/3.1.9-preset-folders/](firmware/patches/3.1.9-preset-folders/)). It's for research on hardware you own. The firmware is 1010music's, so keep this repo private.
+Reverse-engineering notes for 1010music **blackbox** 3.1.9 and a patched build, **3.1.N**, that adds group folders to the preset browser ([firmware/patches/3.1.9-preset-folders/](firmware/patches/3.1.9-preset-folders/)). For research on hardware you own.
+
+**Firmware binaries are not in this repo.** Stock ZIPs, extracted `BLACKBOX.BIN` files, Gamechanger packages, and built patch images stay on your machine under `firmware/`. Download them yourself from 1010music and verify against `firmware/manifest.json`.
 
 ## Layout
 
 ```
 firmware/
-  zips/           original downloaded ZIP packages
-  bins/<ver>/     extracted BLACKBOX.BIN (or .bin) per version
-  gamechanger/    separate Gamechanger for Blackbox build
-  patches/        patched images built from stock 3.1.9 (sources + build scripts)
+  zips/           original downloaded ZIP packages (local only)
+  bins/<ver>/     extracted BLACKBOX.BIN (or .bin) per version (local only)
+  gamechanger/    Gamechanger for Blackbox extract (local only)
+  patches/        patch sources + build scripts; BLACKBOX.BIN output is local only
   manifest.json   versions, URLs, sizes, sha256 hashes
 docs/
   map-319.md      firmware map: memory, RTOS tasks, FatFs config, PresetMgr
@@ -23,6 +25,15 @@ tools/
   bench/          Unicorn test bench: runs firmware code against a FAT32 card image
 CHANGELOG.md      merged history + per-release notes
 ```
+
+## Local firmware setup
+
+1. Download the ZIP for each version you need (see Sources and `manifest.json`).
+2. Place ZIPs in `firmware/zips/` using the filenames listed below.
+3. Extract `BLACKBOX.BIN` / `BLACKBOX.bin` into `firmware/bins/<ver>/`.
+4. Check sha256 against `firmware/manifest.json`.
+
+Patch builds write `firmware/patches/<name>/BLACKBOX.BIN` locally; that file is gitignored.
 
 ## Modding workflow
 
@@ -43,7 +54,9 @@ AI (Cursor) assisted with the reverse engineering, tools, patches and docs.
 - Official current firmware page: https://1010music.com/downloads (3.1.9)
 - History 2019 / 2020 threads linked in `manifest.json`
 
-## Collected versions (22 packages)
+## Expected local packages (22)
+
+Filenames and sizes match `firmware/manifest.json`. None of these are shipped in git.
 
 - **gamechanger-0.1.2** — `gamechanger012.zip` → `BLACKBOX.BIN` (389884 bytes)
 - **1.0.2** — `Blackbox102.zip` → `BLACKBOX.BIN` (468776 bytes)
@@ -71,10 +84,10 @@ AI (Cursor) assisted with the reverse engineering, tools, patches and docs.
 ## Missing / dead links
 
 - **1.9-beta** — ZIP download removed from thread (only upgrade guide PDF remains); forum points users to 2.1.5 thread
-- **1.7.0** — Linked ZIP returns 404; 1.7.4 and 1.7.F from same thread are archived
-- **1.4.1** — Linked ZIP returns 404; 1.4.0 and 1.4.3 are archived
+- **1.7.0** — Linked ZIP returns 404; 1.7.4 and 1.7.F from same thread are listed in the manifest
+- **1.4.1** — Linked ZIP returns 404; 1.4.0 and 1.4.3 are listed in the manifest
 
-## How this was built
+## How the local archive was built
 
 1. Crawled each firmware release thread on the retired 1010music forum (authenticated session).
 2. Downloaded ZIP packages from `1010music.com/wp-content/uploads/...`.
@@ -82,4 +95,4 @@ AI (Cursor) assisted with the reverse engineering, tools, patches and docs.
 4. Hashed each ZIP and BIN into `firmware/manifest.json`.
 5. Merged history threads + per-thread notes into `CHANGELOG.md`.
 
-Forum is retired (read-only); grab archives while downloads still resolve.
+Forum is retired (read-only); grab archives while downloads still resolve. Do not publish the binaries.
