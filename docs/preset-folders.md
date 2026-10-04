@@ -1,6 +1,6 @@
 # Nested preset folders
 
-Target: 3.1.9. The boot test is `3.1.H`. The folder image is `3.1.O` in [`firmware/patches/3.1.9-preset-folders/`](../firmware/patches/3.1.9-preset-folders/). The firmware map behind it is [map-319.md](map-319.md).
+Target: 3.1.9. The boot test is `3.1.H`. The folder image is `3.1.P` in [`firmware/patches/3.1.9-preset-folders/`](../firmware/patches/3.1.9-preset-folders/). The firmware map behind it is [map-319.md](map-319.md).
 
 ## What stock 3.1.9 does
 
@@ -19,6 +19,7 @@ So a grouping folder such as `\Presets\Kits\` (no `preset.xml`) can't be used. T
 | 3.1.L | Card corruption | UI-task `f_write` (debug log) raced pcmStreamer. FatFs is built with `FF_FS_TINY=1` (one shared sector window) and `FF_FS_REENTRANT=0` (no lock) |
 | 3.1.M | Empty preset list, boot preset not loaded | State at DTCM `0x20000000`, the first block stock's small-block allocator (`0x080443A8`) hands out. Stock objects overwrote the state, and re-initializing it zeroed a live object |
 | 3.1.N | Save As into a subfolder vanished; Delete/Rename/New/Clean used the wrong folder | `hook_join` used the browse path only while `in_load` was set. Row commands run with that flag clear, so they wrote or deleted in the loaded preset's folder |
+| 3.1.O | Random crashes, including on the pads screen | `App_Update` rebuilds the preset list on a timer even when Presets is not open. The `/` marker called `f_stat` twice per row on every rebuild (4,227 sector reads for 146 rows) on pcmStreamer's 8 KB stack |
 
 Rules that follow from the map:
 
@@ -26,14 +27,16 @@ Rules that follow from the map:
 - UI-task code may only touch RAM and post commands.
 - Patch code never writes to the card. Card writes only come from the stock handlers; the hooks choose the folder they act on.
 
-## 3.1.O design
+## 3.1.P design
 
-State is 0x500 bytes in SRAM4 at `0x38000000`. Stock code never uses SRAM4, and it needs no clock enable. It is reset at every boot by a hook on `main`'s first call.
+State is about 10 KB in SRAM4 at `0x38000000`. Stock code never uses SRAM4, and it needs no clock enable. It is reset at every boot by a hook on `main`'s first call.
 
 - `+0x004` `in_load`: path joins use the browse folder (load, check, and the row-command wrappers).
 - `+0x00C` `save_name`: pointer to the Save As destination name. That join uses the browse folder even when `in_load` is clear, so sample copies still come from the loaded preset.
 - `+0x100` browse path: the folder shown in the list.
 - `+0x200` base path: the folder of the loaded preset.
+- `+0x500` FILINFO + path scratch, so BuildList does not grow the pcmStreamer stack.
+- `+0x720` group-name cache for the current browse path. A later timer rebuild is RAM-only.
 - Both paths start as `Presets`.
 
 ```mermaid
@@ -102,10 +105,10 @@ Folders are plain FAT directories. Nothing is converted.
 
 - Stock 3.1.9: 16/16, including the group-row fallback bug.
 - Every test first fills DTCM through the stock allocator (64 blocks of 1 KB, scribbled), as the app's init does on the device. 3.1.M fails this (7 checks). Without it, the bench missed the 3.1.M bug.
-- 3.1.O: 119/119. In addition to the 3.1.N folder-navigation checks: group rows are marked `/`; BACK goes up one folder and leaves the screen at the top; Save As writes into the browsed folder (including the same-name case); plain Save still writes the loaded preset; Delete / Rename / New / Clean act in the browsed folder; Delete and Clean refuse `..` and group rows; Rename can rename a group folder and refuses `..`.
+- 3.1.P: 125/125. Same behaviour checks as 3.1.O, plus a second BuildList (the App_Update timer) that keeps the `/` marks and drops to 5 sector reads on the small tree (first build 1,035).
 - FatFs probe (`FF_FS_RPATH=0`): `Presets\_Test\..` and a bare `..` return `FR_INVALID_NAME` (6). `Presets\/_Test` is accepted (`/` is a separator), so the hooks still strip a leading `/`.
-- List-build cost on a 146-row tree (the size of the real `\Presets`): stock 1,049 sector reads, 3.1.O 4,227. The extra cost is two `f_stat`s per directory row (`browse\name` then `browse\name\preset.xml`). `tools/bench/time_list.py` repeats the measurement.
-- Stack: the deepest 3.1.N path (entering a group) used 2,568 bytes of the 8 KB pcmStreamer stack. Stock Load uses 2,256. 3.1.O's `is_group` / `fm_check` frames are in the same range.
+- List-build cost on a 146-row tree: first build is still 4,227 sector reads vs 1,049 stock (two `f_stat`s per row, once per folder). The second build is 41 reads, same as stock. `tools/bench/time_list.py` repeats the measurement.
+- Stack: the deepest 3.1.N path (entering a group) used 2,568 bytes of the 8 KB pcmStreamer stack. Stock Load uses 2,256. 3.1.P keeps FILINFO and the mark path in SRAM4, so the `/` check does not add a 0x324-byte frame on top of BuildList.
 
 ## Code reference
 

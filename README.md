@@ -1,6 +1,6 @@
 # Blackbox Firmware Research and Mods
 
-Reverse-engineering notes for 1010music **blackbox** 3.1.9 and a patched build, **3.1.O**, that adds group folders to the preset browser ([firmware/patches/3.1.9-preset-folders/](firmware/patches/3.1.9-preset-folders/)). For research on hardware you own.
+Reverse-engineering notes for 1010music **blackbox** 3.1.9 and a patched build, **3.1.P**, that adds group folders to the preset browser ([firmware/patches/3.1.9-preset-folders/](firmware/patches/3.1.9-preset-folders/)). For research on hardware you own.
 
 **Firmware binaries are not in this repo.** Stock ZIPs, extracted `BLACKBOX.BIN` files, Gamechanger packages, and built patch images stay on your machine under `firmware/`. Download them yourself from 1010music and verify against `firmware/manifest.json`.
 

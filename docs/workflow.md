@@ -1,6 +1,6 @@
 # Reverse-engineering and modding workflow
 
-How the 3.1.9 preset-folder patch (now 3.1.O) was made, and how to make the next one.
+How the 3.1.9 preset-folder patch (now 3.1.P) was made, and how to make the next one.
 
 ## 1. Collect versions
 
@@ -27,7 +27,7 @@ These rules came out of past failures:
 - Only the task that already owns FatFs may touch files. UI hooks only change RAM and queue commands.
 - Patch code never writes to the card.
 - Patch state goes in RAM that is proven unused. That means checking for computed addresses, not just stored ones (the 3.1.M lesson, see below).
-- Measure costs before choosing a design. The Load-time folder check is one `f_stat` of the selected row. The `/` folder marker (3.1.O) adds two `f_stat`s per directory row while the list is built: 4,227 sector reads vs 1,049 stock on a 146-row tree (`tools/bench/time_list.py`).
+- Measure costs before choosing a design. The Load-time folder check is one `f_stat` of the selected row. The `/` folder marker stats each directory once per folder visit (4,227 vs 1,049 stock on a 146-row tree). 3.1.O repeated that on the App_Update list timer and crashed; 3.1.P caches the marks so a later rebuild matches stock (41 reads).
 
 ## 4. Build
 
@@ -63,7 +63,7 @@ These rules came out of past failures:
 
 That is how 3.1.M became 3.1.N. On the device, every preset operation failed while the UI stayed responsive. The bench was missing the app's startup allocations. Stock's small-block allocator hands out DTCM from `0x20000000`, which is where the patch kept its state. A new bench test reproduced the overwrite, and moving the state to SRAM4 (`0x38000000`) fixed it.
 
-3.1.N could enter a group folder but Save As wrote the new preset next to the loaded one, then reloaded from the browsed folder and fell back to another row. Delete, Rename, New and Clean had the same wrong-folder problem. 3.1.O wraps those dispatcher calls so they act on the folder you are browsing, and it adds BACK-to-parent and a `/` marker on group rows.
+3.1.N could enter a group folder but Save As wrote the new preset next to the loaded one, then reloaded from the browsed folder and fell back to another row. Delete, Rename, New and Clean had the same wrong-folder problem. 3.1.O wraps those dispatcher calls so they act on the folder you are browsing, and it adds BACK-to-parent and a `/` marker on group rows. 3.1.O then crashed on the pads screen because that marker re-scanned every row whenever App_Update rebuilt the list. 3.1.P caches the marks.
 
 ## Setup on a new machine
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the 3.1.O preset-folder image from stock 3.1.9. Does not modify the stock file.
+"""Build the 3.1.P preset-folder image from stock 3.1.9. Does not modify the stock file.
 
 Writes BLACKBOX.BIN, BLACKBOX.sym.json (cave symbols, used by tools/bench) and cave.dis.
 Hook design and addresses: docs/preset-folders.md and docs/map-319.md.
@@ -23,7 +23,7 @@ BASE = 0x08040000
 CAVE_VA = 0x080F1E80
 CAVE_OFF = CAVE_VA - BASE
 VERSION_OFF = 0x8F294  # the '9' in "3.1.9"
-LETTER = "O"
+LETTER = "P"
 
 # (site, cave symbol, bl?, stock bytes at the site)
 SITES = [

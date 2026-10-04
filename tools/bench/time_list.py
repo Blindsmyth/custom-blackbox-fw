@@ -32,7 +32,11 @@ def measure(image, card):
     bench = Bench(image, card)
     bench.b.reads = 0
     bench.refresh()
-    return bench.b.reads, len(bench.rows())
+    first = bench.b.reads
+    rows = len(bench.rows())
+    bench.b.reads = 0
+    bench.refresh()
+    return first, bench.b.reads, rows
 
 
 def main():
@@ -42,8 +46,8 @@ def main():
         card = os.path.join(tmp, "card.img")
         mkcard.build(card, tree, size_mb=64)
         for label, image in (("stock", STOCK), ("patched", PATCH)):
-            reads, rows = measure(str(image), card)
-            print(f"{label:8} rows={rows} sector_reads={reads}")
+            first, second, rows = measure(str(image), card)
+            print(f"{label:8} rows={rows} first_reads={first} second_reads={second}")
 
 
 if __name__ == "__main__":

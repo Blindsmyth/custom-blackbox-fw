@@ -1,13 +1,17 @@
-@ 3.1.O: group folders in the 3.1.9 preset browser.
+@ 3.1.P: group folders in the 3.1.9 preset browser.
 @
 @ State lives in SRAM4 at 0x38000000 (reset by fm_boot each boot). Not DTCM: stock's small-block
 @ allocator (0x080443A8) hands out DTCM from 0x20000000 upward. SRAM4 has no stock references and
 @ needs no clock enable.
-@   +0x000 magic, +0x004 in_load (paths resolve in the browse folder), +0x008 app pointer from the
-@   last Load press, +0x00C Save As destination name (pointer to +0x300 while a Save As runs),
-@   +0x100 browse path (folder shown in the list), +0x200 base path (folder of the loaded preset),
-@   +0x300 / +0x400 name buffers for Save As and the row commands.
+@   +0x000 magic, +0x004 in_load, +0x008 app pointer, +0x00C Save As dest name,
+@   +0x100 browse path, +0x200 base path, +0x300 / +0x400 name buffers,
+@   +0x500 FILINFO + path scratch (so BuildList does not grow the pcmStreamer stack),
+@   +0x720 cached browse path / valid flag / group-name list.
 @ Both paths start as "Presets", which is the stock behaviour.
+@
+@ App_Update rebuilds the preset list on a timer even on the pads screen. 3.1.O called f_stat
+@ twice per row on every rebuild (4,227 sector reads for 146 rows) on pcmStreamer's 8 KB stack.
+@ 3.1.P stats each folder once per browse path, then reuses the cached "/name" marks.
 @
 @ Task rules (docs/map-319.md): FatFs is only called from pcmStreamer (command dispatcher and
 @ BuildList). UI-task hooks only touch RAM and post commands. Card writes only come from the stock
@@ -26,7 +30,15 @@
 .equ S_BASE,      0x200
 .equ S_NAME,      0x300
 .equ S_NAME2,     0x400
-.equ S_SIZE,      0x500
+.equ S_FILINFO,   0x500
+.equ S_PATHBUF,   0x620
+.equ S_CPATH,     0x720
+.equ S_CVALID,    0x820
+.equ S_GCNT,      0x824
+.equ S_GNAMES,    0x828
+.equ GNLEN,       64
+.equ GMAX,        128
+.equ S_SIZE,      0x2828
 
 .equ PM,          0x2401F508
 .equ SD,          0x240021A4
@@ -83,7 +95,7 @@ fm_init:
     ldr r4, =STATE
     mov r0, r4
     movs r1, #0
-    mov r2, #S_SIZE
+    ldr r2, =S_SIZE
     call MEMSET
     add r0, r4, #S_BROWSE
     bl set_presets
@@ -129,6 +141,8 @@ is_top:
 pop_comp:
     push {r4, lr}
     mov r4, r0
+    bl cache_inval
+    mov r0, r4
     call STRLEN
 1:
     subs r0, #1
@@ -152,6 +166,13 @@ push_comp:
     push {r4, r5, r6, lr}
     mov r4, r0
     mov r5, r1
+    ldr r0, =STATE
+    add r0, #S_BROWSE
+    cmp r4, r0
+    bne 0f
+    bl cache_inval
+0:
+    mov r0, r4
     call STRLEN
     mov r6, r0
     mov r0, r5
@@ -187,6 +208,63 @@ copy_name:
     strb r0, [r4, #0xff]
     mov r0, r4
     pop {r4, pc}
+
+@ Drops the group-name cache so the next BuildList will f_stat again. Clobbers r0-r3, r12.
+.thumb_func
+cache_inval:
+    push {lr}
+    bl ensure
+    movs r1, #0
+    strb r1, [r0, #S_CVALID]
+    str r1, [r0, #S_GCNT]
+    pop {pc}
+
+@ r0 = name. Returns r0 = 1 when the name is in the group cache.
+.thumb_func
+cache_has:
+    push {r4, r5, r6, lr}
+    mov r5, r0
+    bl ensure
+    ldr r6, [r0, #S_GCNT]
+    add r4, r0, #S_GNAMES
+1:
+    cbz r6, 2f
+    mov r0, r4
+    mov r1, r5
+    call STRCMP
+    cbz r0, 3f
+    add r4, #GNLEN
+    subs r6, #1
+    b 1b
+3:
+    movs r0, #1
+    pop {r4, r5, r6, pc}
+2:
+    movs r0, #0
+    pop {r4, r5, r6, pc}
+
+@ r0 = name. Stores it in the group cache when there is room.
+.thumb_func
+cache_add:
+    push {r4, r5, r6, lr}
+    mov r5, r0
+    bl cache_has
+    cbnz r0, 1f
+    bl ensure
+    ldr r6, [r0, #S_GCNT]
+    cmp r6, #GMAX
+    bhs 1f
+    adds r1, r6, #1
+    str r1, [r0, #S_GCNT]
+    add r0, r0, #S_GNAMES
+    add r0, r0, r6, lsl #6
+    mov r1, r5
+    movs r2, #(GNLEN - 1)
+    call STRNCPY
+    movs r1, #0
+    strb r1, [r0, #(GNLEN - 1)]
+1:
+    pop {r4, r5, r6, pc}
 
 @ ---- boot (main, replaces its first call)
 
@@ -290,32 +368,42 @@ stat:
     pop {r4, r5, r6, pc}
 
 @ r0 = name (no marker). Returns r0 = 1 when <browse>\name is a directory without preset.xml.
-@ Stack: FILINFO at sp, path at sp+0x120.
+@ Uses SRAM4 scratch, not the stack. When the cache matches the browse path this is RAM only.
 .thumb_func
 is_group:
-    push {r4, r5, lr}
-    sub sp, #0x224
+    push {r4, r5, r6, lr}
     mov r5, r0
     bl ensure
-    add r1, r0, #S_BROWSE
-    add r0, sp, #0x120
+    mov r4, r0
+    ldrb r1, [r4, #S_CVALID]
+    cbz r1, 3f
+    add r0, r4, #S_CPATH
+    add r1, r4, #S_BROWSE
+    call STRCMP
+    cbnz r0, 3f
+    mov r0, r5
+    pop {r4, r5, r6, lr}
+    b cache_has
+3:
+    add r0, r4, #S_PATHBUF
+    add r1, r4, #S_BROWSE
     bl copy_name
     mov r1, r5
     bl push_comp
     cbz r0, 1f
-    add r0, sp, #0x120
-    mov r1, sp
+    add r0, r4, #S_PATHBUF
+    add r1, r4, #S_FILINFO
     bl stat
     cbnz r0, 1f
-    ldrb r0, [sp, #0xC]
+    ldrb r0, [r4, #S_FILINFO + 0xC]
     tst r0, #0x10
     beq 1f
-    add r0, sp, #0x120
+    add r0, r4, #S_PATHBUF
     ldr r1, =s_presetxml
     bl push_comp
     cbz r0, 1f
-    add r0, sp, #0x120
-    mov r1, sp
+    add r0, r4, #S_PATHBUF
+    add r1, r4, #S_FILINFO
     bl stat
     cmp r0, #0
     ite ne
@@ -325,8 +413,7 @@ is_group:
 1:
     movs r0, #0
 2:
-    add sp, #0x224
-    pop {r4, r5, pc}
+    pop {r4, r5, r6, pc}
 
 @ ---- BuildList hooks (pcmStreamer)
 
@@ -361,26 +448,32 @@ hook_scan:
 .thumb_func
 hook_mark:
     push {r4, r5, r6, lr}
-    sub sp, #0x100
     mov r4, r0
     mov r5, r1
     mov r0, r5
     bl is_group
     cbz r0, 1f
-    movs r0, #0x2F
-    strb r0, [sp]
-    add r0, sp, #1
+    bl ensure
+    ldrb r1, [r0, #S_CVALID]
+    cbnz r1, 2f
+    mov r0, r5
+    bl cache_add
+2:
+    bl ensure
+    add r6, r0, #S_NAME2
+    movs r1, #0x2F
+    strb r1, [r6]
+    add r0, r6, #1
     mov r1, r5
     movs r2, #0xfe
     call STRNCPY
     movs r0, #0
-    strb r0, [sp, #0xff]
-    mov r5, sp
+    strb r0, [r6, #0xff]
+    mov r5, r6
 1:
     mov r0, r4
     mov r1, r5
     call LIST_ADD
-    add sp, #0x100
     pop {r4, r5, r6, pc}
 
 @ After the directory rows: add ".." below the top level. Replaces ldr.w r3, [r7, #0x2ac].
@@ -396,6 +489,14 @@ hook_dotdot:
     ldr r1, =s_dotdot
     call LIST_ADD
 1:
+    bl ensure
+    add r1, r0, #S_BROWSE
+    add r0, r0, #S_CPATH
+    movs r2, #0xff
+    call STRNCPY
+    ldr r0, =STATE
+    movs r1, #1
+    strb r1, [r0, #S_CVALID]
     pop {r0, r1, r2, r4, r5, lr}
     ldr.w r3, [r7, #0x2ac]
     bx lr
@@ -625,6 +726,7 @@ hook_rename:
     bl row_end
     cmp r7, #0x2F
     bne 2f
+    bl cache_inval
     add r0, r4, #0x394
     call STR_CSTR
     mov r1, r0

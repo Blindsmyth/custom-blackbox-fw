@@ -328,6 +328,18 @@ def t_marker(bench, res):
     res.check(bench.rows() == ["..", "/Sub", "One", "Two"], f"nested group marked {bench.rows()}")
 
 
+def t_marker_cache(bench, res):
+    """A second BuildList (the App_Update timer) must not touch the card again."""
+    bench.refresh()
+    first = bench.rows()
+    reads = bench.b.reads
+    bench.b.reads = 0
+    bench.refresh()
+    res.check(bench.rows() == first, f"cached rebuild rows {bench.rows()}")
+    res.check(bench.b.reads < reads, f"cached rebuild reads {bench.b.reads} < first {reads}")
+    res.check("/_Test" in bench.rows(), "marker still present after the cached rebuild")
+
+
 def t_back(bench, res):
     bench.refresh()
     res.check(bench.back(), "BACK at the top level leaves the screen")
@@ -509,6 +521,7 @@ def main():
             ("folder with preset.xml loads", t_folder_with_preset_loads),
             ("boot init", t_boot_hook),
             ("folder marker", t_marker),
+            ("marker cache on rebuild", t_marker_cache),
             ("BACK goes up", t_back),
         ]
         write_cases = [
