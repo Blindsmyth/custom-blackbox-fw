@@ -1,4 +1,4 @@
-@ 3.1.P: group folders in the 3.1.9 preset browser.
+@ 3.1.Q: group folders in the 3.1.9 preset browser.
 @
 @ State lives in SRAM4 at 0x38000000 (reset by fm_boot each boot). Not DTCM: stock's small-block
 @ allocator (0x080443A8) hands out DTCM from 0x20000000 upward. SRAM4 has no stock references and
@@ -73,6 +73,8 @@
 .equ DELETE,      0x08092E69
 .equ CLEAN,       0x0809283D
 .equ UI_POST_UP,  0x080AED15
+.equ REQUEST_LIST,0x0809067D
+.equ KEY_EXIT,    0x080BDE1F
 .equ FSTAT,       0x0808724B
 .equ STRCMP,      0x080C8DC5
 .equ STRNCPY,     0x080C8B87
@@ -822,22 +824,66 @@ hook_ui_load:
     add sp, #0x100
     pop {r4, r5, r6, pc}
 
-@ Replaces ui_post_event_up(widget, event) for the BACK key on the preset screen: below the top
-@ level BACK goes up one folder (same command as the ".." row); at the top it leaves the screen.
+@ Pops one browse component and asks pcmStreamer to rebuild the list (UI-task safe).
+@ Returns r0 = 0 when it went up, 1 when already at the top.
 .thumb_func
-hook_back:
-    push {r0, r1, r4, lr}
+folder_back:
+    push {r4, lr}
     bl ensure
     add r0, r0, #S_BROWSE
     bl is_top
     cbnz r0, 1f
-    ldr r0, =s_dotdot
-    movs r1, #0
-    bl post_check
-    pop {r0, r1, r4, pc}
+    bl ensure
+    add r0, r0, #S_BROWSE
+    bl pop_comp
+    ldr r0, =PM
+    call REQUEST_LIST
+    movs r0, #0
+    pop {r4, pc}
 1:
+    movs r0, #1
+    pop {r4, pc}
+
+@ Replaces ui_post_event_up for type-2 key 0x7f. Uses RequestList, not cmd 0x30: BACK
+@ runs in the key handler, and a custom command was easy to miss on the device.
+.thumb_func
+hook_back:
+    push {r0, r1, r4, lr}
+    bl folder_back
+    cmp r0, #0
     pop {r0, r1, r4, lr}
+    bne 1f
+    bx lr
+1:
     ldr r12, =UI_POST_UP
+    bx r12
+
+@ Replaces the unhandled-event return in preset_screen_key (movs r0,#1; b epilogue).
+@ Hardware BACK arrives as event type 0x7f, not as a type-2 key, so hook_back never ran.
+@ r3 = event type, r1 = event, r4 = widget. Jumps to the function epilogue.
+.thumb_func
+hook_back_evt:
+    cmp r3, #0x7f
+    beq 1f
+    movs r0, #1
+    ldr r12, =KEY_EXIT
+    bx r12
+1:
+    push {r1, r4, lr}
+    bl folder_back
+    pop {r1, r4, lr}
+    cbnz r0, 2f
+    movs r0, #0
+    ldr r12, =KEY_EXIT
+    bx r12
+2:
+    mov r0, r4
+    push {lr}
+    ldr r12, =UI_POST_UP
+    blx r12
+    pop {lr}
+    movs r0, #0
+    ldr r12, =KEY_EXIT
     bx r12
 
 @ ---- command dispatcher (pcmStreamer)

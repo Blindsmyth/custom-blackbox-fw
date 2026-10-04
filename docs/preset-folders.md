@@ -1,6 +1,6 @@
 # Nested preset folders
 
-Target: 3.1.9. The boot test is `3.1.H`. The folder image is `3.1.P` in [`firmware/patches/3.1.9-preset-folders/`](../firmware/patches/3.1.9-preset-folders/). The firmware map behind it is [map-319.md](map-319.md).
+Target: 3.1.9. The boot test is `3.1.H`. The folder image is `3.1.Q` in [`firmware/patches/3.1.9-preset-folders/`](../firmware/patches/3.1.9-preset-folders/). The firmware map behind it is [map-319.md](map-319.md).
 
 ## What stock 3.1.9 does
 
@@ -82,7 +82,8 @@ flowchart LR
 | `0x08093136` | `hook_new` | pcmStreamer | Cmd 0x15 in the browse folder. `..` is refused |
 | `0x08093148` | `hook_delete` | pcmStreamer | Cmd 0x17 in the browse folder. `..` and group-folder rows are refused; the UI still gets event 0x27 |
 | `0x0809315C` | `hook_clean` | pcmStreamer | Cmd 0x24 in the browse folder. `..` and group-folder rows are refused (stock Clean posts no event) |
-| `0x080BD9F6` | `hook_back` | UI | BACK below the top level posts cmd 0x30 with `..`. At `\Presets` it leaves the screen as stock |
+| `0x080BD9F6` | `hook_back` | UI | Type-2 key 0x7F: pop the browse path and `RequestList`. At `\Presets` it leaves the screen as stock |
+| `0x080BD960` | `hook_back_evt` | UI | Hardware BACK is event type 0x7F (not a type-2 key). Same as `hook_back` |
 
 Event 0x30 is outside `App_Update`'s event table (id − 3 > 0x27), so stock code ignores it. Command 0x30 is outside the dispatcher table (id − 4 > 0x20).
 

@@ -352,6 +352,12 @@ def t_back(bench, res):
     res.check(bench.browse() == "Presets", f"BACK reaches {bench.browse()!r}")
     res.check(bench.back(), "BACK at the top leaves the screen")
     res.check(bench.browse() == "Presets", "browse path stays at Presets")
+    # Hardware BACK is event type 0x7f (not type-2 key 0x7f). folder_back is shared.
+    bench.press_load("/_Test")
+    res.check(bench.b.call(bench.sym["folder_back"]) == 0, "folder_back pops a level")
+    bench.pump()
+    res.check(bench.browse() == "Presets", f"folder_back browse {bench.browse()!r}")
+    res.check(bench.b.call(bench.sym["folder_back"]) == 1, "folder_back at the top is a no-op")
 
 
 def diff(before, after):

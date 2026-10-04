@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the 3.1.P preset-folder image from stock 3.1.9. Does not modify the stock file.
+"""Build the 3.1.Q preset-folder image from stock 3.1.9. Does not modify the stock file.
 
 Writes BLACKBOX.BIN, BLACKBOX.sym.json (cave symbols, used by tools/bench) and cave.dis.
 Hook design and addresses: docs/preset-folders.md and docs/map-319.md.
@@ -23,7 +23,7 @@ BASE = 0x08040000
 CAVE_VA = 0x080F1E80
 CAVE_OFF = CAVE_VA - BASE
 VERSION_OFF = 0x8F294  # the '9' in "3.1.9"
-LETTER = "P"
+LETTER = "Q"
 
 # (site, cave symbol, bl?, stock bytes at the site)
 SITES = [
@@ -45,7 +45,8 @@ SITES = [
     (0x08093136, "hook_new", True, "fff78ffd"),       # dispatcher cmd 0x15: new preset
     (0x08093148, "hook_delete", True, "fff78efe"),    # dispatcher cmd 0x17: delete
     (0x0809315C, "hook_clean", True, "fff76efb"),     # dispatcher cmd 0x24: clean
-    (0x080BD9F6, "hook_back", True, "f1f78df9"),      # preset screen BACK: ui_post_event_up
+    (0x080BD9F6, "hook_back", True, "f1f78df9"),      # type-2 key 0x7f: ui_post_event_up
+    (0x080BD960, "hook_back_evt", True, "01205ce2"),  # unhandled event: hardware BACK is type 0x7f
 ]
 # Load button: skip the screen switch (movs r3,#0 -> b.n 0x080A1A50, the case exit)
 SKIP_SCREEN = (0x080A1AC4, "0023", 0x080A1A50)
