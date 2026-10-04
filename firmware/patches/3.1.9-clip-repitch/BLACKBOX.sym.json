@@ -1,0 +1,23 @@
+{
+ "title_repitch": "0x080f20e0",
+ "labels_repitch": "0x080f2104",
+ "xml_repitch": "0x080f20ec",
+ "bag_has": "0x080f1f32",
+ "pack_key_packed": "0x080f20ca",
+ "flag_write": "0x080f2084",
+ "pack_key_unpacked": "0x080f20b4",
+ "go_stock_rate": "0x080f2026",
+ "flag_read": "0x080f209c",
+ "str_stretch": "0x080f20f4",
+ "str_repitch": "0x080f20fc",
+ "hook_register": "0x080f1e80",
+ "hook_template": "0x080f1ed8",
+ "hook_clip_def": "0x080f1ef2",
+ "hook_post": "0x080f1f4e",
+ "hook_set": "0x080f1f70",
+ "hook_clip_param": "0x080f1f9e",
+ "hook_rate": "0x080f1fd0",
+ "hook_main_rate": "0x080f2030",
+ "hook_grain": "0x080f204c",
+ "state_init": "0x080f1eb6"
+}

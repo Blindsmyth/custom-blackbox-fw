@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Bench tests for BLACKBOX.BIN 3.1.9, stock or with the preset-folder patch.
+"""Bench tests for BLACKBOX.BIN 3.1.9, stock or patched.
 
     .venv/bin/python tools/bench/run_tests.py --image firmware/bins/3.1.9/BLACKBOX.bin
     .venv/bin/python tools/bench/run_tests.py --image firmware/patches/3.1.9-preset-folders/BLACKBOX.BIN
+    .venv/bin/python tools/bench/run_tests.py --image firmware/patches/3.1.9-clip-repitch/BLACKBOX.BIN
 
 The UI side is modelled at the PresetMgr boundary: a Load press, the pcmStreamer
 command dispatcher, and the UI event pop. SessionMgr_LoadBank and the screen switch
@@ -65,18 +66,20 @@ class Bench:
     def __init__(self, image, card, allow_writes=False):
         self.card_path = card
         self.b = bd.Board(image, card, allow_writes=allow_writes)
-        self.patched = self.b.image[VERSION_OFF] != ord("9")
         self.sym = {}
-        if self.patched:
+        if self.b.image[VERSION_OFF] != ord("9"):
             symfile = Path(image).with_suffix(".sym.json")
             self.sym = {k: int(v, 16) for k, v in json.loads(symfile.read_text()).items()}
+        self.folders = "fm_init" in self.sym
+        self.repitch = "hook_register" in self.sym
+        self.patched = self.folders
         self.loadbank = []
         self.screen = []
         self.events = []
         self.b.stub(LOAD_BANK, self._loadbank)
         self.b.stub(SCREEN_SWITCH, lambda b: self.screen.append((b.arg(0), b.arg(1))))
         self.b.boot()
-        if self.patched:
+        if self.folders:
             self.b.call(self.sym["fm_init"])
         self.fill_dtcm()
 
@@ -249,6 +252,110 @@ def t_stock_group_fallback(bench, res):
     bench.press_load("_Test")
     res.check(len(bench.load_ok()) == 1, "group row: stock loads a fallback preset")
     res.check(bench.current() == "Alpha", f"fallback preset is {bench.current()!r} (the stock bug)")
+
+
+# ---- clip-repitch tests (3.1.U; stock listing, no folder hooks)
+ID_REPITCH = 0x19C
+PARAM_REGISTER_ALL = 0x0808C158
+PARAM_XML_NAME = 0x0808E33C
+PARAM_TITLE = 0x0808E220
+PARAM_SET = 0x08093ECC
+PARAM_GET = 0x08093E9C
+REG_PTR = 0x2401F4FC
+BAG_SCRATCH = 0x2001C800
+BAG_PAIRS = 0x2001C840
+CLIP_POS = 0x080EF990
+SAMPLE_POS = 0x080EFC60
+
+
+def _u16s(img, va, n):
+    off = va - bd.BASE
+    return [int.from_bytes(img[off + i * 2:off + i * 2 + 2], "little") for i in range(n)]
+
+
+def t_repitch_pos_id(bench, res):
+    img = bench.b.image
+    clip = _u16s(img, CLIP_POS, 6)
+    res.check(clip == [0x8D, 0xD2, 0x47, 0x94, ID_REPITCH, 0], f"Clip Pos ids {clip}")
+    sample = _u16s(img, SAMPLE_POS, 8)
+    res.check(ID_REPITCH not in sample, f"Sample Pos unchanged {sample}")
+
+
+def t_repitch_registry(bench, res):
+    if bench.b.u32(REG_PTR) == 0:
+        bench.b.call(PARAM_REGISTER_ALL, 0)
+    res.check(bench.b.u32(REG_PTR) != 0, "param registry allocated")
+    name = bench.b.call(PARAM_XML_NAME, ID_REPITCH)
+    title = bench.b.call(PARAM_TITLE, ID_REPITCH)
+    res.check(name != 0 and bench.b.cstr(name) == "repitch", f"xml name {name:#x}")
+    res.check(title != 0 and bench.b.cstr(title) == "Repitch:", f"title {title:#x}")
+
+
+def t_repitch_set_insert(bench, res):
+    b = bench.b
+    b.w32(BAG_SCRATCH + 4, BAG_PAIRS)
+    b.mu.mem_write(BAG_SCRATCH + 10, b"\x00\x00\x10\x00")
+    got = b.call(PARAM_GET, BAG_SCRATCH, ID_REPITCH)
+    res.check(got == 0, f"empty bag get {got}")
+    b.call(PARAM_SET, BAG_SCRATCH, ID_REPITCH, 1)
+    got = b.call(PARAM_GET, BAG_SCRATCH, ID_REPITCH)
+    res.check(got == 1, f"set-insert 0x19C -> {got}")
+    b.call(PARAM_SET, BAG_SCRATCH, ID_REPITCH, 0)
+    got = b.call(PARAM_GET, BAG_SCRATCH, ID_REPITCH)
+    res.check(got == 0, f"set existing 0x19C -> {got}")
+
+
+def t_repitch_clip_flag(bench, res):
+    b = bench.b
+    clip = 0x2001C800
+    tempo = 0x2001CC00
+    msg = 0x2001CD00
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(tempo, b"\x00" * 0x20)
+    b.mu.mem_write(msg, b"\x00" * 0x18)
+    b.w32(clip + 0x18, 0x100)
+    b.w32(msg + 0xC, ID_REPITCH)
+    b.w32(msg + 0x10, 1)
+    b.call(bench.sym["state_init"])
+    b.call(0x08067648, clip, tempo, msg, 0)
+    flag = b.u8(clip + 0xBB1)
+    res.check(flag == 1, f"clip +0xBB1 is {flag}")
+    b.w32(msg + 0x10, 0)
+    b.call(0x08067648, clip, tempo, msg, 0)
+    flag = b.u8(clip + 0xBB1)
+    res.check(flag == 0, f"clip +0xBB1 cleared {flag}")
+
+
+def t_repitch_main_rate_preserves_r3(bench, res):
+    """hook_main_rate must leave r3 alone: it is the grain pointer at 0x08065756."""
+    b = bench.b
+    clip = 0x2001C800
+    grain = 0x2001D000
+    A = bd.A
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(grain, b"\x00" * 0x80)
+    b.mu.reg_write(A.UC_ARM_REG_R3, grain)
+    b.mu.reg_write(A.UC_ARM_REG_R4, clip)
+    b.mu.reg_write(A.UC_ARM_REG_S15, 0x40000000)  # 2.0
+    b.mu.reg_write(A.UC_ARM_REG_SP, bd.BENCH_SP)
+    b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
+    b.mu.emu_start(bench.sym["hook_main_rate"] | 1, bd.STOP, count=200)
+    r3 = b.mu.reg_read(A.UC_ARM_REG_R3)
+    stored = b.u32(grain + 0x48)
+    res.check(r3 == grain, f"r3 clobbered to {r3:#x}")
+    res.check(stored == 0x40000000, f"stretch rate {stored:#x}")
+    b.mu.mem_write(clip + 0xBB1, b"\x01")
+    b.w32(clip + 0xBB4, 0x3F000000)  # 0.5
+    b.mu.reg_write(A.UC_ARM_REG_R3, grain)
+    b.mu.reg_write(A.UC_ARM_REG_R4, clip)
+    b.mu.reg_write(A.UC_ARM_REG_S15, 0x40000000)
+    b.mu.reg_write(A.UC_ARM_REG_SP, bd.BENCH_SP)
+    b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
+    b.mu.emu_start(bench.sym["hook_main_rate"] | 1, bd.STOP, count=200)
+    r3 = b.mu.reg_read(A.UC_ARM_REG_R3)
+    stored = b.u32(grain + 0x48)
+    res.check(r3 == grain, f"r3 clobbered on repitch {r3:#x}")
+    res.check(stored == 0x3F800000, f"repitch rate {stored:#x}")
 
 
 # ---- patched-only tests
@@ -520,11 +627,19 @@ def main():
     args = ap.parse_args()
     image = args.image
     probe = open(image, "rb").read()
-    patched = probe[VERSION_OFF] != ord("9")
-    print(f"image {image} version byte {chr(probe[VERSION_OFF])!r} ({'patched' if patched else 'stock'})")
+    sym = {}
+    if probe[VERSION_OFF] != ord("9"):
+        p = Path(image).with_suffix(".sym.json")
+        if p.exists():
+            sym = json.loads(p.read_text())
+    folders = "fm_init" in sym
+    repitch = "hook_register" in sym
+    kind = "folders" if folders else "repitch" if repitch else "stock"
+    print(f"image {image} version byte {chr(probe[VERSION_OFF])!r} ({kind})")
     res = Result()
     cases = [("list top level", t_list_top), ("load a real preset", t_load_real)]
-    if patched:
+    write_cases = []
+    if folders:
         cases += [
             ("enter a group folder", t_enter_group),
             ("nested load and sample paths", t_nested_load_and_samples),
@@ -548,9 +663,17 @@ def main():
         ]
     else:
         cases += [("stock group-row fallback", t_stock_group_fallback)]
+        if repitch:
+            cases += [
+                ("Clip Pos has Repitch", t_repitch_pos_id),
+                ("repitch registry name", t_repitch_registry),
+                ("repitch set inserts missing id", t_repitch_set_insert),
+                ("repitch clip-engine flag", t_repitch_clip_flag),
+                ("repitch grain store keeps r3", t_repitch_main_rate_preserves_r3),
+            ]
     for name, fn in cases:
         run_case(image, name, fn, res)
-    if patched:
+    if write_cases:
         for name, fn, tree in write_cases:
             run_case(image, name, fn, res, tree=tree, writes=True)
     print(f"\n{res.passed} passed, {res.failed} failed")

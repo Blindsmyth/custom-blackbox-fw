@@ -153,3 +153,16 @@ address,name,comment
 0x080A1718,App_HandleUiEvent,UI event handler; case 0x18/0xD8 = preset Load button (LoadBank flag 1 + screen 2)
 0x0809EAEC,App_SetScreen,(app, screen, 0, 0); 2 after a Load press
 0x08091B3A,PresetMgr_EvtListDone,posts event 0x11
+0x0808C158,Param_RegisterAll,500 x 0x1C slots; pointer 0x2401F4FC; last stock id 0x19B
+0x0808C0D8,Param_RegisterEnum,(ctx, id, title, labels, n, xmlname)
+0x0808E220,Param_Title,registry[id].title; 0 if slot empty
+0x0808E33C,Param_XmlName,registry[id].xml; 0 if slot empty
+0x08098D40,InfoPage_Build,walks ushort id tables; page stride 0x48
+0x080EF240,ClipInfoTable_type4c,data; type-0x4C Clip pages
+0x080EF290,ClipPosSlot5_type4c,data; zero; fifth Pos id on the type-0x4C Clip copy
+0x080EF948,ClipInfoTable,data; type-0x48 pad Clip pages (Main/Pos/LFO/Conf)
+0x080EF998,ClipPosSlot5,data; zero; fifth Pos id on a Clip pad (0x19C in 3.1.U)
+0x080640d0,Clip_ctor,type-0x4C Clip/Slicer engine; malloc 3000 (0xBB8); stock through +0xBB0
+0x08064A94,Clip_RecalcRates,writes +0x258 and +0xBA8/+0xBAC/+0xBB0
+0x08065550,Clip_StartGrain,main rate store vstr s15,[r3,#0x48] at 0x08065756 (r3=grain, r4=clip)
+0x08067648,Clip_ApplyParam,msg 0x39; cellmode 0x8B sets +0x29 and slicer flag +0x254
