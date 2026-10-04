@@ -352,12 +352,18 @@ def t_back(bench, res):
     res.check(bench.browse() == "Presets", f"BACK reaches {bench.browse()!r}")
     res.check(bench.back(), "BACK at the top leaves the screen")
     res.check(bench.browse() == "Presets", "browse path stays at Presets")
-    # Hardware BACK is event type 0x7f (not type-2 key 0x7f). folder_back is shared.
+    # Hardware BACK is HandleInput type 7. hook_type7 is a bl that can leave
+    # that function's frame, so the bench only calls folder_back.
     bench.press_load("/_Test")
     res.check(bench.b.call(bench.sym["folder_back"]) == 0, "folder_back pops a level")
     bench.pump()
     res.check(bench.browse() == "Presets", f"folder_back browse {bench.browse()!r}")
     res.check(bench.b.call(bench.sym["folder_back"]) == 1, "folder_back at the top is a no-op")
+    bench.press_load("/_Test")
+    bench.b.reads = 0
+    bench.press_load("..")
+    res.check(bench.browse() == "Presets", f"cached BACK browse {bench.browse()!r}")
+    res.check(bench.b.reads < 100, f"cached BACK reads {bench.b.reads}")
 
 
 def diff(before, after):

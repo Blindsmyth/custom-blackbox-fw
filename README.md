@@ -1,6 +1,6 @@
 # Blackbox preset folders
 
-A patch for 1010music **blackbox** firmware **3.1.9** that adds nested folders to the preset browser. The menu version reads **3.1.U**.
+A patch for 1010music **blackbox** firmware **3.1.9** that adds nested folders to the preset browser. The menu version reads **3.1.V**.
 
 Stock 3.1.9 lists one level of `\Presets`. A folder without its own `preset.xml` cannot be opened; Load falls through to some other preset. This patch treats those folders as groups:
 

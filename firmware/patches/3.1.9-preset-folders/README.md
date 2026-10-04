@@ -1,6 +1,6 @@
-# 3.1.Q preset folders
+# 3.1.V preset folders
 
-This image is built from stock 3.1.9, and the menu version reads `3.1.Q`. New code is appended at `0x080F1E80`, so the file is longer than stock. Stock `firmware/bins/3.1.9/BLACKBOX.bin` and the `3.1.H` test image are unchanged.
+This image is built from stock 3.1.9, and the menu version reads `3.1.V`. New code is appended at `0x080F1E80`, so the file is longer than stock. Stock `firmware/bins/3.1.9/BLACKBOX.bin` and the `3.1.H` test image are unchanged.
 
 Earlier images are superseded. Do not reinstall them:
 
@@ -9,8 +9,9 @@ Earlier images are superseded. Do not reinstall them:
 - 3.1.N: browsing into a group worked, but Save As, Delete, Rename, New and Clean still used the loaded preset's folder.
 - 3.1.O: those commands used the browsed folder, but the `/` marker re-checked every row on the list-refresh timer and crashed the unit, including on the pads screen.
 - 3.1.P: cached the marks, but the hardware BACK button did nothing in the preset list (only Load on `..` went up).
+- 3.1.Q–T: guessed widget event `0x7F` or `SetScreen` on screen `0x2B`. Hardware BACK is `App_HandleInput` type 7 (PC2) on every screen, so those hooks never ran.
 
-3.1.Q has no logger. Card writes only come from the stock Save / Delete / Rename / New / Clean handlers; the hooks choose the folder those handlers act on. Group marks are cached after the first list build for a folder. Hardware BACK goes up one folder. It passes the off-device bench (`tools/bench/run_tests.py`, 128 checks) before going near the device. Design and addresses: [docs/preset-folders.md](../../../docs/preset-folders.md).
+3.1.V restores the parent `/` mark cache (going up is not a full rescan) and hooks the PC2 GPIO read in the button scan, so BACK does not depend on a screen id or HandleInput type. Nested BACK posts `..` when the list starts with it. Card writes only come from the stock Save / Delete / Rename / New / Clean handlers. Design and addresses: [docs/preset-folders.md](../../../docs/preset-folders.md).
 
 ## What it does
 
@@ -35,7 +36,7 @@ Known limits:
 1. Copy stock `firmware/bins/3.1.9/BLACKBOX.bin` onto the card under another name, for example `BLACKBOX-3.1.9-stock.BIN`. The installer ignores that name.
 2. Copy this `BLACKBOX.BIN` to the root of the card.
 3. Power on holding BACK and INFO. Wait until it finishes and reboots.
-4. The Pads / Keys / Presets / Tools screen should show `3.1.Q`.
+4. The Pads / Keys / Presets / Tools screen should show `3.1.V`.
 
 To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO again.
 

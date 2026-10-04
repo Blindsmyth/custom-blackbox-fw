@@ -1,4 +1,4 @@
-@ 3.1.Q: group folders in the 3.1.9 preset browser.
+@ 3.1.V: group folders in the 3.1.9 preset browser.
 @
 @ State lives in SRAM4 at 0x38000000 (reset by fm_boot each boot). Not DTCM: stock's small-block
 @ allocator (0x080443A8) hands out DTCM from 0x20000000 upward. SRAM4 has no stock references and
@@ -38,7 +38,11 @@
 .equ S_GNAMES,    0x828
 .equ GNLEN,       64
 .equ GMAX,        128
-.equ S_SIZE,      0x2828
+.equ S_PVALID,    0x2828
+.equ S_PGCNT,     0x282C
+.equ S_PPATH,     0x2830
+.equ S_PGNAMES,   0x2930
+.equ S_SIZE,      0x4930
 
 .equ PM,          0x2401F508
 .equ SD,          0x240021A4
@@ -75,11 +79,15 @@
 .equ UI_POST_UP,  0x080AED15
 .equ REQUEST_LIST,0x0809067D
 .equ KEY_EXIT,    0x080BDE1F
+.equ INPUT_EPI,   0x080A3123
+.equ GPIO_READ,   0x0807B349
+.equ GPIOC,       0x58020800
 .equ FSTAT,       0x0808724B
 .equ STRCMP,      0x080C8DC5
 .equ STRNCPY,     0x080C8B87
 .equ STRLEN,      0x080C8E11
 .equ MEMSET,      0x080C8D5F
+.equ MEMCPY,      0x080C8D0D
 
 .macro call addr
     ldr r12, =\addr
@@ -138,12 +146,17 @@ is_top:
     pop {r3, pc}
 
 @ Drops the last component of the browse path, never going above "Presets".
-@ r0 = path.
+@ r0 = path. Going up a browse level restores the parent folder's / marks.
 .thumb_func
 pop_comp:
-    push {r4, lr}
+    push {r4, r5, lr}
     mov r4, r0
-    bl cache_inval
+    ldr r0, =STATE
+    add r0, #S_BROWSE
+    cmp r4, r0
+    ite eq
+    moveq r5, #1
+    movne r5, #0
     mov r0, r4
     call STRLEN
 1:
@@ -156,11 +169,15 @@ pop_comp:
     blt 2f
     movs r1, #0
     strb r1, [r4, r0]
-    pop {r4, pc}
+    b 3f
 2:
     mov r0, r4
-    pop {r4, lr}
-    b set_presets
+    bl set_presets
+3:
+    cbz r5, 4f
+    bl cache_restore
+4:
+    pop {r4, r5, pc}
 
 @ Appends "\name" to the path if it fits. r0 = path, r1 = name. Returns r0 = 1 on success.
 .thumb_func
@@ -172,7 +189,8 @@ push_comp:
     add r0, #S_BROWSE
     cmp r4, r0
     bne 0f
-    bl cache_inval
+    bl cache_save
+    bl cache_clear
 0:
     mov r0, r4
     call STRLEN
@@ -211,15 +229,83 @@ copy_name:
     mov r0, r4
     pop {r4, pc}
 
-@ Drops the group-name cache so the next BuildList will f_stat again. Clobbers r0-r3, r12.
+@ Drops the current group-name cache. Clobbers r0-r3, r12.
 .thumb_func
-cache_inval:
+cache_clear:
     push {lr}
     bl ensure
     movs r1, #0
     strb r1, [r0, #S_CVALID]
     str r1, [r0, #S_GCNT]
     pop {pc}
+
+@ Current plus parent slot (rename / delete / new). Clobbers r0-r3, r12.
+.thumb_func
+cache_inval:
+    push {r4, lr}
+    bl cache_clear
+    bl ensure
+    movs r1, #0
+    ldr r2, =S_PVALID
+    strb r1, [r0, r2]
+    pop {r4, pc}
+
+@ Copy current marks into the parent slot before entering a folder.
+.thumb_func
+cache_save:
+    push {r4, lr}
+    bl ensure
+    mov r4, r0
+    movs r1, #1
+    ldr r2, =S_PVALID
+    strb r1, [r4, r2]
+    ldr r1, [r4, #S_GCNT]
+    ldr r2, =S_PGCNT
+    str r1, [r4, r2]
+    ldr r2, =S_PPATH
+    add r0, r4, r2
+    add r1, r4, #S_BROWSE
+    movs r2, #0xff
+    call STRNCPY
+    ldr r2, =S_PGNAMES
+    add r0, r4, r2
+    add r1, r4, #S_GNAMES
+    mov.w r2, #0x2000
+    call MEMCPY
+    pop {r4, pc}
+
+@ After pop_comp the browse path is the parent. Reuse its marks if we saved them.
+.thumb_func
+cache_restore:
+    push {r4, lr}
+    bl ensure
+    mov r4, r0
+    ldr r2, =S_PVALID
+    ldrb r1, [r4, r2]
+    cbz r1, 1f
+    ldr r2, =S_PPATH
+    add r0, r4, r2
+    add r1, r4, #S_BROWSE
+    call STRCMP
+    cbnz r0, 1f
+    ldr r2, =S_PGCNT
+    ldr r1, [r4, r2]
+    str r1, [r4, #S_GCNT]
+    movs r1, #1
+    strb r1, [r4, #S_CVALID]
+    add r0, r4, #S_GNAMES
+    ldr r2, =S_PGNAMES
+    add r1, r4, r2
+    mov.w r2, #0x2000
+    call MEMCPY
+    add r0, r4, #S_CPATH
+    add r1, r4, #S_BROWSE
+    movs r2, #0xff
+    call STRNCPY
+    pop {r4, pc}
+1:
+    bl cache_clear
+    pop {r4, pc}
 
 @ r0 = name. Returns r0 = 1 when the name is in the group cache.
 .thumb_func
@@ -824,24 +910,33 @@ hook_ui_load:
     add sp, #0x100
     pop {r4, r5, r6, pc}
 
-@ Pops one browse component and asks pcmStreamer to rebuild the list (UI-task safe).
-@ Returns r0 = 0 when it went up, 1 when already at the top.
+@ Posts the same cmd 0x30 as Load on "..". Uses the displayed list (row 0 is
+@ "..") so it still works if S_BROWSE was reset. Returns 0 if it posted.
 .thumb_func
 folder_back:
     push {r4, lr}
-    bl ensure
-    add r0, r0, #S_BROWSE
-    bl is_top
-    cbnz r0, 1f
-    bl ensure
-    add r0, r0, #S_BROWSE
-    bl pop_comp
+    sub sp, #0x100
     ldr r0, =PM
-    call REQUEST_LIST
+    add r0, r0, #0x32C
+    movs r1, #0
+    mov r2, sp
+    call LIST_GET
+    cbz r0, 1f
+    mov r0, sp
+    mov r1, sp
+    bl copy_name
+    ldr r1, =s_dotdot
+    call STRCMP
+    cbnz r0, 1f
+    ldr r0, =s_dotdot
+    movs r1, #0
+    bl post_check
     movs r0, #0
+    add sp, #0x100
     pop {r4, pc}
 1:
     movs r0, #1
+    add sp, #0x100
     pop {r4, pc}
 
 @ Replaces ui_post_event_up for type-2 key 0x7f. Uses RequestList, not cmd 0x30: BACK
@@ -858,9 +953,49 @@ hook_back:
     ldr r12, =UI_POST_UP
     bx r12
 
+@ Replaces add.w r5, r0, #0x8000 at the start of App_HandleInput type 7.
+@ Type 7 is hardware BACK (PC2) on every screen. Nested: post .. and leave
+@ HandleInput (do not call from the bench). At the top: stock type-7 path.
+.thumb_func
+hook_type7:
+    push {r0, r1, r2, r3, r4, lr}
+    bl folder_back
+    cmp r0, #0
+    pop {r0, r1, r2, r3, r4, lr}
+    bne 1f
+    ldr r12, =INPUT_EPI
+    bx r12
+1:
+    add.w r5, r0, #0x8000
+    bx lr
+
+@ Replaces HAL_GPIO_ReadPin in the 13-button scan. On a PC2 falling edge
+@ (hardware BACK), post .. if the list starts with it. Stock still enqueues.
+.thumb_func
+hook_gpio:
+    push {r1, r2, r3, r4, lr}
+    ldr r12, =GPIO_READ
+    blx r12
+    ldr r1, [r4]
+    ldr r2, =GPIOC
+    cmp r1, r2
+    bne 1f
+    ldrh r1, [r4, #4]
+    cmp r1, #4
+    bne 1f
+    cbnz r0, 1f
+    ldrb r1, [r4, #0xe]
+    cbz r1, 1f
+    push {r0}
+    bl folder_back
+    pop {r0}
+1:
+    pop {r1, r2, r3, r4, lr}
+    bx lr
+
 @ Replaces the unhandled-event return in preset_screen_key (movs r0,#1; b epilogue).
-@ Hardware BACK arrives as event type 0x7f, not as a type-2 key, so hook_back never ran.
-@ r3 = event type, r1 = event, r4 = widget. Jumps to the function epilogue.
+@ Entered with b.w, not bl: a bl would leave an extra return address.
+@ r3 = event type, r4 = widget.
 .thumb_func
 hook_back_evt:
     cmp r3, #0x7f
