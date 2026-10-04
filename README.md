@@ -1,100 +1,37 @@
-# Blackbox Firmware Research and Mods
+# Blackbox preset folders
 
-Reverse-engineering notes for 1010music **blackbox** 3.1.9 and a patched build, **3.1.Q**, that adds group folders to the preset browser ([firmware/patches/3.1.9-preset-folders/](firmware/patches/3.1.9-preset-folders/)). For research on hardware you own.
+A patch for 1010music **blackbox** firmware **3.1.9** that adds nested folders to the preset browser. The menu version reads **3.1.U**.
 
-**Not affiliated with, endorsed by, or supported by 1010music.** This repository does not contain 1010music's firmware. You supply your own copy, downloaded from [1010music.com/downloads](https://1010music.com/downloads), and patch it yourself. Use at your own risk: running modified firmware may affect your warranty. Do not ask 1010music for support on a modded unit; flash stock first.
+Stock 3.1.9 lists one level of `\Presets`. A folder without its own `preset.xml` cannot be opened; Load falls through to some other preset. This patch treats those folders as groups:
 
-**Do not add to this repo, issues, or pull requests:** 1010music firmware or patched `BLACKBOX.BIN` images, 1010music manuals or artwork, or full disassemblies of the stock image. Stock ZIPs, extracted bins, Gamechanger packages, and built patch images stay on your machine under `firmware/` (gitignored). Verify downloads against `firmware/manifest.json`.
+- A group is listed with a leading `/`. Load on it stays on the preset screen and shows its contents.
+- Inside a group, `..` and the BACK key go up one level. Neither goes above `\Presets`.
+- Groups can be nested (`\Presets\Kits\Drums\808\preset.xml`).
+- Save As, New, Rename, Delete and Clean act on the folder you are browsing. Plain Save and Pack still write next to the loaded preset.
+
+Details, limits, and how to flash: [firmware/patches/3.1.9-preset-folders/README.md](firmware/patches/3.1.9-preset-folders/README.md). Design: [docs/preset-folders.md](docs/preset-folders.md).
+
+**Not affiliated with, endorsed by, or supported by 1010music.** This repository does not contain 1010music's firmware. Download 3.1.9 from [1010music.com/downloads](https://1010music.com/downloads), put `BLACKBOX.bin` in `firmware/bins/3.1.9/`, and check the sha256 in `firmware/manifest.json`. Built images stay local and are gitignored. Running modified firmware may affect your warranty. Flash stock before asking 1010music for support.
+
+## Build
+
+```
+.venv/bin/python firmware/patches/3.1.9-preset-folders/build_patch.py
+.venv/bin/python tools/bench/run_tests.py --image firmware/patches/3.1.9-preset-folders/BLACKBOX.BIN
+```
+
+Needs a Python venv with `unicorn` and `capstone`, plus `clang`, `dosfstools`, and `mtools`. How the patch was made: [docs/workflow.md](docs/workflow.md).
 
 ## Layout
 
 ```
-firmware/
-  zips/           original downloaded ZIP packages (local only)
-  bins/<ver>/     extracted BLACKBOX.BIN (or .bin) per version (local only)
-  gamechanger/    Gamechanger for Blackbox extract (local only)
-  patches/        patch sources + build scripts; BLACKBOX.BIN output is local only
-  manifest.json   versions, URLs, sizes, sha256 hashes
-docs/
-  map-319.md      firmware map: memory, RTOS tasks, FatFs config, PresetMgr
-  preset-folders.md  design and bench results of the folder patch
-  versions.md     comparison across versions
-  symbols/        function names per version (applied to Ghidra)
-  decomp/3.1.9/   curated decompiled functions
-tools/
-  ghidra_import.sh, ghidra/   headless Ghidra import, naming and export
-  decomp.py, carry_names.py   query exports, carry names across versions
-  bench/          Unicorn test bench: runs firmware code against a FAT32 card image
-CHANGELOG.md      merged history + per-release notes
+firmware/patches/3.1.9-preset-folders/   cave.S, build script, patch notes
+firmware/bins/3.1.9/                     stock BLACKBOX.bin (local only)
+firmware/manifest.json                   version hashes
+docs/                                    firmware map, design, workflow
+tools/                                   Ghidra import and Unicorn bench
 ```
 
-## Local firmware setup
-
-1. Download the ZIP for each version you need (see Sources and `manifest.json`).
-2. Place ZIPs in `firmware/zips/` using the filenames listed below.
-3. Extract `BLACKBOX.BIN` / `BLACKBOX.bin` into `firmware/bins/<ver>/`.
-4. Check sha256 against `firmware/manifest.json`.
-
-Patch builds write `firmware/patches/<name>/BLACKBOX.BIN` locally; that file is gitignored.
-
-## Modding workflow
-
-The full write-up is in [docs/workflow.md](docs/workflow.md).
-
-1. **Map before patching.** Import the image into Ghidra headless (`tools/ghidra_import.sh <ver>`) at base `0x08040000` with the STM32H7 memory map. Name functions in `docs/symbols/<ver>.csv` and record the facts with evidence in `docs/map-319.md`: library config, tasks, RAM use, and object layouts.
-2. **Design from the map.** File I/O only runs from the task that owns FatFs (pcmStreamer). UI-task hooks only touch RAM and post commands. Patch code never writes to the card. Patch state lives in RAM that nothing in stock firmware uses, and that includes computed addresses, not just literals.
-3. **Build** with `firmware/patches/<name>/build_patch.py`. It assembles `cave.S` with clang, links it at `0x080F1E80` (past the end of the stock image), checks the stock bytes at every hook site, patches branches, and sets the version letter.
-4. **Bench before the device.** Run `tools/bench/run_tests.py --image <bin>` on both the stock and the patched image. It runs the real firmware functions in Unicorn against a FAT32 image. Read-only tests write-protect the card; Save / Delete / Rename / New / Clean tests allow writes and check the exact files that changed. Every test ends with `fsck.fat -n`.
-5. **Install** only through the SD installer: `BLACKBOX.BIN` in the card root, then power on holding BACK+INFO. Keep a stock copy on the card under another name. Never use SWD and never touch the bootloader.
-6. **When the device disagrees with the bench,** find what the bench skips, add a test that reproduces the failure, and only then fix it.
+Do not commit 1010music firmware, patched `BLACKBOX.BIN` images, manuals, artwork, or a full disassembly of the stock image.
 
 AI (Cursor) assisted with the reverse engineering, tools, patches and docs.
-
-## Sources
-
-- Forum index (requires login): https://forum.1010music.com/forum/tabletop-instruments/firmware-downloads-aa/blackbox-firmware-downloads
-- Official current firmware page: https://1010music.com/downloads (3.1.9)
-- History 2019 / 2020 threads linked in `manifest.json`
-
-## Expected local packages (22)
-
-Filenames and sizes match `firmware/manifest.json`. None of these are shipped in git.
-
-- **gamechanger-0.1.2** — `gamechanger012.zip` → `BLACKBOX.BIN` (389884 bytes)
-- **1.0.2** — `Blackbox102.zip` → `BLACKBOX.BIN` (468776 bytes)
-- **1.0.6** — `Blackbox106.zip` → `BLACKBOX.BIN` (465796 bytes)
-- **1.1.1-beta** — `Blackbox111.zip` → `BLACKBOX.BIN` (483408 bytes)
-- **1.2.2-beta** — `blackbox122.zip` → `BLACKBOX.BIN` (581988 bytes)
-- **1.3.5-beta** — `blackbox135.zip` → `BLACKBOX.BIN` (591792 bytes)
-- **1.3.6** — `blackbox136.zip` → `BLACKBOX.BIN` (591552 bytes)
-- **1.4.0** — `blackbox140.zip` → `BLACKBOX.BIN` (602884 bytes)
-- **1.4.3** — `blackbox143.zip` → `BLACKBOX.BIN` (604340 bytes)
-- **1.5.1** — `blackbox151.zip` → `BLACKBOX.BIN` (558940 bytes)
-- **1.6.5** — `blackbox165.zip` → `BLACKBOX.BIN` (581780 bytes)
-- **1.7.4** — `blackbox174.zip` → `BLACKBOX.BIN` (611068 bytes)
-- **1.7.F** — `blackbox17f.zip` → `BLACKBOX.BIN` (633148 bytes)
-- **2.0.E** — `BLACKBOX20E.zip` → `BLACKBOX.bin` (666348 bytes)
-- **2.1.5** — `BLACKBOX215.zip` → `BLACKBOX.bin` (672164 bytes)
-- **2.1.5L** — `BLACKBOX215L.zip` → `BLACKBOX.bin` (671740 bytes)
-- **2.9.1-beta** — `BLACKBOX291.zip` → `BLACKBOX.bin` (684428 bytes)
-- **3.0.1** — `BLACKBOX301.zip` → `BLACKBOX.bin` (689404 bytes)
-- **3.0.9** — `BLACKBOX309.zip` → `BLACKBOX.bin` (691452 bytes)
-- **3.0.15-beta** — `BLACKBOX3015.zip` → `BLACKBOX.bin` (695968 bytes)
-- **3.1.2** — `BLACKBOX312.zip` → `BLACKBOX.bin` (695920 bytes)
-- **3.1.9** — `blackbox-3.1.9.zip` → `BLACKBOX.bin` (728696 bytes)
-
-## Missing / dead links
-
-- **1.9-beta** — ZIP download removed from thread (only upgrade guide PDF remains); forum points users to 2.1.5 thread
-- **1.7.0** — Linked ZIP returns 404; 1.7.4 and 1.7.F from same thread are listed in the manifest
-- **1.4.1** — Linked ZIP returns 404; 1.4.0 and 1.4.3 are listed in the manifest
-
-## How the local archive was built
-
-1. Crawled each firmware release thread on the retired 1010music forum (authenticated session).
-2. Downloaded ZIP packages from `1010music.com/wp-content/uploads/...`.
-3. Extracted `BLACKBOX.BIN` / `BLACKBOX.bin` into versioned folders.
-4. Hashed each ZIP and BIN into `firmware/manifest.json`.
-5. Merged history threads + per-thread notes into `CHANGELOG.md`.
-
-Forum is retired (read-only); grab archives while downloads still resolve. Do not publish the binaries.
