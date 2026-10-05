@@ -161,7 +161,11 @@ address,name,comment
 0x080EF240,ClipInfoTable_type4c,data; type-0x4C Clip pages
 0x080EF290,ClipPosSlot5_type4c,data; zero; fifth Pos id on the type-0x4C Clip copy
 0x080EF948,ClipInfoTable,data; type-0x48 pad Clip pages (Main/Pos/LFO/Conf)
-0x080EF998,ClipPosSlot5,data; zero; fifth Pos id on a Clip pad (0x19C in 3.1.U)
+0x080EF998,ClipPosSlot5,data; zero; fifth Pos id on a Clip pad (0x19C in 3.1.W)
+0x080EF7E0,SlicerInfoTable,data; type-0x48 pad Slicer pages
+0x080EF836,SlicerPosSlot8,data; zero; eighth Pos id on a Slicer pad (0x19C in 3.1.W)
+0x080EF0D8,SlicerInfoTable_type4c,data; type-0x4C Slicer pages
+0x080EF12E,SlicerPosSlot8_type4c,data; zero; eighth Pos id on the type-0x4C Slicer copy
 0x080640d0,Clip_ctor,type-0x4C Clip/Slicer engine; malloc 3000 (0xBB8); stock through +0xBB0
 0x08064A94,Clip_RecalcRates,writes +0x258 and +0xBA8/+0xBAC/+0xBB0
 0x08065550,Clip_StartGrain,main rate store vstr s15,[r3,#0x48] at 0x08065756 (r3=grain, r4=clip)

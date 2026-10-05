@@ -1,22 +1,7 @@
-@ 3.1.W: Clip and Slicer Repitch enum on stock 3.1.9.
-@
-@ UI / XML: register id 0x19C (repitch), put it in the pad bag, show it on
-@ the Pos tab for Clip (fifth row) and Slicer (eighth row). Save/load is
-@ the stock named-bag dump.
-@
-@ Audio: Clip playback is the type-0x4C engine, malloc 3000 (0xBB8).
-@ Stock uses through +0xBB0 (dirty). +0xBB1/+0xBB4 are padding.
-@ FUN_08065550 stores the rate at grain+0x48 with r3 = grain
-@ (0x08065756). That hook must not clobber r3. 0x19C lives at +0xBB1;
-@ tempo/original scale at +0xBB4 after FUN_08064a94.
-
-.syntax unified
-.thumb
-.cpu cortex-m7
-.fpu fpv5-sp-d16
-
-.equ STATE,       0x38000000
-.equ MAGIC,       0x52505431
+@ Clip/Slicer Warp (id 0x19C). SRAM4 after the folder block so fm_init's
+@ memset of S_SIZE (0x4930) does not wipe it.
+.equ RP_STATE,    0x38005000
+.equ RP_MAGIC,    0x52505431
 .equ S_SAVE,      0x8
 .equ S_FLAGS,     0x10
 
@@ -34,11 +19,6 @@
 .equ CLIP_FLAG,   0xBB1
 .equ CLIP_SCALE,  0xBB4
 
-.macro call addr
-    ldr r12, =\addr
-    blx r12
-.endm
-
 .global hook_register
 .global hook_template
 .global hook_clip_def
@@ -50,10 +30,6 @@
 .global hook_grain
 .global state_init
 
-@ ---------------------------------------------------------------------------
-@ After the last stock Param_RegisterEnum (id 0x19B). Args for that call are
-@ still in r0-r3 and [sp]/[sp,#4]. Then register 0x19C the same way.
-@ ---------------------------------------------------------------------------
 .thumb_func
 hook_register:
     push    {r4, r5, r6, r7, r8, lr}
@@ -78,8 +54,8 @@ hook_register:
 
 .thumb_func
 state_init:
-    ldr     r0, =STATE
-    ldr     r1, =MAGIC
+    ldr     r0, =RP_STATE
+    ldr     r1, =RP_MAGIC
     ldr     r2, [r0]
     cmp     r1, r2
     beq     2f
@@ -95,9 +71,6 @@ state_init:
 2:
     bx      lr
 
-@ ---------------------------------------------------------------------------
-@ Last pad-template insert (id 0xDC). Append 0x19C=0 so load walks it.
-@ ---------------------------------------------------------------------------
 .thumb_func
 hook_template:
     push    {r0, r4, lr}
@@ -109,11 +82,6 @@ hook_template:
     call    PARAM_ADD
     pop     {r4, pc}
 
-@ ---------------------------------------------------------------------------
-@ Clip (beatcount=0) and Slicer (loopmode=0) branches of
-@ Cell_ApplyModeDefaults. Insert 0x19C if the bag does not already have it
-@ (do not overwrite a loaded 1). r5 is still the slot.
-@ ---------------------------------------------------------------------------
 .thumb_func
 hook_clip_def:
     push    {r0, r4, r5, r6, lr}
@@ -138,7 +106,6 @@ hook_clip_def:
     bl      flag_write
     pop     {r4, r5, r6, pc}
 
-@ r0 = cell, r1 = id. Returns 1 if the id is present (value may be 0).
 .thumb_func
 bag_has:
     ldrh    r2, [r0, #10]
@@ -159,10 +126,6 @@ bag_has:
     movs    r0, #1
     bx      lr
 
-@ ---------------------------------------------------------------------------
-@ Engine_PostParam entry. Record 0x19C, then the stolen 4 bytes, then the rest.
-@ r1 is unpacked (col | row<<8 | layer<<16).
-@ ---------------------------------------------------------------------------
 .thumb_func
 hook_post:
     push    {r0, r1, r2, r3, lr}
@@ -179,7 +142,6 @@ hook_post:
     ldr     r12, =POST_CONT
     bx      r12
 
-@ Param_Set entry. Insert 0x19C if the bag does not have it, then stock SET.
 .thumb_func
 hook_set:
     push    {r0, r1, r2, r3, lr}
@@ -199,9 +161,6 @@ hook_set:
     ldr     r12, =SET_CONT
     bx      r12
 
-@ Clip-engine param switch (FUN_08067648). Record 0x19C and return; stock
-@ ignores the id. Do not tail into 64a94 here (mode switch can call this
-@ on a clip that is still being rebuilt).
 .thumb_func
 hook_clip_param:
     push    {r0, r1, r2, r3, r4, lr}
@@ -224,9 +183,6 @@ hook_clip_param:
     ldr     r12, =CLIPP_CONT
     bx      r12
 
-@ FUN_08064a94 entry. Run stock, copy SRAM4 onto +0xBB1, then
-@ clip+0xBB4 = tempo / +0x258 when Repitch. r1 may be 0 on the
-@ early-return path (no sample yet).
 .thumb_func
 hook_rate:
     push    {r0, r1, r2, r3, r4, r5, lr}
@@ -268,8 +224,6 @@ go_stock_rate:
     ldr     r12, =RATE_CONT
     bx      r12
 
-@ Main Clip_StartGrain rate store (vstr s15, [r3, #0x48]). r3 is the grain
-@ and r4 is the clip. Do not call pack_key: it uses r3.
 .thumb_func
 hook_main_rate:
     push    {r0, lr}
@@ -285,10 +239,9 @@ hook_main_rate:
 
 @ Slicer FUN_08065290 has 10 args (6 on the stack). Do not push before the
 @ call: that shifts slice start/length and yields a click with no waveform.
-@ Swap lr and stash the clip pointer in SRAM4 instead.
 .thumb_func
 hook_grain:
-    ldr     r12, =STATE + S_SAVE
+    ldr     r12, =RP_STATE + S_SAVE
     str     r0, [r12]
     str     lr, [r12, #4]
     ldr     r12, =grain_after
@@ -300,7 +253,7 @@ hook_grain:
 
 .thumb_func
 grain_after:
-    ldr     r12, =STATE + S_SAVE
+    ldr     r12, =RP_STATE + S_SAVE
     ldr     r1, [r12]
     ldr     lr, [r12, #4]
     cmp     r0, #0
@@ -321,28 +274,26 @@ grain_after:
 1:
     bx      lr
 
-@ r0 = value, r1 = 0..15 key. No-op until state_init writes the magic.
 .thumb_func
 flag_write:
     push    {r2, r3, lr}
-    ldr     r2, =STATE
+    ldr     r2, =RP_STATE
     ldr     r3, [r2]
-    ldr     r2, =MAGIC
+    ldr     r2, =RP_MAGIC
     cmp     r3, r2
     bne     1f
-    ldr     r2, =STATE + S_FLAGS
+    ldr     r2, =RP_STATE + S_FLAGS
     uxtb    r0, r0
     uxtb    r1, r1
     strb    r0, [r2, r1]
 1:
     pop     {r2, r3, pc}
 
-@ r1 = key. Returns 0/1.
 .thumb_func
 flag_read:
-    ldr     r0, =STATE
+    ldr     r0, =RP_STATE
     ldr     r2, [r0]
-    ldr     r3, =MAGIC
+    ldr     r3, =RP_MAGIC
     cmp     r2, r3
     bne     1f
     adds    r0, #S_FLAGS
@@ -353,7 +304,6 @@ flag_read:
     movs    r0, #0
     bx      lr
 
-@ r1 unpacked (col | row<<8) -> r1 = col | (row << 2). Uses r3.
 .thumb_func
 pack_key_unpacked:
     lsr     r3, r1, #8
@@ -363,7 +313,6 @@ pack_key_unpacked:
     orr     r1, r1, r3
     bx      lr
 
-@ r1 packed ushort (col | row<<4) -> r1 = col | (row << 2). Uses r3.
 .thumb_func
 pack_key_packed:
     lsr     r3, r1, #4

@@ -9,7 +9,7 @@ Stock 3.1.9 lists one level of `\Presets`. A folder without its own `preset.xml`
 - Groups can be nested (`\Presets\Kits\Drums\808\preset.xml`).
 - Save As, New, Rename, Delete and Clean act on the folder you are browsing. Plain Save and Pack still write next to the loaded preset.
 
-Details, limits, and how to flash: [firmware/patches/3.1.9-preset-folders/README.md](firmware/patches/3.1.9-preset-folders/README.md). Design: [docs/preset-folders.md](docs/preset-folders.md).
+Details, limits, and how to flash: [firmware/patches/3.1.9-preset-folders/README.md](firmware/patches/3.1.9-preset-folders/README.md). Folders plus Clip/Slicer Warp (menu `3.1.X`): [firmware/patches/3.1.9-folders-repitch/README.md](firmware/patches/3.1.9-folders-repitch/README.md). Design: [docs/preset-folders.md](docs/preset-folders.md).
 
 **Not affiliated with, endorsed by, or supported by 1010music.** This repository does not contain 1010music's firmware. Download 3.1.9 from [1010music.com/downloads](https://1010music.com/downloads), put `BLACKBOX.bin` in `firmware/bins/3.1.9/`, and check the sha256 in `firmware/manifest.json`. Built images stay local and are gitignored. Running modified firmware may affect your warranty. Flash stock before asking 1010music for support.
 
@@ -26,6 +26,8 @@ Needs a Python venv with `unicorn` and `capstone`, plus `clang`, `dosfstools`, a
 
 ```
 firmware/patches/3.1.9-preset-folders/   cave.S, build script, patch notes
+firmware/patches/3.1.9-folders-repitch/  folders + Clip/Slicer Warp (3.1.X)
+firmware/patches/3.1.9-clip-repitch/     Warp only (3.1.W)
 firmware/bins/3.1.9/                     stock BLACKBOX.bin (local only)
 firmware/manifest.json                   version hashes
 docs/                                    firmware map, design, workflow

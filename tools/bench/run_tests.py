@@ -4,6 +4,7 @@
     .venv/bin/python tools/bench/run_tests.py --image firmware/bins/3.1.9/BLACKBOX.bin
     .venv/bin/python tools/bench/run_tests.py --image firmware/patches/3.1.9-preset-folders/BLACKBOX.BIN
     .venv/bin/python tools/bench/run_tests.py --image firmware/patches/3.1.9-clip-repitch/BLACKBOX.BIN
+    .venv/bin/python tools/bench/run_tests.py --image firmware/patches/3.1.9-folders-repitch/BLACKBOX.BIN
 
 The UI side is modelled at the PresetMgr boundary: a Load press, the pcmStreamer
 command dispatcher, and the UI event pop. SessionMgr_LoadBank and the screen switch
@@ -254,7 +255,7 @@ def t_stock_group_fallback(bench, res):
     res.check(bench.current() == "Alpha", f"fallback preset is {bench.current()!r} (the stock bug)")
 
 
-# ---- clip-repitch tests (3.1.U; stock listing, no folder hooks)
+# ---- clip-repitch tests (3.1.W; stock listing, no folder hooks)
 ID_REPITCH = 0x19C
 PARAM_REGISTER_ALL = 0x0808C158
 PARAM_XML_NAME = 0x0808E33C
@@ -265,6 +266,7 @@ REG_PTR = 0x2401F4FC
 BAG_SCRATCH = 0x2001C800
 BAG_PAIRS = 0x2001C840
 CLIP_POS = 0x080EF990
+SLICER_POS = 0x080EF828
 SAMPLE_POS = 0x080EFC60
 
 
@@ -277,6 +279,9 @@ def t_repitch_pos_id(bench, res):
     img = bench.b.image
     clip = _u16s(img, CLIP_POS, 6)
     res.check(clip == [0x8D, 0xD2, 0x47, 0x94, ID_REPITCH, 0], f"Clip Pos ids {clip}")
+    slicer = _u16s(img, SLICER_POS, 9)
+    res.check(slicer == [0x8D, 0xF2, 0xD2, 0xF3, 0xF4, 0x4E, 0xA2, ID_REPITCH, 0],
+              f"Slicer Pos ids {slicer}")
     sample = _u16s(img, SAMPLE_POS, 8)
     res.check(ID_REPITCH not in sample, f"Sample Pos unchanged {sample}")
 
@@ -288,7 +293,7 @@ def t_repitch_registry(bench, res):
     name = bench.b.call(PARAM_XML_NAME, ID_REPITCH)
     title = bench.b.call(PARAM_TITLE, ID_REPITCH)
     res.check(name != 0 and bench.b.cstr(name) == "repitch", f"xml name {name:#x}")
-    res.check(title != 0 and bench.b.cstr(title) == "Repitch:", f"title {title:#x}")
+    res.check(title != 0 and bench.b.cstr(title) == "Warp:", f"title {title:#x}")
 
 
 def t_repitch_set_insert(bench, res):
@@ -356,6 +361,67 @@ def t_repitch_main_rate_preserves_r3(bench, res):
     stored = b.u32(grain + 0x48)
     res.check(r3 == grain, f"r3 clobbered on repitch {r3:#x}")
     res.check(stored == 0x3F800000, f"repitch rate {stored:#x}")
+
+
+CLIP_GRAIN = 0x08065290
+
+
+def t_repitch_slicer_grain_stack(bench, res):
+    """hook_grain must not push before FUN_08065290: args 5-10 are on the stack."""
+    b = bench.b
+    seen = {}
+
+    def on_grain(board):
+        seen["r0"] = board.arg(0)
+        seen["r1"] = board.arg(1)
+        seen["r2"] = board.arg(2)
+        seen["r3"] = board.arg(3)
+        seen["a5"] = board.arg(4)
+        seen["a6"] = board.arg(5)
+        seen["a7"] = board.arg(6)
+        seen["a8"] = board.arg(7)
+        seen["a9"] = board.arg(8)
+        seen["a10"] = board.arg(9)
+        return 2
+
+    b.stub(CLIP_GRAIN, on_grain)
+    clip = 0x2001C800
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.w32(clip + 0xE0 + 0x48, 0x40000000)  # grain 2 rate 2.0
+    b.w32(clip + 0xE0 + 0x60, 0x12345678)
+    sp = bd.BENCH_SP - 0x20
+    stack_args = [0x51, 0x52, 0x53, 0x54, 0x55, 0x56]
+    for i, v in enumerate(stack_args):
+        b.w32(sp + i * 4, v)
+    A = bd.A
+    b.mu.reg_write(A.UC_ARM_REG_R0, clip)
+    b.mu.reg_write(A.UC_ARM_REG_R1, 0x11)
+    b.mu.reg_write(A.UC_ARM_REG_R2, 0x12)
+    b.mu.reg_write(A.UC_ARM_REG_R3, 0x13)
+    b.mu.reg_write(A.UC_ARM_REG_SP, sp)
+    b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
+    b.mu.emu_start(bench.sym["hook_grain"] | 1, bd.STOP, count=400)
+    res.check(seen.get("r0") == clip, f"grain r0 {seen.get('r0')}")
+    res.check(seen.get("r1") == 0x11, f"grain r1 {seen.get('r1')}")
+    res.check(seen.get("r2") == 0x12, f"grain r2 {seen.get('r2')}")
+    res.check(seen.get("r3") == 0x13, f"grain r3 {seen.get('r3')}")
+    res.check([seen.get(k) for k in ("a5", "a6", "a7", "a8", "a9", "a10")] == stack_args,
+              f"grain stack args {[seen.get(k) for k in ('a5', 'a6', 'a7', 'a8', 'a9', 'a10')]}")
+    r0 = b.mu.reg_read(A.UC_ARM_REG_R0)
+    res.check(r0 == 2, f"grain index {r0}")
+    res.check(b.u32(clip + 0xE0 + 0x48) == 0x40000000, "stretch leaves grain rate")
+    b.mu.mem_write(clip + 0xBB1, b"\x01")
+    b.w32(clip + 0xBB4, 0x3F000000)  # 0.5
+    b.mu.reg_write(A.UC_ARM_REG_R0, clip)
+    b.mu.reg_write(A.UC_ARM_REG_R1, 0x11)
+    b.mu.reg_write(A.UC_ARM_REG_R2, 0x12)
+    b.mu.reg_write(A.UC_ARM_REG_R3, 0x13)
+    b.mu.reg_write(A.UC_ARM_REG_SP, sp)
+    b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
+    b.mu.emu_start(bench.sym["hook_grain"] | 1, bd.STOP, count=400)
+    res.check(b.u32(clip + 0xE0 + 0x48) == 0x3F800000, "repitch scales grain rate")
+    res.check(b.u32(clip + 0xE0 + 0x60) == 0, "repitch clears stretch pad")
+    res.check(b.mu.reg_read(A.UC_ARM_REG_R0) == 2, "repitch keeps grain index")
 
 
 # ---- patched-only tests
@@ -634,7 +700,14 @@ def main():
             sym = json.loads(p.read_text())
     folders = "fm_init" in sym
     repitch = "hook_register" in sym
-    kind = "folders" if folders else "repitch" if repitch else "stock"
+    if folders and repitch:
+        kind = "folders+repitch"
+    elif folders:
+        kind = "folders"
+    elif repitch:
+        kind = "repitch"
+    else:
+        kind = "stock"
     print(f"image {image} version byte {chr(probe[VERSION_OFF])!r} ({kind})")
     res = Result()
     cases = [("list top level", t_list_top), ("load a real preset", t_load_real)]
@@ -663,14 +736,15 @@ def main():
         ]
     else:
         cases += [("stock group-row fallback", t_stock_group_fallback)]
-        if repitch:
-            cases += [
-                ("Clip Pos has Repitch", t_repitch_pos_id),
-                ("repitch registry name", t_repitch_registry),
-                ("repitch set inserts missing id", t_repitch_set_insert),
-                ("repitch clip-engine flag", t_repitch_clip_flag),
-                ("repitch grain store keeps r3", t_repitch_main_rate_preserves_r3),
-            ]
+    if repitch:
+        cases += [
+            ("Clip Pos has Repitch", t_repitch_pos_id),
+            ("repitch registry name", t_repitch_registry),
+            ("repitch set inserts missing id", t_repitch_set_insert),
+            ("repitch clip-engine flag", t_repitch_clip_flag),
+            ("repitch grain store keeps r3", t_repitch_main_rate_preserves_r3),
+            ("slicer grain keeps stack args", t_repitch_slicer_grain_stack),
+        ]
     for name, fn in cases:
         run_case(image, name, fn, res)
     if write_cases:

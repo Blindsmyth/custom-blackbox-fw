@@ -1,6 +1,6 @@
 # Nested preset folders
 
-Target: 3.1.9. The boot test is `3.1.H`. The folder image is `3.1.V` in [`firmware/patches/3.1.9-preset-folders/`](../firmware/patches/3.1.9-preset-folders/). The firmware map behind it is [map-319.md](map-319.md).
+Target: 3.1.9. The boot test is `3.1.H`. The folder image is `3.1.V` in [`firmware/patches/3.1.9-preset-folders/`](../firmware/patches/3.1.9-preset-folders/). Folders plus Clip/Slicer Warp is `3.1.X` in [`firmware/patches/3.1.9-folders-repitch/`](../firmware/patches/3.1.9-folders-repitch/). The firmware map behind it is [map-319.md](map-319.md).
 
 ## What stock 3.1.9 does
 
