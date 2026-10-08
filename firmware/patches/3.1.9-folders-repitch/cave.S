@@ -1,4 +1,4 @@
-@ 3.1.X: 3.1.V preset folders plus Clip/Slicer Warp (Repitch).
+@ 3.1.Y: 3.1.X folders + Warp, plus a 2048-slice cap (see slice.S).
 @
 @ Folder state lives in SRAM4 at 0x38000000 (reset by fm_boot each boot). Not DTCM: stock's
 @ small-block allocator (0x080443A8) hands out DTCM from 0x20000000 upward. SRAM4 has no
@@ -10,7 +10,7 @@
 @ Both paths start as "Presets", which is the stock behaviour.
 @
 @ Repitch flags sit at 0x38005000 (past S_SIZE 0x4930) so fm_init's memset does not
-@ wipe them. See repitch.S.
+@ wipe them. See repitch.S. Slice pool header is at 0x38006000 (slice.S).
 @
 @ App_Update rebuilds the preset list on a timer even on the pads screen. 3.1.O called f_stat
 @ twice per row on every rebuild (4,227 sector reads for 146 rows) on pcmStreamer's 8 KB stack.
@@ -364,6 +364,7 @@ cache_add:
 fm_boot:
     push {r0, lr}
     bl fm_init
+    bl sl_init
     pop {r0, lr}
     ldr r12, =BOOT_NEXT
     bx r12
@@ -1165,6 +1166,7 @@ s_presetxml:
 .ltorg
 
 .include "repitch.S"
+.include "slice.S"
 
 .align 2
 .ltorg

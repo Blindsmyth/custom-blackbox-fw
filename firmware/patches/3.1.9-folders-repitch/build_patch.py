@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Build the 3.1.X folders+Repitch image from stock 3.1.9. Does not modify the stock file.
+"""Build the 3.1.Y folders+Warp+2048-slices image from stock 3.1.9. Does not modify the stock file.
 
 Writes BLACKBOX.BIN, BLACKBOX.sym.json (cave symbols, used by tools/bench) and cave.dis.
-Folders: docs/preset-folders.md. Clip/Slicer Warp: docs/map-319.md.
+Folders: docs/preset-folders.md. Clip/Slicer Warp and slices: docs/map-319.md.
 """
 
 import json
 import struct
-import subprocess
+import sys
 from pathlib import Path
 
 from capstone import CS_ARCH_ARM, CS_MODE_MCLASS, CS_MODE_THUMB, Cs
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
+from cave_ld import link_cave
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -18,12 +21,12 @@ STOCK = ROOT / "firmware" / "bins" / "3.1.9" / "BLACKBOX.bin"
 OUT = HERE / "BLACKBOX.BIN"
 SYMS = HERE / "BLACKBOX.sym.json"
 CAVE_S = HERE / "cave.S"
-OBJ = HERE / "cave.o"
+OBJ = HERE / "cave.elf"
 BASE = 0x08040000
 CAVE_VA = 0x080F1E80
 CAVE_OFF = CAVE_VA - BASE
 VERSION_OFF = 0x8F294  # the '9' in "3.1.9"
-LETTER = "X"
+LETTER = "Y"
 
 # (site, cave symbol, bl?, stock bytes at the site)
 SITES = [
@@ -60,6 +63,16 @@ SITES = [
     (0x08065756, "hook_main_rate", True, "c3ed127a"), # main-path grain+0x48 store
     (0x080655E6, "hook_grain", True, "fff753fe"),     # slicer Clip_StartGrain site 1
     (0x080657E6, "hook_grain", True, "fff753fd"),     # slicer Clip_StartGrain site 2
+    (0x080667B8, "hook_lane", False, "2de9f04f"),     # per-lane render; Smooth skips grains
+    (0x0808D32C, "hook_slices_max", True, "80200190"),  # Slices knob max 128 -> 2048
+    (0x0808D10C, "hook_slice_max", True, "80230193"),   # Slice knob max 128 -> 2048
+    (0x08068B62, "hook_engine_cap", False, "7f2a38d8"), # engine insert cmp #0x7f
+    (0x08093CD0, "hook_cell_cap", False, "7f2a17d8"),   # cell add cmp #0x7f
+    (0x080967FC, "hook_save_iter", True, "fdf74ffa"),   # doc_save slice iterator
+    (0x08096884, "hook_save_bag", True, "fef750fd"),    # doc_save pad bag
+    (0x08096F42, "hook_cell_ext", True, "039c2ce0"),    # doc_open: after this cell's <slice> tags
+    (0x08099288, "hook_pad_slice", True, "b3f708fa"),   # pad apply: per-slice engine post
+    (0x08099296, "hook_pad_done", True, "0028f1d1"),    # pad apply: after slice walk
 ]
 # Load button: skip the screen switch (movs r3,#0 -> b.n 0x080A1A50, the case exit)
 SKIP_SCREEN = (0x080A1AC4, "0023", 0x080A1A50)
@@ -161,11 +174,12 @@ def load_cave(path):
 
 
 def main():
-    subprocess.check_call(["clang", "-target", "armv7em-none-eabi", "-mthumb",
-                           "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
-                           "-c", "-o", str(OBJ), str(CAVE_S)], cwd=str(HERE))
-    blob, symbols = load_cave(OBJ)
-    if len(blob) > 0x2000:
+    stretch = ROOT / "tools" / "stretch"
+    blob, symbols = link_cave(
+        [CAVE_S, stretch / "smooth.c", stretch / "smooth_fw.c",
+         stretch / "snap.c", stretch / "snap_fw.c"],
+        OBJ, CAVE_VA, includes=[stretch])
+    if len(blob) > 0xE000 or CAVE_VA + len(blob) >= 0x080FFF00:
         raise SystemExit(f"cave is unexpectedly large: {len(blob):#x}")
     stock = STOCK.read_bytes()
     image = bytearray(stock)

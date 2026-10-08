@@ -33,7 +33,7 @@ These rules came out of past failures:
 
 `firmware/patches/<name>/build_patch.py`:
 
-- assembles `cave.S` with clang and links it at `0x080F1E80`, past the end of the stock image;
+- assembles `cave.S` with clang and links it at `0x080F1E80`, past the end of the stock image (flash/RAM budget: [memory.md](memory.md));
 - checks the original bytes at every hook site and refuses to patch if any differ;
 - writes the branches into the stock code and sets the version letter;
 - confirms nothing else in the stock part changed;

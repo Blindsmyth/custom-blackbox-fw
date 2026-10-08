@@ -1,0 +1,26 @@
+---
+description: Flash and RAM constraints for 3.1.9 patches
+alwaysApply: true
+---
+
+# Memory layout
+
+Full tables: [docs/memory.md](docs/memory.md).
+
+## Flash
+
+- Code XIP from flash. Do not copy `.text` into RAM unless we deliberately start using ITCM.
+- Never write `0x08000000`–`0x0803FFFF` (installer / BACK+INFO). No SWD, no full-chip flash.
+- Cave at `0x080F1E80`. Grow upward in **bank 1** (`…`–`0x080FFFFF`, ~56 KB free). Combined 3.1.Y grows with Smooth (~3 KB of WSOLA alone on 3.1.W).
+- The cave size check in `build_patch.py` is a tripwire, not a chip limit. Raise it when a feature needs more. Do not treat it as “flash is full.”
+- Bank 2 (`0x08100000`–`0x081FFFFF`, 1 MB) is unused. Do not cross `0x08100000` until the SD installer is proven to write that far.
+
+## RAM
+
+- Patch state in **SRAM4** `0x38000000`. Folders occupy `S_SIZE` `0x4930`. Warp flags at `0x38005000`. Slice pool header at `0x38006000`. Smooth voice at `0x38007000` (~32 KB). Keep new maps out of those ranges. Magic + re-init on boot.
+- Do **not** put globals in DTCM (`0x20000000`, 3.1.M), AXI (`0x24000000`, heap/DMA), SDRAM (samples), or backup SRAM (`0x38800000`, clocks off).
+- SRAM1–3 (`0x30000000`, 288 KB): 3.1.Y uses SRAM1+2 for grown slice tables and SRAM3 for the XML `ext` scratch. Prefer SRAM4 for small headers.
+
+## Not a flash problem
+
+Unused flash (especially bank 2) is a lot of code room. Features are still bounded by FatFs (`pcmStreamer` only), no card writes from patch code, SRAM4 size, and stock UI/call sites.

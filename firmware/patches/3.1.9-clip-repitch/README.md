@@ -2,9 +2,11 @@
 
 This image is built from stock 3.1.9, and the menu version reads `3.1.W`. New code is appended at `0x080F1E80`, so the file is longer than stock. Stock `firmware/bins/3.1.9/BLACKBOX.bin` is unchanged. This does **not** include the preset-folder patch; keep those as separate images until the audio path is proven on a device.
 
-On a Clip or Slicer pad, open the control panel and the **Pos** tab (scroll list: upper encoder selects the row, lower changes it). **Warp:** is Stretch (default) or Repitch. On Clip it is the fifth row (after Sync). On Slicer it is below the existing seven Pos rows. The value is still the `repitch` attribute on the cell in `preset.xml`. Main stays two rows of four knobs. Sample and Granular lists are untouched.
+On a Clip or Slicer pad, open the control panel and the **Pos** tab (scroll list: upper encoder selects the row, lower changes it). **Warp:** is Stretch (default), Repitch, Smooth, or Snap. On Clip it is the fifth row (after Sync). On Slicer it is below the existing seven Pos rows (Slicer keeps Stretch/Repitch only in the audio path; Smooth/Snap fall back to stock grains). The value is still the `repitch` attribute on the cell in `preset.xml` (`0` Stretch, `1` Repitch, `2` Smooth, `3` Snap). Main stays two rows of four knobs. Sample and Granular lists are untouched.
 
-Map: [docs/map-319.md](../../../docs/map-319.md).
+Smooth is a longer WSOLA stretcher (2048-sample window, hop 1024, correlation search ±160) for one Clip at a time. Snap is Deluge-style: hops guided by the Clip slice map with a short crossfade (run Sync-to-Slice first). Smooth and Snap share SRAM4 `0x38007000` (one owner). Host A/B: `clang -O2 -o tools/stretch/proto tools/stretch/proto.c tools/stretch/smooth.c tools/stretch/snap.c -lm` then `--mode smooth` vs `--mode snap --slices …`.
+
+Map: [docs/map-319.md](../../../docs/map-319.md). Budget: [docs/memory.md](../../../docs/memory.md).
 
 ## Flash
 
@@ -19,13 +21,15 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 
 1. Back up the card first.
 2. Set a pad to Clip. Open the control panel, tap **Pos**, and scroll below Sync. The fifth row is **Warp**.
-3. **Off (Stretch):** change the global tempo while the clip plays. Pitch stays; length follows tempo (stock).
-4. **On (Repitch):** retrigger the clip, then change the global tempo. Pitch should follow tempo. The pad Pitch knob still stacks. A clip that is already playing keeps its old grains until the next launch.
-5. Set a pad to Slicer. Pos should show the same **Warp** row under the slicer list. Stretch vs Repitch as above; switching Slicer ↔ Clip must stay up.
-6. Tap tempo and MIDI clock while a Repitch clip or slice is playing.
-7. Far jumps, reverse, HighQ, scene launch.
-8. Sample / Granular pads: no new knob, sound unchanged.
-9. Save, reboot, reload: the Repitch setting stays.
+3. **Stretch:** change the global tempo while the clip plays. Pitch stays; length follows tempo (stock).
+4. **Repitch:** retrigger the clip, then change the global tempo. Pitch should follow tempo. The pad Pitch knob still stacks. A clip that is already playing keeps its old grains until the next launch.
+5. **Smooth (Clip only):** set Warp to Smooth on **one** Clip, retrigger, change tempo up and down. Pitch stays; length follows tempo with less grain buzz than Stretch. Confirm kicks stay on the grid and a retrigger brings the attack back. A second Smooth/Snap pad must keep stock grains until the first is free. Slicer with Smooth/Snap selected still uses stock grains.
+6. **Snap (Clip only):** Sync-to-Slice (or hand slices), set Warp to Snap on the same pad, A/B against Smooth at the same tempo offset. Snap should feel calmer under load; listen for kick integrity vs Smooth’s residual crackle.
+7. Set a pad to Slicer. Pos should show the same **Warp** row under the slicer list. Stretch vs Repitch as above; switching Slicer ↔ Clip must stay up.
+8. Tap tempo and MIDI clock while a Repitch, Smooth, or Snap clip is playing.
+9. Far jumps, reverse, HighQ, scene launch.
+10. Sample / Granular pads: no new knob, sound unchanged.
+11. Save, reboot, reload: the Warp setting stays.
 
 If the device disagrees with the map, add a bench or a named fact first, then change the cave. Do not guess in `audioTask`.
 
@@ -39,4 +43,4 @@ If the device disagrees with the map, add a bench or a named fact first, then ch
 
 The build script writes `BLACKBOX.BIN`, `BLACKBOX.sym.json` (cave symbols for the bench), and `cave.dis`. It refuses to patch if any site's stock bytes differ.
 
-Unicorn cannot run `audioTask`. The bench checks the Pos-list ids, registry title/XML name, and that Sample Pos is unchanged. Sound is device-only.
+Unicorn cannot run `audioTask`. The bench checks the Pos-list ids, Warp enum labels (Stretch/Repitch/Smooth/Snap), registry title/XML name, Smooth/Snap flag wiring, and that Sample Pos is unchanged. Sound is device-only.

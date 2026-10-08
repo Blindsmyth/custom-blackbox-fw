@@ -7,10 +7,13 @@ Addresses: docs/map-319.md.
 
 import json
 import struct
-import subprocess
+import sys
 from pathlib import Path
 
 from capstone import CS_ARCH_ARM, CS_MODE_MCLASS, CS_MODE_THUMB, Cs
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
+from cave_ld import link_cave
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -18,7 +21,7 @@ STOCK = ROOT / "firmware" / "bins" / "3.1.9" / "BLACKBOX.bin"
 OUT = HERE / "BLACKBOX.BIN"
 SYMS = HERE / "BLACKBOX.sym.json"
 CAVE_S = HERE / "cave.S"
-OBJ = HERE / "cave.o"
+OBJ = HERE / "cave.elf"
 BASE = 0x08040000
 CAVE_VA = 0x080F1E80
 CAVE_OFF = CAVE_VA - BASE
@@ -38,6 +41,7 @@ SITES = [
     (0x08065756, "hook_main_rate", True, "c3ed127a"),  # main-path grain+0x48 store
     (0x080655E6, "hook_grain", True, "fff753fe"),      # slicer Clip_StartGrain site 1
     (0x080657E6, "hook_grain", True, "fff753fd"),      # slicer Clip_StartGrain site 2
+    (0x080667B8, "hook_lane", False, "2de9f04f"),      # per-lane render; Smooth skips grains
 ]
 
 # Clip Pos: fifth ushort was 0. Type-0x48 pads use 0x080EF948 (Pos at +0x48).
@@ -130,11 +134,12 @@ def load_cave(path):
 
 
 def main():
-    subprocess.check_call(["clang", "-target", "armv7em-none-eabi", "-mthumb",
-                           "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
-                           "-c", "-o", str(OBJ), str(CAVE_S)])
-    blob, symbols = load_cave(OBJ)
-    if len(blob) > 0x2000:
+    stretch = ROOT / "tools" / "stretch"
+    blob, symbols = link_cave(
+        [CAVE_S, stretch / "smooth.c", stretch / "smooth_fw.c",
+         stretch / "snap.c", stretch / "snap_fw.c"],
+        OBJ, CAVE_VA, includes=[stretch])
+    if len(blob) > 0xE000 or CAVE_VA + len(blob) >= 0x080FFF00:
         raise SystemExit(f"cave is unexpectedly large: {len(blob):#x}")
     stock = STOCK.read_bytes()
     image = bytearray(stock)

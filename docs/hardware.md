@@ -10,7 +10,7 @@ Teardown reference: Olivier Ozoux, “Inside the 1010 Music Blackbox” (Matrixs
 | --- | --- | --- |
 | MCU | STM32H743XI, Cortex-M7, rev.Y | Not on this bench. Vector table in `firmware/bins/3.1.9/BLACKBOX.bin` matches this part: initial SP `0x20020000` (top of 128 KB DTCM), code linked at `0x08000000`. |
 | Clock | HSE 6.144 MHz, PLL1 sysclk 399.36 MHz | Not measured. Official comparison chart lists “400 MHz ARM”. |
-| Internal flash | 2 MB at `0x08000000` | The 728,696-byte app is linked at `0x08040000`. The first 256 KB is the installer already on the chip; it is not inside `BLACKBOX.BIN`. |
+| Internal flash | 2 MB at `0x08000000` (two 1 MB banks) | The 728,696-byte app is linked at `0x08040000`. The first 256 KB is the installer already on the chip; it is not inside `BLACKBOX.BIN`. Free space and cave budget: [memory.md](memory.md). |
 | DTCM | 128 KB at `0x20000000` | Inferred from the initial stack pointer. |
 | SDRAM | 2× IS42S16160J, 64 MB at `0xC0000000`, FMC bank 1 | Not measured. |
 | Cache | rev.Y erratum ES0392: D-cache left off; SDRAM and D2 SRAM marked non-cacheable | From the crate, not from this firmware. |

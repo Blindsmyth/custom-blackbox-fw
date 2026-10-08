@@ -3,8 +3,10 @@ __pycache__/
 *.pyc
 .DS_Store
 *.o
+*.elf
 *.img
 AGENTS.md
+tools/stretch/out/
 
 # Proprietary 1010music firmware and manuals — keep locally, do not commit
 firmware/zips/
@@ -16,3 +18,4 @@ firmware/patches/*/BLACKBOX.bin
 /BLACKBOX*.BIN
 *.pdf
 Blackbox-User-Manual*
+tools/stretch/proto

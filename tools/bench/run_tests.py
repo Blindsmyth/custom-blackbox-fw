@@ -424,6 +424,134 @@ def t_repitch_slicer_grain_stack(bench, res):
     res.check(b.mu.reg_read(A.UC_ARM_REG_R0) == 2, "repitch keeps grain index")
 
 
+SM_BASE = 0x38007000
+
+
+def t_smooth_enum_labels(bench, res):
+    b = bench.b
+    if b.u32(REG_PTR) == 0:
+        b.call(PARAM_REGISTER_ALL, 0)
+    base = b.u32(REG_PTR)
+    res.check(base != 0, "param registry allocated")
+    slot = base + ID_REPITCH * 0x1C
+    n = b.u32(slot + 0xC)
+    labels = b.u32(slot + 8)
+    res.check(n == 4, f"Warp enum count {n}")
+    res.check(labels != 0, f"labels ptr {labels:#x}")
+    if labels:
+        res.check(b.cstr(b.u32(labels)) == "Stretch", "label0 Stretch")
+        res.check(b.cstr(b.u32(labels + 4)) == "Repitch", "label1 Repitch")
+        res.check(b.cstr(b.u32(labels + 8)) == "Smooth", "label2 Smooth")
+        res.check(b.cstr(b.u32(labels + 12)) == "Snap", "label3 Snap")
+
+
+def t_smooth_clip_flag(bench, res):
+    b = bench.b
+    clip = 0x2001C800
+    tempo = 0x2001CC00
+    msg = 0x2001CD00
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(tempo, b"\x00" * 0x20)
+    b.mu.mem_write(msg, b"\x00" * 0x18)
+    # Unpacked key 0x100 -> col 0, row 1 -> packed key (row<<2)|col = 4
+    b.w32(clip + 0x18, 0x100)
+    b.w32(msg + 0xC, ID_REPITCH)
+    b.w32(msg + 0x10, 2)
+    b.call(bench.sym["state_init"])
+    b.call(0x08067648, clip, tempo, msg, 0)
+    flag = b.u8(clip + 0xBB1)
+    res.check(flag == 2, f"clip +0xBB1 Smooth is {flag}")
+    flags = 0x38005010 if "fm_init" in bench.sym else 0x38000010
+    res.check(b.u8(flags + 4) == 2, f"SRAM4 flag {b.u8(flags + 4)}")
+
+
+def t_smooth_main_rate_sets_reset(bench, res):
+    b = bench.b
+    clip = 0x2001C800
+    grain = 0x2001D000
+    A = bd.A
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(grain, b"\x00" * 0x80)
+    b.mu.mem_write(SM_BASE, b"\x00" * 0x40)
+    b.mu.mem_write(clip + 0xBB1, b"\x02")
+    b.mu.reg_write(A.UC_ARM_REG_R3, grain)
+    b.mu.reg_write(A.UC_ARM_REG_R4, clip)
+    b.mu.reg_write(A.UC_ARM_REG_S15, 0x3F800000)
+    b.mu.reg_write(A.UC_ARM_REG_SP, bd.BENCH_SP)
+    b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
+    b.mu.emu_start(bench.sym["hook_main_rate"] | 1, bd.STOP, count=200)
+    r3 = b.mu.reg_read(A.UC_ARM_REG_R3)
+    res.check(r3 == grain, f"r3 clobbered to {r3:#x}")
+    res.check(b.u32(grain + 0x48) == 0x3F800000, "Smooth leaves grain rate")
+    res.check(b.u32(SM_BASE + 20) == 1, f"reset_req {b.u32(SM_BASE + 20)}")
+
+
+def t_smooth_lane_hook(bench, res):
+    res.check("hook_lane" in bench.sym, "hook_lane in cave")
+    res.check("smooth_mix" in bench.sym, "smooth_mix in cave")
+    res.check("smooth_process" in bench.sym, "smooth_process in cave")
+    img = bench.b.image
+    site = 0x080667B8
+    off = site - bd.BASE
+    res.check(img[off:off + 4].hex() != "2de9f04f", "per-lane site patched")
+
+
+def t_snap_clip_flag(bench, res):
+    b = bench.b
+    clip = 0x2001C800
+    tempo = 0x2001CC00
+    msg = 0x2001CD00
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(tempo, b"\x00" * 0x20)
+    b.mu.mem_write(msg, b"\x00" * 0x18)
+    b.w32(clip + 0x18, 0x100)
+    b.w32(msg + 0xC, ID_REPITCH)
+    b.w32(msg + 0x10, 3)
+    b.call(bench.sym["state_init"])
+    b.call(0x08067648, clip, tempo, msg, 0)
+    flag = b.u8(clip + 0xBB1)
+    res.check(flag == 3, f"clip +0xBB1 Snap is {flag}")
+    flags = 0x38005010 if "fm_init" in bench.sym else 0x38000010
+    res.check(b.u8(flags + 4) == 3, f"SRAM4 flag {b.u8(flags + 4)}")
+
+
+def t_snap_main_rate_sets_reset(bench, res):
+    b = bench.b
+    clip = 0x2001C800
+    grain = 0x2001D000
+    A = bd.A
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(grain, b"\x00" * 0x80)
+    b.mu.mem_write(SM_BASE, b"\x00" * 0x40)
+    b.mu.mem_write(clip + 0xBB1, b"\x03")
+    b.mu.reg_write(A.UC_ARM_REG_R3, grain)
+    b.mu.reg_write(A.UC_ARM_REG_R4, clip)
+    b.mu.reg_write(A.UC_ARM_REG_S15, 0x3F800000)
+    b.mu.reg_write(A.UC_ARM_REG_SP, bd.BENCH_SP)
+    b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
+    b.mu.emu_start(bench.sym["hook_main_rate"] | 1, bd.STOP, count=200)
+    r3 = b.mu.reg_read(A.UC_ARM_REG_R3)
+    res.check(r3 == grain, f"r3 clobbered to {r3:#x}")
+    res.check(b.u32(grain + 0x48) == 0x3F800000, "Snap leaves grain rate")
+    res.check(b.u32(SM_BASE + 20) == 1, f"reset_req {b.u32(SM_BASE + 20)}")
+
+
+def t_snap_lane_hook(bench, res):
+    res.check("snap_mix" in bench.sym, "snap_mix in cave")
+    res.check("snap_process" in bench.sym, "snap_process in cave")
+    res.check("snap_init" in bench.sym, "snap_init in cave")
+
+
+def t_smooth_state_clears_owner(bench, res):
+    """Power-on SRAM4 is random; state_init must clear SM_OWNER or Smooth/Snap never run."""
+    b = bench.b
+    b.mu.mem_write(SM_BASE, b"\xA5" * 0x40)
+    b.call(bench.sym["state_init"])
+    res.check(b.u32(SM_BASE) == 0x534D5448, f"magic {b.u32(SM_BASE):#x}")
+    res.check(b.u32(SM_BASE + 4) == 0, f"owner still {b.u32(SM_BASE + 4):#x}")
+    res.check(b.u32(SM_BASE + 24) == 0, f"block_done {b.u32(SM_BASE + 24)}")
+
+
 # ---- patched-only tests
 def t_enter_group(bench, res):
     bench.refresh()
@@ -687,6 +815,110 @@ def t_clean(bench, res):
     res.check("Presets/One/keep.wav" in bench.files(), "top-level decoy untouched")
 
 
+CELL_CTOR = 0x08093C7C
+CELL_ADD = 0x08093CCA
+SLICE_LIST = 0x2001C800
+SESSION_PTR = PM + 700  # PresetMgr +0x2BC, 4th arg to doc_open
+
+
+def _slice_xml(n_tags=128, extra=None):
+    tags = "\n".join(f'<slice pos="{i * 1000}"/>' for i in range(n_tags))
+    ext = ""
+    if extra:
+        ext = f' ext="{",".join(str(p) for p in extra)}"'
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<document>\n<session version=\"2\">\n"
+            '<cell row="2" column="0" layer="0" filename="kick.wav" type="sample">\n'
+            f'<slices{ext}>\n{tags}\n'
+            "</slices>\n</cell>\n</session>\n</document>\n")
+
+
+SLICE_EXTRA = [128000 + i * 1000 for i in range(72)]
+SLICE_TREE = dict(TREE)
+SLICE_TREE["Presets/Alpha/preset.xml"] = _slice_xml(128, SLICE_EXTRA)
+SLICE_TREE["Presets/Alpha/kick.wav"] = "RIFF\x24\0\0\0WAVEfmt "
+
+
+def _cell_count(bench, session=None, row=2, col=0):
+    if session is None:
+        session = bench.b.u32(SESSION_PTR)
+    off = row * 0xF0 + col * 0x30
+    return bench.b.u32(session + off + 0x2C), bench.b.u32(session + off + 0x28), session
+
+
+def t_slice_hooks(bench, res):
+    res.check(bench.b.image[VERSION_OFF] == ord("Y"), "menu letter is Y")
+    for name in ("hook_slices_max", "hook_slice_max", "hook_engine_cap",
+                 "hook_cell_cap", "hook_save_iter", "hook_save_bag", "hook_cell_ext",
+                 "hook_pad_slice", "hook_pad_done"):
+        res.check(name in bench.sym, f"{name} in cave")
+    img = bench.b.image
+    # stock immediates must be gone
+    res.check(img[0x0808D32C - bd.BASE:0x0808D32C - bd.BASE + 2] != bytes.fromhex("8020"),
+              "Slices max site patched")
+    res.check(img[0x08068B62 - bd.BASE:0x08068B62 - bd.BASE + 2] != bytes.fromhex("7f2a"),
+              "engine insert cap patched")
+
+
+def t_slice_cell_grow(bench, res):
+    b = bench.b
+    if "sl_init" in bench.sym:
+        b.call(bench.sym["sl_init"])
+    b.w32(SLICE_LIST, 0)
+    b.w32(SLICE_LIST + 4, 0)
+    b.call(CELL_CTOR, SLICE_LIST)
+    for i in range(200):
+        b.call(CELL_ADD, SLICE_LIST, i * 100)
+    count = b.u32(SLICE_LIST + 4)
+    ptr = b.u32(SLICE_LIST)
+    res.check(count == 200, f"grown count {count}")
+    res.check(0x30000000 <= ptr < 0x30040000, f"table in SRAM1–2 {ptr:#x}")
+    res.check(b.u32(ptr + 199 * 4) == 19900, "last extra position")
+    res.check(b.u32(ptr) == 0, "first position")
+
+
+def t_slice_stock_cap(bench, res):
+    b = bench.b
+    b.w32(SLICE_LIST, 0)
+    b.w32(SLICE_LIST + 4, 0)
+    b.call(CELL_CTOR, SLICE_LIST)
+    ptr0 = b.u32(SLICE_LIST)
+    for i in range(200):
+        b.call(CELL_ADD, SLICE_LIST, i * 100)
+    count = b.u32(SLICE_LIST + 4)
+    ptr = b.u32(SLICE_LIST)
+    res.check(count == 128, f"stock count {count}")
+    res.check(ptr == ptr0, "stock table not moved")
+
+
+def t_slice_xml_load(bench, res):
+    bench.refresh()
+    bench.press_load("Alpha")
+    res.check(len(bench.load_ok()) == 1, "Alpha with ext loaded")
+    count, ptr, session = _cell_count(bench)
+    res.check(session != 0, f"session at {session:#x}")
+    res.check(count == 200, f"restored count {count}")
+    res.check(0x30000000 <= ptr < 0x30040000, f"grown on load {ptr:#x}")
+    res.check(bench.b.u32(ptr) == 0, "first tag stays first")
+    res.check(bench.b.u32(ptr + 127 * 4) == 127000, "last tag stays at 127")
+    res.check(bench.b.u32(ptr + 128 * 4) == SLICE_EXTRA[0], "first ext position")
+    res.check(bench.b.u32(ptr + 199 * 4) == SLICE_EXTRA[-1], "last ext position")
+    other, _, _ = _cell_count(bench, session, row=0, col=0)
+    res.check(other == 0, f"row 0 did not receive the slices ({other})")
+
+
+def t_slice_stock_xml(bench, res):
+    bench.refresh()
+    bench.press_load("Alpha")
+    res.check(len(bench.load_ok()) == 1, "stock loaded the ext preset")
+    count, ptr, session = _cell_count(bench)
+    res.check(session != 0, f"session at {session:#x}")
+    res.check(count == 128, f"stock kept 128 tags, count {count}")
+    if ptr:
+        res.check(bench.b.u32(ptr) == 0, "first tag")
+        res.check(bench.b.u32(ptr + 127 * 4) == 127000, "last of 128 tags")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
@@ -708,7 +940,6 @@ def main():
         kind = "repitch"
     else:
         kind = "stock"
-    print(f"image {image} version byte {chr(probe[VERSION_OFF])!r} ({kind})")
     res = Result()
     cases = [("list top level", t_list_top), ("load a real preset", t_load_real)]
     write_cases = []
@@ -744,9 +975,32 @@ def main():
             ("repitch clip-engine flag", t_repitch_clip_flag),
             ("repitch grain store keeps r3", t_repitch_main_rate_preserves_r3),
             ("slicer grain keeps stack args", t_repitch_slicer_grain_stack),
+            ("Warp enum has Smooth+Snap", t_smooth_enum_labels),
+            ("Smooth clip-engine flag", t_smooth_clip_flag),
+            ("Smooth grain store sets reset", t_smooth_main_rate_sets_reset),
+            ("Smooth lane hook present", t_smooth_lane_hook),
+            ("Snap clip-engine flag", t_snap_clip_flag),
+            ("Snap grain store sets reset", t_snap_main_rate_sets_reset),
+            ("Snap lane symbols present", t_snap_lane_hook),
+            ("Smooth state_init clears owner", t_smooth_state_clears_owner),
         ]
+    slices = "hook_slices_max" in sym
+    extra_reads = []
+    if slices:
+        kind = kind + "+slices"
+        cases += [
+            ("slice hooks and letter Y", t_slice_hooks),
+            ("cell list grows past 128", t_slice_cell_grow),
+        ]
+        extra_reads.append(("ext attribute restores extra slices", t_slice_xml_load, SLICE_TREE))
+    else:
+        cases += [("stock cell list stays at 128", t_slice_stock_cap)]
+        extra_reads.append(("stock XML keeps 128 tags and ignores ext", t_slice_stock_xml, SLICE_TREE))
+    print(f"image {image} version byte {chr(probe[VERSION_OFF])!r} ({kind})")
     for name, fn in cases:
         run_case(image, name, fn, res)
+    for name, fn, tree in extra_reads:
+        run_case(image, name, fn, res, tree=tree)
     if write_cases:
         for name, fn, tree in write_cases:
             run_case(image, name, fn, res, tree=tree, writes=True)
