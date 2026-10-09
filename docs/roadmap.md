@@ -34,8 +34,8 @@ Encoders no longer select pads, sequences or menu items. Selection is PADS held 
 | PADS held + pad = select only | Pads onChildEvent `0x080B3E84`: 3 → `0x63`, swallow 4 | S |
 | Seq bar count above Undo | Seq+`0x3F70` button text, bars = `0x86 × table[0x85]` (`0x080ECA6C`) / 4 | S–M |
 | Seq TR knob = double / halve (current layer only) | Double `FUN_0809C5B4`; halve: snapshot `FUN_08098254`, `0x86/2`, trim events, push `FUN_080985A0`, `FUN_0809C2C8` | M |
-| FX cycle DJ FX → Return FX → EQ | `App_HandleInput` FX block `0x080A32A4`: 0x37 → 0x23 (set App+`0x28` = `0x300`/`0x310`) → 0x36 → 0x37 | M |
-| Return page: Tools-style buttons Return A, Return B, 2 spare | Map the Tools button row first; A/B post `0x116` with `0x300`/`0x310` | M |
+| FX button toggles DJ FX ↔ Return FX | `App_HandleInput` FX block `0x080A32A4`: from any screen or 0x23 → 0x37; from 0x37 → 0x23 (set App+`0x28` = `0x300`/`0x310`, last used). EQ 0x36 and the send page 0x30 leave the cycle. | M |
+| Return page: Tools-style buttons Return A, Return B, EQ | Map the Tools button row first. A/B post `0x116` with `0x300`/`0x310` and rebuild 0x23. EQ calls `App_SetScreen(0x36)`. The fourth slot stays hidden. | M |
 
 ### Batch 2: sound
 
@@ -101,7 +101,4 @@ Encoders no longer select pads, sequences or menu items. Selection is PADS held 
 - No Performance side function; Mix covers performance.
 - Seq double/halve acts on the current layer only, like stock Double.
 - The Beat Repeat rate slider snaps to the 12-entry rate list.
-
-## Open questions
-
-- The two spare Return buttons. There are only two FX returns: Delay (A, `0x300`) and Reverb (B, `0x310`). FX slot 3 is the master EQ (`0x320`) and slot 4 is empty. The choice is to hide the spares, keep them blank, or make one an EQ shortcut.
+- The FX button only toggles DJ FX ↔ Return FX. EQ is reached from the Return page's third button; the fourth button stays hidden.
