@@ -84,14 +84,14 @@
  "fmt_bars": "0x080f34dc",
  "fmt_frac": "0x080f34e4",
  "fx_return_key": "0x080f3604",
- "fxr_bar_rect": "0x080f370a",
+ "fxr_bar_rect": "0x080f370c",
  "fxr_btns": "0x080f36e8",
  "fxr_x": "0x080f3700",
  "fxr_labels": "0x080f36f0",
- "s_ra": "0x080f3768",
- "s_rb": "0x080f3770",
- "s_eq": "0x080f3778",
- "s_none": "0x080f377c",
+ "s_ra": "0x080f376c",
+ "s_rb": "0x080f3774",
+ "s_eq": "0x080f377c",
+ "s_none": "0x080f3780",
  "hook_register": "0x080f27ec",
  "hook_template": "0x080f2842",
  "hook_clip_def": "0x080f285c",
@@ -124,5 +124,5 @@
  "eq_touch_down": "0x080f3548",
  "fx_to_return": "0x080f362e",
  "fxret_on_event": "0x080f3640",
- "fxret_child_event": "0x080f371a"
+ "fxret_child_event": "0x080f371c"
 }

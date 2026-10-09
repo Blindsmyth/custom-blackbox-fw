@@ -61,10 +61,26 @@ BYTES = [
 ]
 
 
+# Word tables in the cave. Stock code reads some with LDM, which hard-faults on the M7 when
+# unaligned (Unicorn doesn't fault, so the bench can't catch it): keep them 4-byte aligned.
+WORD_TABLES = ["fxr_bar_rect", "fxr_labels", "fader_vt", "rest_values", "layer_main",
+               "layer_held", "ticks_per_beat", "tenths_per_beat"]
+
+
+def check_alignment():
+    out = subprocess.check_output(["arm-none-eabi-nm", str(OBJ)], text=True)
+    addr = {parts[2]: int(parts[0], 16) for parts in (l.split() for l in out.splitlines()) if len(parts) == 3}
+    bad = [f"{n} at {addr[n]:#x}" for n in WORD_TABLES if addr.get(n, 0) & 3]
+    missing = [n for n in WORD_TABLES if n not in addr]
+    if bad or missing:
+        raise SystemExit(f"word tables not 4-byte aligned: {bad} missing: {missing}")
+
+
 def main():
     subprocess.check_call(["clang", "-target", "armv7em-none-eabi", "-mthumb",
                            "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16", "-I", str(BASE_DIR),
                            "-c", "-o", str(OBJ), str(CAVE_S)], cwd=str(HERE))
+    check_alignment()
     blob, symbols = base.load_cave(OBJ)
     if len(blob) > MAX_CAVE:
         raise SystemExit(f"cave is unexpectedly large: {len(blob):#x}")

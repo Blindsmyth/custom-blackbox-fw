@@ -128,6 +128,8 @@ fxr_labels:
     .word   s_ra, s_rb, s_eq, s_none
 fxr_x:                              @ button edges: labels are 12 px per character
     .hword  0, 104, 216, 268, 320
+@ LDM-read by the stock setRect: must be word aligned (an unaligned LDM hard-faults).
+.align 2
 fxr_bar_rect:
     .word   0, 0, 320, FXR_BAR_H
 

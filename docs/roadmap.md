@@ -19,7 +19,7 @@ Planned features for the `mix-overhaul` line (3.1.Q and later). Addresses are st
 - **Batch 1:** PADS/SEQS held + tap selects; SEQS held shows layers A–D; Seq bar label and double/halve; EQ tap-and-drag and default bands; FX toggles DJ FX ↔ Return with a bottom row A Delay / B Reverb / EQ / (empty).
 - Fix: Mix fader labels repaint on every layer change; the MIX press that opens Mix isn't a hold.
 - Holding PADS shows the CUT / COPY / PSTE / CLR panel (stand-in until the Batch 3 picker).
-- Open: a crash reported on pressing FX again; not reproduced in the bench (DJ FX → Return → DJ FX with real GUI, FX slots and draw loop runs clean).
+- Fix: FX → Return crashed on the device: the bottom-bar rect sat at a 2-byte-aligned address and stock setRect reads it with LDM, which hard-faults on the M7 (Unicorn executes it). build_patch.py now checks word-table alignment.
 
 ## Next, in order
 
