@@ -8,34 +8,41 @@
 @   App_HandleUiEvent like on the Pads screen. While MIX is held they go to the stock
 @   handler, which turns a press into 0x63 (select, no trigger).
 @ - The four stock side faders (class 0x080C1F3C, built by the Mix constructor but never
-@   attached) become children and replace the empty frames. Physical layout (the GUI's
-@   y axis runs bottom-up, so logical y=1 is the physical bottom row):
-@       Cutoff 0xC8  | Decay  0x3E       top row      (faders +0x2C48 | +0x2DA0)
-@       Send A 0xD9  | Send B 0xDA       bottom row   (faders +0x2CF4 | +0x2E4C)
-@   A fader's own touch handler posts 0x6E {pad +0x38, id, value} -> App_SetParam.
-@ - While MIX is held the left column is one tall Vol (0x04) fader and the right column
-@   one tall Pan (0x62) fader.
-@ - Knobs drive the four stock value-engine sliders, bound to the same params, so step,
-@   acceleration and App_SetParam stay stock. Logical encoder order is column-major:
+@   attached) become children and replace the empty frames. Two layers, same corners
+@   (the GUI's y axis runs bottom-up, so logical y=1 is the physical bottom row):
+@       Main:       Vol 0x04    | Cutoff 0xC8      MIX held:  Pan 0x62    | Send A 0xD9
+@                   Decay 0x3E  | Pitch 0x5C                  Attack 0x3C | Send B 0xDA
+@   Corner faders: top-left +0x2C48, top-right +0x2DA0, bottom-left +0x2CF4,
+@   bottom-right +0x2E4C. A fader's own touch handler posts 0x6E {pad +0x38, id, value}.
+@ - Knobs drive the four stock value-engine sliders, bound to the same corner's param, so
+@   step, acceleration and App_SetParam stay stock. Logical encoder order is column-major:
 @   0 top-left, 1 bottom-left, 2 top-right, 3 bottom-right.
+@ - Blip: touching a fader whose param sits at its rest position (rest_values) sets the
+@   value under the finger as usual; letting go within MX_BLIP_MS puts the rest value
+@   back. Longer touches keep the new value. Our faders get their own copy of the fader
+@   vtable (fader_vt) so faders on other screens are untouched.
 @ - INFO on Mix opens Mute. Released within MX_HOLD_MS it stays (toggle); held longer it
 @   goes back to Mix on release (momentary).
 @
-@ UI task only (App_HandleInput, GUI tick/event). RAM only. MIX and INFO send no release
-@ event, so hold state is the debounced level byte in the button table (0 = pressed).
+@ UI task only (App_HandleInput, GUI tick/event/touch). RAM only. MIX and INFO send no
+@ release event, so hold state is the debounced level byte in the button table (0 = pressed).
 
 .equ MX_STATE,    0x38005200        @ past the Warp flags (0x38005000..0x38005110)
 .equ MX_MAGIC,    0x5558494D        @ 'MIXU'
-.equ MX_HELD,     4                 @ layout applied: 0 normal, 1 MIX held, 0xFF none
+.equ MX_LAYER,    4                 @ layer shown: 0 main, 1 MIX held, 0xFF none
 .equ MX_INFO,     8                 @ 0 idle, 1 INFO pressed on Mix, 2 momentary
 .equ MX_T0,       12                @ uwTick when INFO opened Mute
+.equ MX_BLIP,     16                @ fader touched at its rest value, or 0
+.equ MX_BT0,      20                @ uwTick of that touch
 .equ MX_HOLD_MS,  400
+.equ MX_BLIP_MS,  300
 
 .equ APP,         0x24020088
 .equ UWTICK,      0x24015CE4
 .equ BTN_MIX,     0x24009B36        @ button table entry 5 +0xE
 .equ BTN_INFO,    0x24009BDE        @ button table entry 12 +0xE
 .equ REF_TAG,     0x080EAF38
+.equ EV_TAG,      0x080CFBA4
 
 .equ MIX_TICK,    0x080B6601
 .equ MIX_CHILD,   0x080B5A4D
@@ -43,6 +50,8 @@
 .equ ADD_CHILD,   0x080AEC45
 .equ FADER_SET,   0x080C20D1        @ (fader, id, value)
 .equ FADER_RECT,  0x080C1EE5        @ fader setRect (also places its label)
+.equ FADER_DOWN,  0x080C1F19        @ stock touchDown (calls vtable +0x14 touchMove)
+.equ FADER_UP,    0x080C1F2F        @ stock touchUp
 .equ SLIDER_BIND, 0x080A7EE1        @ (id, value, slider, 0)
 .equ SLIDER_STEP, 0x080B0D55        @ (slider, delta)
 .equ GET_PARAM,   0x08099505        @ (app, ref, id, &out)
@@ -50,13 +59,18 @@
 
 .equ M_MODE,      0x1E40
 .equ M_SEL,       0x1E08
-.equ F_CUT,       0x2C48
-.equ F_DEC,       0x2DA0
-.equ F_SA,        0x2CF4
-.equ F_SB,        0x2E4C
+.equ F_TL,        0x2C48
+.equ F_TR,        0x2DA0
+.equ F_BL,        0x2CF4
+.equ F_BR,        0x2E4C
+.equ S_TL,        0x1E48
+.equ S_BL,        0x2128
+.equ S_TR,        0x2408
+.equ S_BR,        0x26E8
 .equ W_HIDDEN,    0x30
 .equ W_PARENT,    0x2C
 .equ F_PAD,       0x38
+.equ F_ID,        0x3E
 .equ F_LABEL,     0x54
 
 .global mix_tick
@@ -64,6 +78,9 @@
 .global mix_on_event
 .global mix_btn_screen
 .global info_to_mute
+.global fader_vt
+.global fader_down
+.global fader_up
 
 @ r0 = MX_STATE, initialised if the magic is missing. Clobbers r1.
 .thumb_func
@@ -76,10 +93,12 @@ mx_state:
     beq     1f
     str     r2, [r0]
     movs    r1, #0xFF
-    str     r1, [r0, #MX_HELD]
+    str     r1, [r0, #MX_LAYER]
     movs    r1, #0
     str     r1, [r0, #MX_INFO]
     str     r1, [r0, #MX_T0]
+    str     r1, [r0, #MX_BLIP]
+    str     r1, [r0, #MX_BT0]
 1:
     pop     {r2}
     bx      lr
@@ -128,8 +147,9 @@ mix_on_event:
     cmp     r5, #0x63
     bne     3f
     mov     r0, r4
-    bl      bind_knobs
-    b       4f
+    movs    r1, #1                  @ select: rebind the sliders too (stock bound Level/Pan)
+    bl      show_layer
+    b       5f
 3:
     cmp     r5, #0x66
     beq     4f
@@ -137,29 +157,79 @@ mix_on_event:
     bne     5f
 4:
     mov     r0, r4
-    bl      show_values
+    movs    r1, #0
+    bl      show_layer
 5:
     pop     {r4, r5, r6, pc}
 9:
     bx      lr
 
-@ Logical encoder -> value slider. Sliders: +0x1E48 Cutoff, +0x2128 Decay,
-@ +0x2408 Send A, +0x26E8 Send B.
+@ Logical encoder -> the value slider of the same corner.
 .align 2
 knob_slider:
-    .hword  0x1E48                  @ 0 top-left     Cutoff
-    .hword  0x2408                  @ 1 bottom-left  Send A
-    .hword  0x2128                  @ 2 top-right    Decay
-    .hword  0x26E8                  @ 3 bottom-right Send B
+    .hword  S_TL                    @ 0 top-left
+    .hword  S_BL                    @ 1 bottom-left
+    .hword  S_TR                    @ 2 top-right
+    .hword  S_BR                    @ 3 bottom-right
 
-@ (slider offset, param id)
+@ Per layer and corner: (fader, slider, id, 0) + label.
 .align 2
-slider_ids:
-    .hword  0x1E48, 0xC8
-    .hword  0x2128, 0x3E
-    .hword  0x2408, 0xD9
-    .hword  0x26E8, 0xDA
-    .hword  0, 0
+layer_main:
+    .hword  F_TL, S_TL, 0x04, 0
+    .word   s_vol
+    .hword  F_BL, S_BL, 0x3E, 0
+    .word   s_dec
+    .hword  F_TR, S_TR, 0xC8, 0
+    .word   s_cut
+    .hword  F_BR, S_BR, 0x5C, 0
+    .word   s_pit
+    .hword  0, 0, 0, 0
+    .word   0
+layer_held:
+    .hword  F_TL, S_TL, 0x62, 0
+    .word   s_pan
+    .hword  F_BL, S_BL, 0x3C, 0
+    .word   s_att
+    .hword  F_TR, S_TR, 0xD9, 0
+    .word   s_sa
+    .hword  F_BR, S_BR, 0xDA, 0
+    .word   s_sb
+    .hword  0, 0, 0, 0
+    .word   0
+
+@ Rest positions where a quick touch blips: (id, value). Pan is not listed.
+.align 2
+rest_values:
+    .word   0x04, -96000            @ Vol at minimum
+    .word   0xC8, 0                 @ Cutoff centre (filter off)
+    .word   0x5C, 0                 @ Pitch unshifted
+    .word   0x3C, 0                 @ Attack
+    .word   0x3E, 0                 @ Decay
+    .word   0xD9, 0                 @ Send A
+    .word   0xDA, 0                 @ Send B
+    .word   0xFFFF, 0
+
+@ r0 = id. Returns r0 = rest value, r1 = 1 if the id has one. Clobbers r2, r3.
+.thumb_func
+rest_of:
+    adr     r2, rest_values
+1:
+    ldr     r3, [r2]
+    movw    r1, #0xFFFF
+    cmp     r3, r1
+    beq     2f
+    cmp     r3, r0
+    beq     3f
+    adds    r2, #8
+    b       1b
+2:
+    movs    r0, #0
+    movs    r1, #0
+    bx      lr
+3:
+    ldr     r0, [r2, #4]
+    movs    r1, #1
+    bx      lr
 
 @ r0 = Mix. r1 = id. Returns r0 = the selected pad's value. Clobbers r1-r3, r12.
 .thumb_func
@@ -182,114 +252,85 @@ get_value:
     add     sp, #16
     pop     {r4, pc}
 
-@ Bind the four value sliders to the knob params for the selected pad (stock 0x63 bound
-@ two of them to Level/Pan). r0 = Mix.
+@ Show the current layer for the selected pad. r0 = Mix, r1 = 1 to also bind labels and
+@ the knob sliders (layer change, pad select), 0 to refresh the fader values only.
 .thumb_func
-bind_knobs:
-    push    {r4, r5, r6, lr}
+show_layer:
+    push    {r4, r5, r6, r7, r8, lr}
     mov     r4, r0
-    adr     r5, slider_ids
-1:
-    ldrh    r6, [r5]
-    cbz     r6, 2f
-    ldrh    r1, [r5, #2]
-    mov     r0, r4
-    bl      get_value
-    mov     r1, r0
-    ldrh    r0, [r5, #2]
-    add.w   r2, r4, r6
-    movs    r3, #0
-    call    SLIDER_BIND
-    adds    r5, #4
-    b       1b
-2:
-    mov     r0, r4
-    bl      show_values
-    pop     {r4, r5, r6, pc}
-
-@ (fader offset, id) for each layout; the hidden faders are not refreshed.
-.align 2
-fader_ids_normal:
-    .hword  F_CUT, 0xC8
-    .hword  F_DEC, 0x3E
-    .hword  F_SA,  0xD9
-    .hword  F_SB,  0xDA
-    .hword  0, 0
-fader_ids_held:
-    .hword  F_SA,  0x04
-    .hword  F_SB,  0x62
-    .hword  0, 0
-
-@ Point every visible fader at the selected pad and its current value. r0 = Mix.
-.thumb_func
-show_values:
-    push    {r3, r4, r5, r6, r7, lr}
-    mov     r4, r0
+    mov     r8, r1
     bl      mx_state
-    ldr     r1, [r0, #MX_HELD]
-    adr     r5, fader_ids_normal
+    ldr     r1, [r0, #MX_LAYER]
+    adr     r5, layer_main
     cmp     r1, #1
     bne     1f
-    adr     r5, fader_ids_held
+    adr     r5, layer_held
 1:
     add.w   r7, r4, #0x1000
     ldrh.w  r7, [r7, #(M_SEL - 0x1000)]
 2:
     ldrh    r6, [r5]
-    cbz     r6, 3f
+    cbz     r6, 4f
     add     r6, r4
     strh    r7, [r6, #F_PAD]
-    ldrh    r1, [r5, #2]
+    ldrh    r1, [r5, #4]
     mov     r0, r4
     bl      get_value
+    push    {r0, r1}
     mov     r2, r0
-    ldrh    r1, [r5, #2]
+    ldrh    r1, [r5, #4]
     mov     r0, r6
     call    FADER_SET
-    adds    r5, #4
-    b       2b
+    pop     {r0, r1}
+    cmp     r8, #0
+    beq     3f
+    mov     r1, r0
+    ldrh    r0, [r5, #4]
+    ldrh    r2, [r5, #2]
+    add     r2, r4
+    movs    r3, #0
+    call    SLIDER_BIND
+    add.w   r0, r6, #F_LABEL
+    ldr     r1, [r5, #8]
+    call    SET_TEXT
 3:
-    pop     {r3, r4, r5, r6, r7, pc}
+    adds    r5, #12
+    b       2b
+4:
+    pop     {r4, r5, r6, r7, r8, pc}
 
-@ Fader placement in GUI coordinates: (offset, x, y, w, h, hidden, label).
+@ Corner rects in GUI coordinates (fader, x, y, w, h).
 .align 2
-place_normal:
-    .hword  F_CUT, 1,   111, 30, 109, 0
-    .word   s_cut
-    .hword  F_DEC, 288, 111, 30, 109, 0
-    .word   s_dec
-    .hword  F_SA,  1,   1,   30, 109, 0
-    .word   s_sa
-    .hword  F_SB,  288, 1,   30, 109, 0
-    .word   s_sb
-    .hword  0, 0, 0, 0, 0, 0
-    .word   0
-place_held:
-    .hword  F_CUT, 1,   111, 30, 109, 1
-    .word   s_cut
-    .hword  F_DEC, 288, 111, 30, 109, 1
-    .word   s_dec
-    .hword  F_SA,  1,   1,   30, 219, 0
-    .word   s_vol
-    .hword  F_SB,  288, 1,   30, 219, 0
-    .word   s_pan
-    .hword  0, 0, 0, 0, 0, 0
-    .word   0
+corner_rects:
+    .hword  F_TL, 1,   111, 30, 109
+    .hword  F_TR, 288, 111, 30, 109
+    .hword  F_BL, 1,   1,   30, 109
+    .hword  F_BR, 288, 1,   30, 109
+    .hword  0, 0, 0, 0, 0
+frame_offs:
+    .hword  0x29C8, 0x2A68, 0x2B08, 0x2BA8, 0
 
-@ r0 = Mix, r1 = held (0/1). Places the faders, records the layout, refreshes values.
+@ Attach the four faders once per Mix widget, give them our vtable and corners, and hide
+@ the empty frames behind them. r0 = Mix. Returns r0 = 1 if it attached now.
 .thumb_func
-apply_layout:
-    push    {r3, r4, r5, r6, r7, lr}
-    sub     sp, #16
+attach:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #20
     mov     r4, r0
-    mov     r7, r1
-    adr     r5, place_normal
-    cbz     r1, 1f
-    adr     r5, place_held
+    ldr     r1, =F_TL + W_PARENT
+    ldr     r1, [r4, r1]
+    cmp     r1, r4
+    beq     8f
+    adr     r5, corner_rects
 1:
     ldrh    r6, [r5]
     cbz     r6, 2f
     add     r6, r4
+    ldr     r0, =fader_vt
+    str     r0, [r6]
+    mov     r0, r4
+    mov     r1, r6
+    call    ADD_CHILD
     ldrh    r0, [r5, #2]
     str     r0, [sp]
     ldrh    r0, [r5, #4]
@@ -301,44 +342,9 @@ apply_layout:
     mov     r0, r6
     mov     r1, sp
     call    FADER_RECT
-    ldrh    r0, [r5, #10]
+    movs    r0, #0
     strb    r0, [r6, #W_HIDDEN]
-    add.w   r0, r6, #F_LABEL
-    ldr     r1, [r5, #12]
-    call    SET_TEXT
-    adds    r5, #16
-    b       1b
-2:
-    bl      mx_state
-    str     r7, [r0, #MX_HELD]
-    mov     r0, r4
-    bl      show_values
-    add     sp, #16
-    pop     {r3, r4, r5, r6, r7, pc}
-
-@ Attach the four faders once per Mix widget and hide the empty frames behind them.
-@ r0 = Mix. Returns r0 = 1 if it attached now.
-.align 2
-fader_offs:
-    .hword  F_CUT, F_DEC, F_SA, F_SB, 0
-frame_offs:
-    .hword  0x29C8, 0x2A68, 0x2B08, 0x2BA8, 0
-
-.thumb_func
-attach:
-    push    {r4, r5, r6, lr}
-    mov     r4, r0
-    ldr     r1, =F_CUT + W_PARENT
-    ldr     r1, [r4, r1]
-    cmp     r1, r4
-    beq     8f
-    adr     r5, fader_offs
-1:
-    ldrh    r1, [r5], #2
-    cbz     r1, 2f
-    add     r1, r4
-    mov     r0, r4
-    call    ADD_CHILD
+    adds    r5, #10
     b       1b
 2:
     adr     r5, frame_offs
@@ -350,18 +356,21 @@ attach:
     strb    r6, [r1, #W_HIDDEN]
     b       3b
 4:
-    mov     r0, r4
+    bl      mx_state
     movs    r1, #0
-    bl      apply_layout
+    str     r1, [r0, #MX_LAYER]
     mov     r0, r4
-    bl      bind_knobs
+    movs    r1, #1
+    bl      show_layer
     movs    r0, #1
-    pop     {r4, r5, r6, pc}
+    b       9f
 8:
     movs    r0, #0
-    pop     {r4, r5, r6, pc}
+9:
+    add     sp, #20
+    pop     {r4, r5, r6, r7, pc}
 
-@ ---- vtable +0: tick. MIX hold layout and the INFO momentary release.
+@ ---- vtable +0: tick. MIX layer and the INFO momentary release.
 
 .thumb_func
 mix_tick:
@@ -384,15 +393,17 @@ mix_tick:
     ite     eq
     moveq   r1, #1                  @ level 0 = pressed
     movne   r1, #0
-    ldr     r2, [r0, #MX_HELD]
+    ldr     r2, [r0, #MX_LAYER]
     cmp     r1, r2
     beq     1f
+    str     r1, [r0, #MX_LAYER]
     mov     r0, r4
-    bl      apply_layout
+    movs    r1, #1
+    bl      show_layer
     movs    r6, #1
 1:
     cbz     r6, 2f
-    ldrb    r0, [r5]                @ full redraw: faders moved or appeared
+    ldrb    r0, [r5]                @ full redraw: faders appeared or changed layer
     orr     r0, r0, #1
     strb    r0, [r5]
 2:
@@ -426,10 +437,107 @@ mix_tick:
 9:
     pop     {r4, r5, r6, pc}
 
+@ ---- fader touch (our faders only, via fader_vt)
+
+@ touchDown(fader, point): remember a touch that starts at the rest value, then stock.
+.thumb_func
+fader_down:
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    mov     r5, r1
+    ldrh    r0, [r4, #F_ID]
+    bl      rest_of
+    mov     r6, r0                  @ rest value
+    cbz     r1, 1f
+    ldrh    r1, [r4, #F_ID]
+    ldr     r0, [r4, #W_PARENT]
+    bl      get_value
+    cmp     r0, r6
+    bne     1f
+    bl      mx_state
+    str     r4, [r0, #MX_BLIP]
+    ldr     r1, =UWTICK
+    ldr     r1, [r1]
+    str     r1, [r0, #MX_BT0]
+    b       2f
+1:
+    bl      mx_state
+    movs    r1, #0
+    str     r1, [r0, #MX_BLIP]
+2:
+    mov     r0, r4
+    mov     r1, r5
+    call    FADER_DOWN
+    pop     {r4, r5, r6, pc}
+
+@ touchUp(fader): stock, then a quick touch from the rest value puts it back.
+.thumb_func
+fader_up:
+    push    {r4, r5, lr}
+    sub     sp, #28
+    mov     r4, r0
+    call    FADER_UP
+    bl      mx_state
+    ldr     r1, [r0, #MX_BLIP]
+    cmp     r1, r4
+    bne     9f
+    movs    r1, #0
+    str     r1, [r0, #MX_BLIP]
+    ldr     r2, =UWTICK
+    ldr     r2, [r2]
+    ldr     r3, [r0, #MX_BT0]
+    subs    r2, r2, r3
+    cmp     r2, #MX_BLIP_MS
+    bhs     9f
+    ldrh    r0, [r4, #F_ID]
+    bl      rest_of
+    mov     r5, r0
+    movs    r0, #0x6E               @ same event the fader's touchMove posts
+    strh    r0, [sp]
+    ldr     r0, =EV_TAG
+    str     r0, [sp, #4]
+    ldrh    r0, [r4, #F_PAD]
+    strh    r0, [sp, #8]
+    ldrh    r0, [r4, #F_ID]
+    str     r0, [sp, #12]
+    str     r5, [sp, #16]
+    movs    r0, #0
+    str     r0, [sp, #20]
+    mov     r0, r4
+    mov     r1, sp
+    call    UI_POST_UP
+    mov     r0, r4
+    ldrh    r1, [r4, #F_ID]
+    mov     r2, r5
+    call    FADER_SET
+9:
+    add     sp, #28
+    pop     {r4, r5, pc}
+
+@ Copy of the stock fader vtable 0x080F16D8 with touchDown/touchUp wrapped.
+.align 2
+fader_vt:
+    .word   0x080C1EC1              @ +0x00 tick
+    .word   0x080C2135              @ +0x04 draw
+    .word   0x080AEB1D
+    .word   0x080AEBAB              @ +0x0C contains
+    .word   fader_down              @ +0x10 touchDown (Thumb bit from the symbol)
+    .word   0x080C20E5              @ +0x14 touchMove
+    .word   fader_up                @ +0x18 touchUp
+    .word   0x080C1EE1              @ +0x1C acceptsTouch
+    .word   0x080C1EE5              @ +0x20 setRect
+    .word   0x080A3317
+    .word   0x080AEB5F              @ +0x28 hitTest
+    .word   0x080A331B
+    .word   0x080AEC05              @ +0x30 onChildEvent
+    .word   0x080C1F17              @ +0x34 onEvent
+    .word   0
+    .word   0
+
 @ ---- App_HandleInput call sites (replace bl App_SetScreen; r0 = app, r1 = screen)
 
 @ MIX button (0x080A32DE): stock picks 0x2F when already on Mix. Stay on Mix instead;
-@ holding MIX there is the Vol/Pan + select layer.
+@ holding MIX there is the second layer + select-without-play.
 .thumb_func
 mix_btn_screen:
     cmp     r1, #0x2F
@@ -454,11 +562,13 @@ info_to_mute:
     bx      r12
 
 .align 2
-s_cut: .asciz "Cu"
+s_vol: .asciz "Vo"
 s_dec: .asciz "De"
+s_cut: .asciz "Cu"
+s_pit: .asciz "Pi"
+s_pan: .asciz "Pa"
+s_att: .asciz "At"
 s_sa:  .asciz "A"
 s_sb:  .asciz "B"
-s_vol: .asciz "Vo"
-s_pan: .asciz "Pa"
 .align 2
 .ltorg

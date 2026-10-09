@@ -5,16 +5,16 @@
 ## What the Mix screen does
 
 - **Pads play on Mix.** Tapping a pad triggers it exactly like on the Pads screen, so it also records with REC. Playing a pad selects it.
-- **Four side faders show the selected pad's params:**
+- **Four side faders, two layers.** Each fader shows a param of the selected pad, and the knob in the same corner drives it (stock step and acceleration). You can also drag the faders.
 
-  | | Left column | Right column |
-  | --- | --- | --- |
-  | Top | Cutoff (Filter) | Decay |
-  | Bottom | Send A (FX1) | Send B (FX2) |
+  | | Main layer | | MIX held | |
+  | --- | --- | --- | --- | --- |
+  | | Left | Right | Left | Right |
+  | Top | Vol | Cutoff (Filter) | Pan | Send A (FX1) |
+  | Bottom | Decay | Pitch | Attack | Send B (FX2) |
 
-  You can drag a fader to change its value.
-- **The four knobs** drive the fader in the same corner. Each knob uses that param's stock step and acceleration.
-- **Hold MIX.** The left column becomes one tall **Vol** fader and the right column one tall **Pan** fader. Tapping a pad then selects it without playing it. Let go of MIX and the four faders come back.
+- **Hold MIX** to show the second layer. While it's held, tapping a pad selects it without playing it.
+- **Blip from rest.** If a param sits at its rest position, a quick touch (under 0.3 s) sets the value under your finger and puts the rest value back on release. Touch longer and the new value stays. Rest positions: Vol at minimum, Cutoff centre, Pitch unshifted, Attack/Decay/Sends at 0. Pan never blips.
 - **MIX** opens Mix from any screen. On Mix it no longer flips to Mute.
 - **INFO** on Mix opens Mute:
   - A short press stays in Mute, and INFO again goes back to Mix (as before).
@@ -32,15 +32,12 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 ## Check on the device
 
 1. On Mix, tap pads: they play. With REC armed they record.
-2. Turn each knob. The fader in the same corner moves and you hear Cutoff, Decay, Send A or Send B change. If a knob moves the wrong fader, the encoder order is off: swap the entries in `knob_slider` in `mixui.S` and rebuild.
+2. Turn each knob, in both layers. The fader in the same corner moves and you hear the change. If a knob moves the wrong fader, the encoder order is off: swap the entries in `knob_slider` in `mixui.S` and rebuild.
 3. Drag each fader. The value changes for the selected pad.
-4. Hold MIX:
-   - The tall Vol and Pan faders appear.
-   - Dragging them changes level and pan.
-   - Tapping a pad selects it silently.
-5. Let go of MIX: the four faders return.
+4. Hold MIX: Pan / Attack / Send A / Send B appear, and tapping a pad selects it silently. Let go: Vol / Decay / Cutoff / Pitch return.
+5. With Send A at 0, tap its fader quickly: a short send blip, then back to 0. Hold it longer: the send stays.
 6. INFO short press stays in Mute; press INFO again to return to Mix. Hold INFO: Mute while held, Mix on release.
-7. Save the preset and reload it: Cutoff, Decay and sends persist.
+7. Save the preset and reload it: the values persist.
 8. Folders and Repitch behave as in 3.1.X.
 
 ## Rebuild and test
@@ -53,3 +50,5 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 `build_patch.py` reuses `../3.1.9-folders-repitch/build_patch.py` (sites, linker, verify). It assembles `mix_cave.S`, which includes the 3.1.X `cave.S` and then `mixui.S`. On top of 3.1.X it patches:
 - two `bl App_SetScreen` calls in `App_HandleInput` (MIX at `0x080A32DE`, INFO on Mix at `0x080A30DC`);
 - three words of the Mix vtable (tick, onChildEvent, onEvent).
+
+The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with touchDown/touchUp wrapped for the blip, so faders on other screens are untouched.

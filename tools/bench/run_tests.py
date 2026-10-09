@@ -701,9 +701,11 @@ APP_OBJ = 0x24020088
 SET_SCREEN = 0x0809EAEC
 SLIDER_STEP = 0x080B0D54
 GET_PARAM = 0x08099504
-MIX_FADERS = {"cut": 0x2C48, "dec": 0x2DA0, "sa": 0x2CF4, "sb": 0x2E4C}
+MIX_FADERS = {"tl": 0x2C48, "tr": 0x2DA0, "bl": 0x2CF4, "br": 0x2E4C}
 MIX_FRAMES = (0x29C8, 0x2A68, 0x2B08, 0x2BA8)
-MIX_VALUES = {0xC8: 400, 0x3E: 700, 0xD9: 250, 0xDA: 900, 0x04: -6000, 0x62: 300}
+MIX_VALUES = {0x04: -6000, 0x3E: 700, 0xC8: 400, 0x5C: 0, 0x62: 300, 0x3C: 0, 0xD9: 250, 0xDA: 900}
+MIX_MAIN = {"tl": 0x04, "bl": 0x3E, "tr": 0xC8, "br": 0x5C}
+MIX_HELD = {"tl": 0x62, "bl": 0x3C, "tr": 0xD9, "br": 0xDA}
 
 
 def _mix_setup(bench, build=True):
@@ -786,8 +788,13 @@ def t_mix_knobs(bench, res):
                                                     struct.unpack("<i", struct.pack("<I", board.arg(1)))[0])))
     for idx in range(5):
         b.call(bench.sym["mix_on_event"], MIX_OBJ, _mix_ev(b, 0x32, idx=idx, val=3 - idx))
-    want = [(0x1E48, 3), (0x2408, 2), (0x2128, 1), (0x26E8, 0)]
-    res.check(steps == want, f"knobs TL/BL/TR/BR -> Cutoff/SendA/Decay/SendB sliders {[(hex(o), d) for o, d in steps]}")
+    want = [(0x1E48, 3), (0x2128, 2), (0x2408, 1), (0x26E8, 0)]
+    res.check(steps == want, f"knobs TL/BL/TR/BR -> corner sliders {[(hex(o), d) for o, d in steps]}")
+
+
+def _slider_ids(b):
+    return {n: struct.unpack("<I", b.mu.mem_read(MIX_OBJ + off + 0x14, 4))[0]
+            for n, off in (("tl", 0x1E48), ("bl", 0x2128), ("tr", 0x2408), ("br", 0x26E8))}
 
 
 def t_mix_layout(bench, res):
@@ -795,45 +802,85 @@ def t_mix_layout(bench, res):
     fl = _mix_tick(bench)
     res.check(fl[0] & 1, "first tick asks for a full redraw")
     res.check(all(_fader(b, n)["parent"] == MIX_OBJ for n in MIX_FADERS), "faders attached to Mix")
+    res.check(all(b.u32(MIX_OBJ + off) == bench.sym["fader_vt"] for off in MIX_FADERS.values()),
+              "faders use the Mix fader vtable")
     res.check(all(b.u8(MIX_OBJ + f + 0x30) == 1 for f in MIX_FRAMES), "empty frames hidden")
+    rects = {n: _fader(b, n)["rect"] for n in MIX_FADERS}
+    res.check(rects == {"tl": (1, 111, 30, 109), "tr": (288, 111, 30, 109), "bl": (1, 1, 30, 109),
+                        "br": (288, 1, 30, 109)}, f"corner rects {rects}")
     ids = {n: _fader(b, n)["id"] for n in MIX_FADERS}
-    res.check(ids == {"cut": 0xC8, "dec": 0x3E, "sa": 0xD9, "sb": 0xDA}, f"knob params on the faders {ids}")
+    res.check(ids == MIX_MAIN, f"main layer Vol/Decay/Cutoff/Pitch {ids}")
+    res.check(_slider_ids(b) == MIX_MAIN, f"knobs bound to the main layer {_slider_ids(b)}")
     _mix_tick(bench)
-    res.check(b.u32(MIX_OBJ + 0x2C48 + 0x2C) == MIX_OBJ and _mix_tick(bench)[0] == 0, "attach only once")
+    res.check(_mix_tick(bench)[0] == 0, "attach only once")
     b.mu.mem_write(BTN_MIX, b"\x00")
     fl = _mix_tick(bench)
-    sa, sb, cut, dec = (_fader(b, n) for n in ("sa", "sb", "cut", "dec"))
-    res.check(fl[0] & 1, "MIX hold redraws")
-    res.check(sa["id"] == 0x04 and sa["rect"] == (1, 1, 30, 219) and not sa["hidden"], f"MIX held: tall Vol left {sa}")
-    res.check(sb["id"] == 0x62 and sb["rect"] == (288, 1, 30, 219) and not sb["hidden"], f"MIX held: tall Pan right {sb}")
-    res.check(cut["hidden"] and dec["hidden"], "MIX held: Cutoff/Decay faders hidden")
+    ids = {n: _fader(b, n)["id"] for n in MIX_FADERS}
+    res.check(fl[0] & 1 and ids == MIX_HELD, f"MIX held: Pan/Attack/SendA/SendB {ids}")
+    res.check(_slider_ids(b) == MIX_HELD, f"knobs follow the MIX layer {_slider_ids(b)}")
+    res.check(not any(_fader(b, n)["hidden"] for n in MIX_FADERS), "all four faders shown in both layers")
     b.mu.mem_write(BTN_MIX, b"\x01")
     _mix_tick(bench)
-    sa, cut = _fader(b, "sa"), _fader(b, "cut")
-    res.check(sa["id"] == 0xD9 and sa["rect"] == (1, 1, 30, 109) and not cut["hidden"], "MIX released: four faders back")
+    res.check({n: _fader(b, n)["id"] for n in MIX_FADERS} == MIX_MAIN, "MIX released: main layer back")
     b.call(bench.sym["mix_on_event"], MIX_OBJ, _mix_ev(b, 0x63, key=0x23))
     pads = {n: _fader(b, n)["pad"] for n in MIX_FADERS}
     res.check(set(pads.values()) == {0x23}, f"faders follow the selected pad {pads}")
-    ids = {n: _fader(b, n)["id"] for n in MIX_FADERS}
-    res.check(ids == {"cut": 0xC8, "dec": 0x3E, "sa": 0xD9, "sb": 0xDA}, f"select keeps knob params {ids}")
-    sl = {off: struct.unpack("<I", b.mu.mem_read(MIX_OBJ + off + 0x14, 4))[0] for off in (0x1E48, 0x2128, 0x2408, 0x26E8)}
-    res.check(sl == {0x1E48: 0xC8, 0x2128: 0x3E, 0x2408: 0xD9, 0x26E8: 0xDA}, f"value sliders bound {sl}")
+    res.check(_slider_ids(b) == MIX_MAIN, f"select keeps the layer's knob params {_slider_ids(b)}")
 
 
-def t_mix_fader_touch(bench, res):
+def _touch_setup(bench):
     b = _mix_setup(bench)
     _mix_tick(bench)
     b.call(bench.sym["mix_on_event"], MIX_OBJ, _mix_ev(b, 0x63, key=0x23))
-    b.mu.mem_write(BTN_MIX, b"\x00")
-    _mix_tick(bench)
     posts = []
     b.stub(UI_POST_UP, lambda board: posts.append(struct.unpack("<HxxxxxxHxxIi", board.mu.mem_read(board.arg(1), 0x14))))
+    return b, posts
+
+
+def _touch(bench, name, y, hold_ms, t0=10000):
+    b = bench.b
+    f = MIX_OBJ + MIX_FADERS[name]
+    vt = bench.sym["fader_vt"]
     pt = MIX_EV + 0x40
-    b.mu.mem_write(pt, struct.pack("<2i", 10, 1 + 219 // 2))
-    b.call(0x080C20E5, MIX_OBJ + MIX_FADERS["sa"], pt)       # fader touchMove
-    ok = len(posts) == 1 and posts[0][0] == 0x6E and posts[0][1] == 0x23 and posts[0][2] == 0x04
-    res.check(ok, f"dragging the tall Vol fader posts 0x6E for the selected pad {posts}")
+    b.mu.mem_write(pt, struct.pack("<2i", 10, y))
+    b.w32(UWTICK, t0)
+    b.call(b.u32(vt + 0x10), f, pt)          # touchDown (through the vtable, as the GUI does)
+    b.w32(UWTICK, t0 + hold_ms)
+    b.call(b.u32(vt + 0x18), f)              # touchUp
+
+
+def t_mix_fader_touch(bench, res):
+    b, posts = _touch_setup(bench)
+    _touch(bench, "tl", 111 + 109 // 2, 50)      # Vol at -6 dB: not at rest, so no blip
+    ok = len(posts) == 1 and posts[0][:3] == (0x6E, 0x23, 0x04)
+    res.check(ok, f"dragging Vol posts 0x6E for the selected pad {posts}")
     res.check(ok and -60000 < posts[0][3] < -30000, f"mid-height Vol is mid-range ({posts[0][3] if posts else None})")
+
+
+def t_mix_blip(bench, res):
+    b, posts = _touch_setup(bench)
+    MIX_VALUES[0x5C] = 0
+    _touch(bench, "br", 1 + 80, 120)             # Pitch at 0, quick tap
+    res.check(len(posts) == 2 and posts[0][2] == 0x5C and posts[0][3] != 0 and posts[1][2:] == (0x5C, 0),
+              f"quick tap from rest blips Pitch and puts 0 back {posts}")
+    posts.clear()
+    _touch(bench, "br", 1 + 80, 600)             # long hold keeps the value
+    res.check(len(posts) == 1 and posts[0][3] != 0, f"long hold from rest keeps the value {posts}")
+    posts.clear()
+    MIX_VALUES[0x04] = -96000
+    _touch(bench, "tl", 111 + 30, 100)           # Vol at minimum
+    res.check(len(posts) == 2 and posts[1][2:] == (0x04, -96000), f"Vol blips back to minimum {posts}")
+    MIX_VALUES[0x04] = -6000
+    posts.clear()
+    _touch(bench, "tl", 111 + 30, 100)           # Vol not at rest
+    res.check(len(posts) == 1, f"no blip when not at rest {posts}")
+    posts.clear()
+    b.mu.mem_write(BTN_MIX, b"\x00")
+    _mix_tick(bench)
+    MIX_VALUES[0x62] = 0
+    _touch(bench, "tl", 111 + 30, 100)           # Pan at centre: never blips
+    res.check(len(posts) == 1 and posts[0][2] == 0x62, f"Pan at centre does not blip {posts}")
+    MIX_VALUES[0x62] = 300
 
 
 def t_mix_button(bench, res):
@@ -938,6 +985,7 @@ def main():
             ("Mix knobs drive Cutoff/Decay/Sends", t_mix_knobs),
             ("Mix faders and MIX-hold layout", t_mix_layout),
             ("Mix fader touch sets the pad", t_mix_fader_touch),
+            ("Mix fader blip from rest", t_mix_blip),
             ("MIX button stays on Mix", t_mix_button),
             ("INFO momentary Mute", t_info_momentary),
         ]
