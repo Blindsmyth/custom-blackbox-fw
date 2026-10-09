@@ -42,6 +42,7 @@ VTABLE = [
     (0x080F0F44, "mix_on_event", 0x080B5C71),
     (0x080F0E84, "pads_on_event", 0x080B4135),         # Pads onEvent
     (0x080F0E80, "pads_child_event", 0x080B3E85),      # Pads onChildEvent
+    (0x080F0E50, "pads_tick", 0x080B476D),             # Pads tick (edit panel while PADS held)
     (0x080F0EC4, "seq_on_event", 0x080B5285),          # Seq onEvent
     (0x080F0EC0, "seq_child_event", 0x080B4DED),       # Seq onChildEvent
     (0x080F0E90, "seq_tick", 0x080B55F5),              # Seq tick (layer panel while SEQS held)

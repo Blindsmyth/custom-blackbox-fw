@@ -26,7 +26,7 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 ## Other screens
 
 - **Knobs no longer select pads or sequences or switch pages.** On Pads all four knobs are off for now (pad selection and the VEL / CUT-COPY panel switch); on Seq the three pad-selection knobs and the panel switch are off and the top-right knob changes the length (below). Parameter menus keep both knobs: one moves through the list, the other changes the selected parameter.
-- **Hold PADS + tap a pad:** selects it without playing.
+- **Hold PADS:** the side panel shows CUT / COPY / PSTE / CLR (instead of VEL), and tapping a pad selects it without playing. Let go: VEL comes back.
 - **Hold SEQS:** the side panel shows the layers A–D (tap one to pick it) and tapping a pad selects that sequence without starting or stopping it. Let go: OFF / UNDO / CLR come back.
 - **Seq length:**
   - The button above UNDO shows the current layer's length in bars ("1 bar", "0.5" …).
@@ -58,7 +58,7 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 8. Save the preset and reload it: the values persist.
 9. Folders and Repitch behave as in 3.1.X.
 10. Pads: no knob does anything. Seq: only the top-right knob (length). Pad INFO / settings lists: one knob still picks the row, the other changes it.
-11. Hold PADS, tap a pad: it's selected and silent. Hold SEQS: layers A–D replace OFF/UNDO/CLR; tap a layer, tap a pad (selected, play state unchanged), let go.
+11. Hold PADS: CUT / COPY / PSTE / CLR replace VEL; tap a pad (selected, silent), tap COPY, tap another pad, PSTE; let go: VEL. Hold SEQS: layers A–D replace OFF/UNDO/CLR; tap a layer, tap a pad (selected, play state unchanged), let go.
 12. Seq: the button above UNDO shows the length; turn the top-right knob right (double) and left (halve), then UNDO.
 13. EQ: drag each dot directly. A new preset's EQ shows Low Shelf / Param / Param / High Shelf.
 14. FX: DJ FX → FX again → Return page with A Delay / B Reverb / EQ / (empty) along the bottom; A and B switch the return, EQ opens the EQ page, FX goes back to DJ FX.

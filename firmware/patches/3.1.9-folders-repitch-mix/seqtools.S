@@ -102,35 +102,22 @@ seq_on_event:
 9:
     bx      lr
 
-@ tick(seq, flags): stock, then show the layer panel while SEQS is held.
+@ tick(seq, flags): stock, then show the layer panel while SEQS is held (padsel.S).
 .thumb_func
 seq_tick:
     push    {r4, r5, r6, lr}
     mov     r4, r0
     mov     r5, r1
     call    SEQ_TICK
-    ldr     r1, =BTN_SEQS_LV
-    ldrb    r1, [r1]
-    cmp     r1, #0
-    ite     eq
-    moveq   r6, #1                  @ held
-    movne   r6, #0
-    bl      mx_state
-    ldr     r1, [r0, #MX_SEQ_PANEL]
-    cmp     r1, r6
-    beq     9f
-    str     r6, [r0, #MX_SEQ_PANEL]
     movw    r0, #SEQ_PANEL_A
-    add     r0, r4
-    strb    r6, [r0, #0x30]         @ OFF/UNDO/CLR hidden while held
-    eor     r1, r6, #1
-    movw    r0, #SEQ_PANEL_B
-    add     r0, r4
-    strb    r1, [r0, #0x30]         @ layers shown while held
-    movs    r0, #1
-    strb    r0, [r5]
-    strb    r0, [r5, #1]
-9:
+    movw    r1, #SEQ_PANEL_B
+    push    {r0, r1}
+    mov     r0, r4
+    mov     r1, r5
+    ldr     r2, =BTN_SEQS_LV
+    movs    r3, #MX_SEQ_PANEL
+    bl      hold_panel
+    add     sp, #8
     pop     {r4, r5, r6, pc}
 
 @ r0 = app, r1 = sequence pad byte. Sets r0 = layer object, r1 = layer, r2 = base object,

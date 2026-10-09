@@ -122,6 +122,7 @@ mx_state:
     str     r1, [r0, #24]           @ seqtools MX_SEQ_T
     str     r1, [r0, #28]           @ fxret MX_FX_LAST
     str     r1, [r0, #40]           @ seqtools MX_SEQ_PANEL
+    str     r1, [r0, #44]           @ padsel MX_PADS_PANEL
 1:
     pop     {r2}
     bx      lr

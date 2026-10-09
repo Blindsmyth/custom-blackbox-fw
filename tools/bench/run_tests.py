@@ -1143,6 +1143,24 @@ def t_seq_panel(bench, res):
     res.check(hid() == (0, 1), f"release brings OFF/UNDO/CLR back {hid()}")
 
 
+def t_pads_panel(bench, res):
+    b = _mix_setup(bench, build=False)
+    pads = 0x30020000
+    b.mu.mem_write(pads, b"\0" * 0x3000)
+    b.call(0x080B4528, pads)
+    b.stub(0x080B476C, lambda board: None)
+    hid = lambda: (b.u8(pads + 0x2110 + 0x30), b.u8(pads + 0x21F0 + 0x30))
+    fl = MIX_FL
+    res.check(hid() == (0, 1), f"stock shows the VEL fader {hid()}")
+    _btn(b, 0, True)
+    b.mu.mem_write(fl, b"\0\0")
+    b.call(bench.sym["pads_tick"], pads, fl)
+    res.check(hid() == (1, 0) and b.mu.mem_read(fl, 2) == b"\1\1", f"PADS held shows CUT/COPY/PSTE/CLR {hid()}")
+    _btn(b, 0, False)
+    b.call(bench.sym["pads_tick"], pads, fl)
+    res.check(hid() == (0, 1), f"release brings VEL back {hid()}")
+
+
 def t_mix_button(bench, res):
     b = _mix_setup(bench, build=False)
     calls = []
@@ -1254,6 +1272,7 @@ def main():
             ("PADS/SEQS held + pad selects only", t_held_select),
             ("Seq length knob and bar label", t_seq_length),
             ("SEQS held shows the layer panel", t_seq_panel),
+            ("PADS held shows the edit panel", t_pads_panel),
             ("EQ tap a dot and drag", t_eq_tap),
             ("FX toggles DJ FX and Return A/B/EQ", t_fx_return),
             ("INFO momentary Mute", t_info_momentary),
