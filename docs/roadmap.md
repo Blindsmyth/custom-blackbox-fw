@@ -33,7 +33,7 @@ Encoders no longer select pads, sequences or menu items. Selection is PADS held 
 | SEQS held + pad = select only | Seq onChildEvent `0x080B4DEC`: post `0xFC` instead of `0xFA` | S |
 | PADS held + pad = select only | Pads onChildEvent `0x080B3E84`: 3 → `0x63`, swallow 4 | S |
 | Seq bar count above Undo | Seq+`0x3F70` button text, bars = `0x86 × table[0x85]` (`0x080ECA6C`) / 4 | S–M |
-| Seq TR knob = double / halve | Double `FUN_0809C5B4`; halve: snapshot `FUN_08098254`, `0x86/2`, trim events, push `FUN_080985A0`, `FUN_0809C2C8` | M |
+| Seq TR knob = double / halve (current layer only) | Double `FUN_0809C5B4`; halve: snapshot `FUN_08098254`, `0x86/2`, trim events, push `FUN_080985A0`, `FUN_0809C2C8` | M |
 | FX cycle DJ FX → Return FX → EQ | `App_HandleInput` FX block `0x080A32A4`: 0x37 → 0x23 (set App+`0x28` = `0x300`/`0x310`) → 0x36 → 0x37 | M |
 | Return page: Tools-style buttons Return A, Return B, 2 spare | Map the Tools button row first; A/B post `0x116` with `0x300`/`0x310` | M |
 
@@ -50,12 +50,13 @@ Encoders no longer select pads, sequences or menu items. Selection is PADS held 
 - PADS held shows a picker for the right column (x `0x101`, 62 px). The functions:
   - **Vel Slide:** the VEL fader `+0x2144` (`0xCC`), full height;
   - **Beat Repeat**;
-  - **Editing:** CUT/COPY/PSTE/CLR;
-  - **Performance:** to define.
+  - **Editing:** CUT/COPY/PSTE/CLR.
+- There's no Performance function: the Mix screen is the performance surface.
 
 ### Batch 4: Beat Repeat
 
 - Hold a pad: it retriggers at a rate from the Delay musical-time list (param `0x33`): 1/64, 1/32, 1/16, 1/8T, 1/16D, 1/8, 1/4T, 1/8D, 1/4, 1/2T, 1/2, 1 bar.
+- The rate slider snaps to those 12 entries.
 - It re-posts `Engine_PadPress`/`Release` (`0x0804C61C`/`0x0804C5D4`) on the clock: 960 ticks per beat, tempo from `0x84`.
 - Risks: jitter, and the 64-deep pad queue (`FUN_0804F504`). L.
 
@@ -95,9 +96,12 @@ Encoders no longer select pads, sequences or menu items. Selection is PADS held 
 
 - Decide what the freed encoders do after Batch 0.
 
+## Decisions
+
+- No Performance side function; Mix covers performance.
+- Seq double/halve acts on the current layer only, like stock Double.
+- The Beat Repeat rate slider snaps to the 12-entry rate list.
+
 ## Open questions
 
-- What the Performance side function does.
-- Whether Seq double/halve should act on all four layers (stock Double acts on the active layer only).
-- What the two spare Return buttons do.
-- Beat Repeat rate control: does the slider snap to the list, or knob only?
+- The two spare Return buttons. There are only two FX returns: Delay (A, `0x300`) and Reverb (B, `0x310`). FX slot 3 is the master EQ (`0x320`) and slot 4 is empty. The choice is to hide the spares, keep them blank, or make one an EQ shortcut.
