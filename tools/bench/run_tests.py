@@ -20,6 +20,7 @@ that changed instead.
 import argparse
 import json
 import os
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -687,6 +688,191 @@ def t_clean(bench, res):
     res.check("Presets/One/keep.wav" in bench.files(), "top-level decoy untouched")
 
 
+# ---- Mix overhaul tests (3.1.Q)
+
+MIX_OBJ = 0x30010000          # bench-built Mix widget (SRAM1 is unused by 3.1.X)
+MIX_EV = 0x30014000
+MIX_FL = 0x30014100
+MX_STATE = 0x38005200
+BTN_MIX = 0x24009B36
+BTN_INFO = 0x24009BDE
+UWTICK = 0x24015CE4
+APP_OBJ = 0x24020088
+SET_SCREEN = 0x0809EAEC
+SLIDER_STEP = 0x080B0D54
+GET_PARAM = 0x08099504
+MIX_FADERS = {"cut": 0x2C48, "dec": 0x2DA0, "sa": 0x2CF4, "sb": 0x2E4C}
+MIX_FRAMES = (0x29C8, 0x2A68, 0x2B08, 0x2BA8)
+MIX_VALUES = {0xC8: 400, 0x3E: 700, 0xD9: 250, 0xDA: 900, 0x04: -6000, 0x62: 300}
+
+
+def _mix_setup(bench, build=True):
+    b = bench.b
+    b.mu.mem_write(0xE000ED88, struct.pack("<I", 0xF << 20))
+    b.mu.mem_write(MX_STATE, b"\0" * 16)
+    b.mu.mem_write(BTN_MIX, b"\x01")
+    b.mu.mem_write(BTN_INFO, b"\x01")
+
+    def getp(board):
+        board.mu.mem_write(board.arg(3), struct.pack("<i", MIX_VALUES.get(board.arg(2), 0)))
+        return 1
+    b.stub(GET_PARAM, getp)
+    b.mu.mem_write(MIX_OBJ, b"\0" * 0x3000)
+    if build:
+        if b.call(0x0808E305, 0x3E) == 0:   # param registry not built yet
+            b.call(0x0808C159)
+        b.call(0x080B5F98, MIX_OBJ)
+    return b
+
+
+def _mix_ev(b, typ, idx=0, val=0, key=0):
+    b.mu.mem_write(MIX_EV, b"\0" * 0x18)
+    b.mu.mem_write(MIX_EV, struct.pack("<H", typ))
+    b.mu.mem_write(MIX_EV + 8, struct.pack("<H", key))
+    b.mu.mem_write(MIX_EV + 0xC, struct.pack("<H", idx))
+    b.mu.mem_write(MIX_EV + 0x10, struct.pack("<h", val))
+    return MIX_EV
+
+
+def _mix_tick(bench):
+    b = bench.b
+    b.mu.mem_write(MIX_FL, b"\0\0")
+    b.call(bench.sym["mix_tick"], MIX_OBJ, MIX_FL)
+    return b.mu.mem_read(MIX_FL, 2)
+
+
+def _fader(b, name):
+    f = MIX_OBJ + MIX_FADERS[name]
+    return {"rect": struct.unpack("<4i", b.mu.mem_read(f + 4, 16)), "hidden": b.u8(f + 0x30),
+            "id": struct.unpack("<H", b.mu.mem_read(f + 0x3E, 2))[0],
+            "pad": struct.unpack("<H", b.mu.mem_read(f + 0x38, 2))[0], "parent": b.u32(f + 0x2C)}
+
+
+def t_mix_hooks(bench, res):
+    img = bench.b.image
+    for va, name, stock in ((0x080F0F10, "mix_tick", 0x080B6601),
+                            (0x080F0F40, "mix_child_event", 0x080B5A4D),
+                            (0x080F0F44, "mix_on_event", 0x080B5C71)):
+        word = struct.unpack_from("<I", img, va - bd.BASE)[0]
+        res.check(word == bench.sym[name] | 1, f"Mix vtable {va:#x} -> {name} ({word:#x}, stock {stock:#x})")
+    res.check(img[VERSION_OFF] == ord("Q"), "menu letter is Q")
+
+
+def t_mix_pad_plays(bench, res):
+    b = _mix_setup(bench, build=False)
+    posts = []
+    b.stub(UI_POST_UP, lambda board: posts.append(struct.unpack("<H", board.mu.mem_read(board.arg(1), 2))[0]))
+    fn = bench.sym["mix_child_event"]
+    r = b.call(fn, MIX_OBJ, _mix_ev(b, 3, key=0x12))
+    res.check(r == 1 and not posts, f"pad press propagates to App_HandleUiEvent (r={r}, posts={posts})")
+    r = b.call(fn, MIX_OBJ, _mix_ev(b, 4, key=0x12))
+    res.check(r == 1 and not posts, f"pad release propagates (r={r})")
+    b.mu.mem_write(BTN_MIX, b"\x00")
+    r = b.call(fn, MIX_OBJ, _mix_ev(b, 3, key=0x12))
+    res.check(r == 0 and posts == [0x63], f"MIX held: press only selects (r={r}, posts={posts})")
+    r = b.call(fn, MIX_OBJ, _mix_ev(b, 4, key=0x12))
+    res.check(r == 0 and posts == [0x63], f"MIX held: release swallowed (r={r})")
+    b.mu.mem_write(BTN_MIX, b"\x01")
+    b.mu.mem_write(MIX_OBJ + 0x1E40, b"\x01")
+    posts.clear()
+    r = b.call(fn, MIX_OBJ, _mix_ev(b, 3, key=0x12))
+    res.check(r == 0 and posts == [0x63], "Mute mode keeps the stock handler")
+
+
+def t_mix_knobs(bench, res):
+    b = _mix_setup(bench, build=False)
+    steps = []
+    b.stub(SLIDER_STEP, lambda board: steps.append((board.arg(0) - MIX_OBJ,
+                                                    struct.unpack("<i", struct.pack("<I", board.arg(1)))[0])))
+    for idx in range(5):
+        b.call(bench.sym["mix_on_event"], MIX_OBJ, _mix_ev(b, 0x32, idx=idx, val=3 - idx))
+    want = [(0x1E48, 3), (0x2408, 2), (0x2128, 1), (0x26E8, 0)]
+    res.check(steps == want, f"knobs TL/BL/TR/BR -> Cutoff/SendA/Decay/SendB sliders {[(hex(o), d) for o, d in steps]}")
+
+
+def t_mix_layout(bench, res):
+    b = _mix_setup(bench)
+    fl = _mix_tick(bench)
+    res.check(fl[0] & 1, "first tick asks for a full redraw")
+    res.check(all(_fader(b, n)["parent"] == MIX_OBJ for n in MIX_FADERS), "faders attached to Mix")
+    res.check(all(b.u8(MIX_OBJ + f + 0x30) == 1 for f in MIX_FRAMES), "empty frames hidden")
+    ids = {n: _fader(b, n)["id"] for n in MIX_FADERS}
+    res.check(ids == {"cut": 0xC8, "dec": 0x3E, "sa": 0xD9, "sb": 0xDA}, f"knob params on the faders {ids}")
+    _mix_tick(bench)
+    res.check(b.u32(MIX_OBJ + 0x2C48 + 0x2C) == MIX_OBJ and _mix_tick(bench)[0] == 0, "attach only once")
+    b.mu.mem_write(BTN_MIX, b"\x00")
+    fl = _mix_tick(bench)
+    sa, sb, cut, dec = (_fader(b, n) for n in ("sa", "sb", "cut", "dec"))
+    res.check(fl[0] & 1, "MIX hold redraws")
+    res.check(sa["id"] == 0x04 and sa["rect"] == (1, 1, 30, 219) and not sa["hidden"], f"MIX held: tall Vol left {sa}")
+    res.check(sb["id"] == 0x62 and sb["rect"] == (288, 1, 30, 219) and not sb["hidden"], f"MIX held: tall Pan right {sb}")
+    res.check(cut["hidden"] and dec["hidden"], "MIX held: Cutoff/Decay faders hidden")
+    b.mu.mem_write(BTN_MIX, b"\x01")
+    _mix_tick(bench)
+    sa, cut = _fader(b, "sa"), _fader(b, "cut")
+    res.check(sa["id"] == 0xD9 and sa["rect"] == (1, 1, 30, 109) and not cut["hidden"], "MIX released: four faders back")
+    b.call(bench.sym["mix_on_event"], MIX_OBJ, _mix_ev(b, 0x63, key=0x23))
+    pads = {n: _fader(b, n)["pad"] for n in MIX_FADERS}
+    res.check(set(pads.values()) == {0x23}, f"faders follow the selected pad {pads}")
+    ids = {n: _fader(b, n)["id"] for n in MIX_FADERS}
+    res.check(ids == {"cut": 0xC8, "dec": 0x3E, "sa": 0xD9, "sb": 0xDA}, f"select keeps knob params {ids}")
+    sl = {off: struct.unpack("<I", b.mu.mem_read(MIX_OBJ + off + 0x14, 4))[0] for off in (0x1E48, 0x2128, 0x2408, 0x26E8)}
+    res.check(sl == {0x1E48: 0xC8, 0x2128: 0x3E, 0x2408: 0xD9, 0x26E8: 0xDA}, f"value sliders bound {sl}")
+
+
+def t_mix_fader_touch(bench, res):
+    b = _mix_setup(bench)
+    _mix_tick(bench)
+    b.call(bench.sym["mix_on_event"], MIX_OBJ, _mix_ev(b, 0x63, key=0x23))
+    b.mu.mem_write(BTN_MIX, b"\x00")
+    _mix_tick(bench)
+    posts = []
+    b.stub(UI_POST_UP, lambda board: posts.append(struct.unpack("<HxxxxxxHxxIi", board.mu.mem_read(board.arg(1), 0x14))))
+    pt = MIX_EV + 0x40
+    b.mu.mem_write(pt, struct.pack("<2i", 10, 1 + 219 // 2))
+    b.call(0x080C20E5, MIX_OBJ + MIX_FADERS["sa"], pt)       # fader touchMove
+    ok = len(posts) == 1 and posts[0][0] == 0x6E and posts[0][1] == 0x23 and posts[0][2] == 0x04
+    res.check(ok, f"dragging the tall Vol fader posts 0x6E for the selected pad {posts}")
+    res.check(ok and -60000 < posts[0][3] < -30000, f"mid-height Vol is mid-range ({posts[0][3] if posts else None})")
+
+
+def t_mix_button(bench, res):
+    b = _mix_setup(bench, build=False)
+    calls = []
+    b.stub(SET_SCREEN, lambda board: calls.append(board.arg(1)))
+    b.call(bench.sym["mix_btn_screen"], APP_OBJ, 0x2F, 0, 0)
+    res.check(calls == [], "MIX on Mix stays on Mix")
+    b.call(bench.sym["mix_btn_screen"], APP_OBJ, 0x2E, 0, 0)
+    res.check(calls == [0x2E], f"MIX elsewhere opens Mix {calls}")
+
+
+def t_info_momentary(bench, res):
+    b = _mix_setup(bench)
+    calls = []
+    b.stub(SET_SCREEN, lambda board: calls.append(board.arg(1)))
+    _mix_tick(bench)
+    b.mu.mem_write(MIX_OBJ + 0x1E40, b"\x01")       # Mute mode
+    b.w32(UWTICK, 1000)
+    b.call(bench.sym["info_to_mute"], APP_OBJ, 0x2F, 0, 0)
+    res.check(calls == [0x2F], f"INFO on Mix opens Mute {calls}")
+    b.mu.mem_write(BTN_INFO, b"\x00")
+    b.w32(UWTICK, 1200)
+    _mix_tick(bench)
+    res.check(b.u32(MX_STATE + 8) == 1, "short hold is still a toggle")
+    b.w32(UWTICK, 1450)
+    _mix_tick(bench)
+    res.check(b.u32(MX_STATE + 8) == 2, "held past 400 ms becomes momentary")
+    b.mu.mem_write(BTN_INFO, b"\x01")
+    _mix_tick(bench)
+    res.check(calls == [0x2F, 0x2E], f"release after a long hold returns to Mix {calls}")
+    calls.clear()
+    b.w32(UWTICK, 5000)
+    b.call(bench.sym["info_to_mute"], APP_OBJ, 0x2F, 0, 0)
+    b.w32(UWTICK, 5100)
+    _mix_tick(bench)
+    res.check(calls == [0x2F] and b.u32(MX_STATE + 8) == 0, f"short press stays in Mute {calls}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
@@ -744,6 +930,16 @@ def main():
             ("repitch clip-engine flag", t_repitch_clip_flag),
             ("repitch grain store keeps r3", t_repitch_main_rate_preserves_r3),
             ("slicer grain keeps stack args", t_repitch_slicer_grain_stack),
+        ]
+    if "mix_tick" in sym:
+        cases += [
+            ("Mix hooks and letter", t_mix_hooks),
+            ("Mix pads play unless MIX held", t_mix_pad_plays),
+            ("Mix knobs drive Cutoff/Decay/Sends", t_mix_knobs),
+            ("Mix faders and MIX-hold layout", t_mix_layout),
+            ("Mix fader touch sets the pad", t_mix_fader_touch),
+            ("MIX button stays on Mix", t_mix_button),
+            ("INFO momentary Mute", t_info_momentary),
         ]
     for name, fn in cases:
         run_case(image, name, fn, res)

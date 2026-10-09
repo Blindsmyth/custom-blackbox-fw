@@ -170,3 +170,19 @@ address,name,comment
 0x08064A94,Clip_RecalcRates,writes +0x258 and +0xBA8/+0xBAC/+0xBB0
 0x08065550,Clip_StartGrain,main rate store vstr s15,[r3,#0x48] at 0x08065756 (r3=grain, r4=clip)
 0x08067648,Clip_ApplyParam,msg 0x39; cellmode 0x8B sets +0x29 and slicer flag +0x254
+0x0809EAEC,App_SetScreen,app 0x24020088; screen ids: 2 Pads, 0x2E Mix, 0x2F Mute, 7 Presets
+0x080A2E60,App_HandleInput,hardware buttons; MIX bl App_SetScreen at 0x080A32DE; INFO on Mix at 0x080A30DC
+0x080A1718,App_HandleUiEvent,3 pad press, 4 pad release, 0x6E set param, 0x44 mute
+0x0809FA50,App_SetParam,(app, ref, id, value, 0); Param_Set + Engine_PostParam + post 0x66
+0x08099504,App_GetParam,(app, ref {0x080EAF38, key}, id, &out)
+0x080B5F98,Mix_ctor,Mix/Mute widget; vtable 0x080F0F10; mode +0x1E40; selected pad +0x1E08
+0x080B6600,Mix_Tick,pad activity then children
+0x080B5A4C,Mix_OnChildEvent,3 -> 0x63 select, 4 swallowed, 0x3C/0x3D -> 0x6E
+0x080B5C70,Mix_OnEvent,0x32 encoders, 0x63 select, 0x66/0x67 refresh
+0x080C1F3C,Fader_ctor,side fader; vtable 0x080F16D8; id +0x3E, pad +0x38, label +0x54
+0x080C20D0,Fader_Set,(fader, id, value)
+0x080A7EE0,Slider_Bind,(id, value, slider, 0)
+0x080B0D54,Slider_Step,(slider, delta); posts 0x3C/0x3D
+0x080AEC44,Widget_AddChild,(parent, child); prepends; sets child+0x2C
+0x0807794C,HAL_GetTick,uwTick at 0x24015CE4
+0x24009AB0,ButtonTable,data; 13 x 0x18; +0xE debounced level, 0 = pressed; MIX 5, INFO 12
