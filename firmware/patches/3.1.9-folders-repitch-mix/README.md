@@ -23,6 +23,22 @@
 
 Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 
+## Other screens
+
+- **Knobs no longer navigate.**
+  - On Pads and Seq, the top-left, top-right and bottom-left knobs no longer move the pad selection; the bottom-right knob still switches the side panel.
+  - In scroll lists (pad INFO pages, settings), the knob that used to move the row is off. Tap a row to select it; the other knob still changes its value.
+- **Hold PADS + tap a pad:** selects it without playing.
+- **Hold SEQS + tap a pad:** selects that sequence without starting or stopping it.
+- **Seq length:**
+  - The button above UNDO shows the current layer's length in bars ("1 bar", "0.5" …).
+  - The top-right knob doubles the length (turn right) or halves it (turn left), at most once per quarter second.
+  - Halving drops the notes past the new end; UNDO brings them back.
+- **EQ:**
+  - Touch a band's dot and drag it straight away; no INFO press to pick the band.
+  - New EQs start as Low Shelf, Param, Param, High Shelf.
+- **FX button:** toggles between DJ FX and the FX Return page. On the Return page the top row is **A** (Delay), **B** (Reverb) and **EQ**; the right cell names the return shown. The send page is no longer in the cycle (sends live on Mix).
+
 ## Flash
 
 1. Copy stock `firmware/bins/3.1.9/BLACKBOX.bin` onto the card under another name, for example `BLACKBOX-3.1.9-stock.BIN`. The installer ignores that name.
@@ -43,6 +59,11 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 7. INFO short press stays in Mute; press INFO again to return to Mix. Hold INFO: Mute while held, Mix on release.
 8. Save the preset and reload it: the values persist.
 9. Folders and Repitch behave as in 3.1.X.
+10. Pads / Seq: the three navigation knobs do nothing; the bottom-right knob still swaps the side panel. Pad INFO lists: tap rows to select them.
+11. Hold PADS, tap a pad: it's selected and silent. Hold SEQS, tap a pad: that sequence is selected and keeps its play state.
+12. Seq: the button above UNDO shows the length; turn the top-right knob right (double) and left (halve), then UNDO.
+13. EQ: drag each dot directly. A new preset's EQ shows Low Shelf / Param / Param / High Shelf.
+14. FX: DJ FX → FX again → Return page with A / B / EQ; A and B switch the return, EQ opens the EQ page, FX goes back to DJ FX.
 
 ## Rebuild and test
 
@@ -52,7 +73,11 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 ```
 
 `build_patch.py` reuses `../3.1.9-folders-repitch/build_patch.py` (sites, linker, verify). It assembles `mix_cave.S`, which includes the 3.1.X `cave.S` and then `mixui.S`. On top of 3.1.X it patches:
-- two `bl App_SetScreen` calls in `App_HandleInput` (MIX at `0x080A32DE`, INFO on Mix at `0x080A30DC`);
-- three words of the Mix vtable (tick, onChildEvent, onEvent).
+- three `bl App_SetScreen` calls in `App_HandleInput` (MIX at `0x080A32DE`, INFO on Mix at `0x080A30DC`, FX from DJ FX at `0x080A32BE`);
+- the scroll-list encoder row select `FUN_080B9BA4` (b.w to a no-op);
+- widget vtable words: Mix tick/onChildEvent/onEvent, Pads and Seq onChildEvent/onEvent, EQ graph touchDown, FX Return onChildEvent/onEvent;
+- four EQ default band-type bytes.
+
+Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1).
 
 The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with draw, touchDown, touchMove and touchUp wrapped for the centre detent and the blip, so faders on other screens are untouched.

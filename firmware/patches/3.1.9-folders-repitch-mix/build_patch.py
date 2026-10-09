@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build the 3.1.Q image: 3.1.X (preset folders + Warp Stretch/Repitch) plus the Mix overhaul.
 
-Reuses ../3.1.9-folders-repitch/build_patch.py (sites, linker, verify) and adds the Mix hooks:
-two App_HandleInput call sites and three words of the Mix widget vtable. Does not modify the
+Reuses ../3.1.9-folders-repitch/build_patch.py (sites, linker, verify) and adds the Mix hooks
+(two App_HandleInput call sites, three Mix vtable words) and the Batch 0 encoder hooks
+(Pads/Seq onEvent words, the scroll-list row-select entry). Does not modify the
 stock file. Writes BLACKBOX.BIN, BLACKBOX.sym.json and cave.dis here.
 """
 
@@ -31,6 +32,8 @@ MAX_CAVE = 0x3000
 SITES = base.SITES + [
     (0x080A32DE, "mix_btn_screen", True, "fbf705fc"),  # MIX button: Mix -> Mute toggle
     (0x080A30DC, "info_to_mute", True, "fbf706fd"),    # INFO on Mix -> Mute
+    (0x080B9BA4, "list_row_knob", False, "30b587b0"),  # scroll-list encoder row select
+    (0x080A32BE, "fx_to_return", True, "fbf715fc"),    # FX button: DJ FX -> send page
 ]
 
 # Mix/Mute widget vtable 0x080F0F10: (address, cave symbol, stock word)
@@ -38,6 +41,22 @@ VTABLE = [
     (0x080F0F10, "mix_tick", 0x080B6601),
     (0x080F0F40, "mix_child_event", 0x080B5A4D),
     (0x080F0F44, "mix_on_event", 0x080B5C71),
+    (0x080F0E84, "pads_on_event", 0x080B4135),         # Pads onEvent
+    (0x080F0E80, "pads_child_event", 0x080B3E85),      # Pads onChildEvent
+    (0x080F0EC4, "seq_on_event", 0x080B5285),          # Seq onEvent
+    (0x080F0EC0, "seq_child_event", 0x080B4DED),       # Seq onChildEvent
+    (0x080F066C, "eq_touch_down", 0x080A9B41),         # EQ graph touchDown
+    (0x080F07F0, "fxret_on_event", 0x080AB901),        # FX Return page onEvent
+    (0x080F07EC, "fxret_child_event", 0x080AB9B5),     # FX Return page onChildEvent
+]
+
+# (address, new bytes, stock bytes): EQ band types for new slots, `movs r2, #type` in the
+# group defaults (0x08093F20 case 0x36). L Shelf 2, Param 3, Param 3, H Shelf 4.
+BYTES = [
+    (0x0809470E, "0222", "0022"),
+    (0x0809474E, "0322", "0022"),
+    (0x0809478E, "0322", "0022"),
+    (0x080947CE, "0422", "0022"),
 ]
 
 
@@ -79,6 +98,13 @@ def main():
         struct.pack_into("<I", image, off, symbols[symbol] | 1)
         print(f"  u32  {va:#010x} -> {symbol}")
 
+    for va, new, orig in BYTES:
+        off = va - base.BASE
+        if image[off:off + len(new) // 2].hex() != orig:
+            raise SystemExit(f"{va:#x}: stock bytes {image[off:off + len(new) // 2].hex()} != {orig}")
+        image[off:off + len(new) // 2] = bytes.fromhex(new)
+        print(f"  b{len(new) // 2}   {va:#010x} -> {new}")
+
     if image[base.VERSION_OFF] != ord("9"):
         raise SystemExit(f"version byte is {image[base.VERSION_OFF]:#x}, expected '9'")
     image[base.VERSION_OFF] = ord(LETTER)
@@ -107,6 +133,10 @@ def verify(image, stock, symbols):
         allowed.update(range(va - B, va - B + 4))
     for va, *_ in VTABLE:
         allowed.update(range(va - B, va - B + 4))
+    for va, new, _ in BYTES:
+        if image[va - B: va - B + len(new) // 2].hex() != new:
+            raise SystemExit(f"{va:#x}: patched bytes wrong")
+        allowed.update(range(va - B, va - B + len(new) // 2))
     allowed.update(range(base.SKIP_SCREEN[0] - B, base.SKIP_SCREEN[0] - B + 2))
     for va, *_ in base.TABLES:
         allowed.update(range(va - B, va - B + 2))

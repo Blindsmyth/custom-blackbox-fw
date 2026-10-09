@@ -80,6 +80,9 @@ class Board:
     def w32(self, a, v):
         self.mu.mem_write(a, struct.pack("<I", v & 0xFFFFFFFF))
 
+    def u16(self, a):
+        return struct.unpack("<H", self.mu.mem_read(a, 2))[0]
+
     def u8(self, a):
         return self.mu.mem_read(a, 1)[0]
 

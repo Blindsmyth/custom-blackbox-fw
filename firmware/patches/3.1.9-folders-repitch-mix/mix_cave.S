@@ -5,3 +5,28 @@
 .ltorg
 
 .include "mixui.S"
+
+.align 2
+.ltorg
+
+.include "navknobs.S"
+
+.align 2
+.ltorg
+
+.include "padsel.S"
+
+.align 2
+.ltorg
+
+.include "seqtools.S"
+
+.align 2
+.ltorg
+
+.include "eqtouch.S"
+
+.align 2
+.ltorg
+
+.include "fxret.S"

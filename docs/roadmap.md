@@ -13,9 +13,14 @@ Planned features for the `mix-overhaul` line (3.1.Q and later). Addresses are st
   - MIX stays on Mix;
   - momentary INFO Mute.
 
+## Done (3.1.Q, continued)
+
+- **Batch 0:** encoders stop navigating (Pads/Seq knobs 0–2, scroll-list row knob).
+- **Batch 1:** PADS/SEQS held + tap selects; Seq bar label and double/halve; EQ tap-and-drag and default bands; FX toggles DJ FX ↔ Return with A / B / EQ.
+
 ## Next, in order
 
-### Batch 0: encoders stop navigating
+### Batch 0 (done): encoders stop navigating
 
 Encoders no longer select pads, sequences or menu items. Selection is PADS held + tap and SEQS held + tap. The freed encoders do nothing until they're remapped.
 - **Known navigation encoders:**
@@ -24,7 +29,7 @@ Encoders no longer select pads, sequences or menu items. Selection is PADS held 
   - the INFO-page scroll lists (`0x080A86A0`).
 - **Before disabling any list's encoder:** check the list can be scrolled and selected by touch. Don't strand a screen.
 
-### Batch 1: quick wins (UI)
+### Batch 1 (done): quick wins (UI)
 
 | Feature | Hook | Size |
 | --- | --- | --- |

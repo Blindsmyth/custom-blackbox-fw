@@ -690,6 +690,7 @@ def t_clean(bench, res):
 
 # ---- Mix overhaul tests (3.1.Q)
 
+STOCK_IMAGE = str(Path(__file__).resolve().parents[2] / "firmware" / "bins" / "3.1.9" / "BLACKBOX.bin")
 MIX_OBJ = 0x30010000          # bench-built Mix widget (SRAM1 is unused by 3.1.X)
 MIX_EV = 0x30014000
 MIX_FL = 0x30014100
@@ -929,6 +930,176 @@ def t_mix_detent_snap(bench, res):
     res.check(posts and posts[-1][2] == 0x04 and posts[-1][3] != 0, f"Vol never snaps {posts}")
 
 
+def t_nav_knobs(bench, res):
+    """Batch 0: Pads/Seq encoders 0-2 and the scroll-list row knob no longer navigate."""
+    b = _mix_setup(bench, build=False)
+    moved = []
+    b.stub(0x080B0B74, lambda board: moved.append(board.arg(0)))    # slider accumulate
+    b.stub(0x080AED14, lambda board: None)
+    obj = 0x30020000
+    for name, ctor in (("Pads", 0x080B4528), ("Seq", 0x080B4F34)):
+        b.mu.mem_write(obj, b"\0" * 0x6000)
+        b.call(ctor, obj)
+        onev = b.u32(b.u32(obj) + 0x34)
+        res.check(onev == bench.sym[name.lower() + "_on_event"] | 1, f"{name} onEvent wrapped")
+        for idx in range(4):
+            if name == "Seq" and idx == 2:
+                continue                                         # length knob (t_seq_length)
+            moved.clear()
+            b.call(onev, obj, _mix_ev(b, 0x32, idx=idx, val=1))
+            if idx < 3:
+                res.check(not moved, f"{name} encoder {idx} no longer navigates {[hex(m - obj) for m in moved]}")
+            else:
+                res.check(len(moved) == 1, f"{name} encoder 3 still switches the side panel")
+    moved.clear()
+    b.call(0x080B9BA4, obj, 1)
+    res.check(not moved, "scroll-list encoder row select is off")
+    img = bench.b.image
+    res.check(img[0x080B9A3C - bd.BASE: 0x080B9A3C - bd.BASE + 4] == open(STOCK_IMAGE, "rb").read()[0x080B9A3C - bd.BASE: 0x080B9A3C - bd.BASE + 4],
+              "list value knob (FUN_080B9A3C) untouched")
+
+
+def _btn(b, idx, pressed):
+    b.mu.mem_write(0x24009AB0 + idx * 0x18 + 0xE, b"\x00" if pressed else b"\x01")
+
+
+def t_held_select(bench, res):
+    b = _mix_setup(bench, build=False)
+    posts = []
+    b.stub(UI_POST_UP, lambda board: posts.append(struct.unpack("<HxxxxxxH", board.mu.mem_read(board.arg(1), 10))))
+    obj = 0x30020000
+    for name, idx, typ, key_out in (("pads", 0, 0x63, 0x23), ("seq", 2, 0xFC, 0x123)):
+        fn = bench.sym[name + "_child_event"]
+        _btn(b, idx, True)
+        posts.clear()
+        r = b.call(fn, obj, _mix_ev(b, 3, key=0x23))
+        res.check(r == 0 and posts == [(typ, key_out)], f"{name.upper()} held: press only selects {posts}")
+        posts.clear()
+        r = b.call(fn, obj, _mix_ev(b, 4, key=0x23))
+        res.check(r == 0 and not posts, f"{name.upper()} held: release swallowed")
+        _btn(b, idx, False)
+    posts.clear()
+    r = b.call(bench.sym["pads_child_event"], obj, _mix_ev(b, 3, key=0x23))
+    res.check(r == 1 and not posts, "PADS not held: pad press propagates (plays)")
+    posts.clear()
+    r = b.call(bench.sym["seq_child_event"], obj, _mix_ev(b, 3, key=0x23))
+    res.check(r == 0 and posts == [(0xFA, 0x123)], f"SEQS not held: stock play toggle {posts}")
+
+
+SEQ_OBJ, P_GET, P_SET = 0x08097CE8, 0x08093E9C, 0x08093ECC
+EVL_GET, EVL_DEL, SEQ_DOUBLE, SEQ_PUSH, SEQ_SNAP = 0x08063D08, 0x08063C08, 0x0809C5B4, 0x080985A0, 0x08098254
+
+
+def _seq_stubs(b, params, events):
+    log = {"set": [], "del": [], "push": [], "double": [], "snap": 0, "text": []}
+    base, layer_obj = 0x30030000, 0x30031000
+    b.stub(SEQ_OBJ, lambda board: base if board.arg(2) == 0 else layer_obj)
+    b.stub(P_GET, lambda board: params.get(board.arg(1), 0) & 0xFFFFFFFF)
+    b.stub(P_SET, lambda board: log["set"].append((board.arg(1), board.arg(2))))
+
+    def get(board):
+        i = board.arg(1)
+        if i >= len(events):
+            return 0
+        pos, handle = events[i]
+        board.mu.mem_write(board.arg(2), struct.pack("<6I", 0, pos, 0, handle, 0, 0))
+        return 1
+    b.stub(EVL_GET, get)
+    b.stub(EVL_DEL, lambda board: log["del"].append(board.arg(1)))
+    b.stub(SEQ_PUSH, lambda board: log["push"].append(board.arg(2)))
+    b.stub(SEQ_DOUBLE, lambda board: log["double"].append(board.u8(board.arg(1) + 8)))
+    b.stub(SEQ_SNAP, lambda board: log.__setitem__("snap", log["snap"] + 1))
+    for fn in (0x08094A1C, 0x08094BB2, 0x08063CC0, 0x080B5758, 0x0809C2C8):
+        b.stub(fn, lambda board: 0)
+    b.stub(0x080A3DEC, lambda board: log["text"].append(board.cstr(board.arg(1))))
+    return log
+
+
+def t_seq_length(bench, res):
+    b = _mix_setup(bench, build=False)
+    params = {0xC0: 1, 0x88: 0, 0x85: 10, 0x86: 16}                 # 16 x 1/16 = 1 bar
+    events = [(0, 1), (960, 2), (1920, 3), (3000, 4)]
+    log = _seq_stubs(b, params, events)
+    b.call(bench.sym["seq_halve"], APP_OBJ, 0x23)
+    res.check(log["set"] == [(0x86, 8)] and log["snap"] == 1, f"halve sets 8 steps with an undo snapshot {log['set']}")
+    res.check(sorted(log["del"]) == [3, 4], f"halve drops events at or past 8 x 240 ticks {log['del']}")
+    res.check(log["push"] == [1], f"halve pushes the current layer {log['push']}")
+    seq = 0x30020000
+    b.mu.mem_write(seq, b"\0" * 0x4000)
+    b.mu.mem_write(seq + 0x1A90, b"\x23")
+    for k in log:
+        log[k] = [] if isinstance(log[k], list) else 0
+    b.w32(UWTICK, 10000)
+    b.call(bench.sym["seq_on_event"], seq, _mix_ev(b, 0x32, idx=2, val=1))
+    res.check(log["double"] == [0x23], f"TR knob right doubles {log['double']}")
+    b.w32(UWTICK, 10100)
+    b.call(bench.sym["seq_on_event"], seq, _mix_ev(b, 0x32, idx=2, val=-1))
+    res.check(not log["set"], "a second turn within 250 ms is ignored")
+    b.w32(UWTICK, 10400)
+    b.call(bench.sym["seq_on_event"], seq, _mix_ev(b, 0x32, idx=2, val=-1))
+    res.check(log["set"] == [(0x86, 8)], f"TR knob left halves {log['set']}")
+    res.check(log["text"][-1:] == ["1 bar"], f"bar label refreshed after a change {log['text']}")
+    for n, want in ((16, "1 bar"), (8, "0.5"), (64, "4 bar"), (6, "0.4")):
+        params[0x86] = n
+        log["text"].clear()
+        b.call(bench.sym["seq_bar_label"], seq)
+        res.check(log["text"] == [want], f"{n} x 1/16 shows {want!r} ({log['text']})")
+
+
+def t_eq_tap(bench, res):
+    b = _mix_setup(bench, build=False)
+    graph = 0x30020000
+    b.mu.mem_write(graph, b"\0" * 0x2000)
+    for i, (x, y) in enumerate(((40, 60), (110, 120), (180, 80), (250, 150))):
+        b.mu.mem_write(graph + 0x19D0 + i * 0x34 + 4, struct.pack("<4i", x - 5, y - 5, 10, 10))
+    b.mu.mem_write(graph + 0x1B98, struct.pack("<H", 0x320))
+    posts, downs = [], []
+    b.stub(UI_POST_UP, lambda board: posts.append(struct.unpack("<HxxxxxxHxxIi", board.mu.mem_read(board.arg(1), 0x14))))
+    b.stub(0x080A9B40, lambda board: downs.append(board.u32(board.arg(1))))
+    pt = MIX_EV + 0x40
+    b.mu.mem_write(pt, struct.pack("<2i", 176, 84))
+    b.call(bench.sym["eq_touch_down"], graph, pt)
+    res.check(b.u32(graph + 0x1B44) == 2 and b.u8(graph + 0x19D0 + 2 * 0x34 + 0x31) == 1, "tap selects the nearest dot (band 3)")
+    res.check(posts == [(0x6E, 0x320, 0x12E, 2)], f"posts eqactband = 2 {posts}")
+    res.check(downs == [176], "then stock touchDown drags it")
+    posts.clear()
+    b.call(bench.sym["eq_touch_down"], graph, pt)
+    res.check(not posts, "tapping the active band posts nothing")
+    img = bench.b.image
+    got = [img[a - bd.BASE: a - bd.BASE + 2].hex() for a in (0x0809470E, 0x0809474E, 0x0809478E, 0x080947CE)]
+    res.check(got == ["0222", "0322", "0322", "0422"], f"default bands L Shelf / Param / Param / H Shelf {got}")
+
+
+def t_fx_return(bench, res):
+    b = _mix_setup(bench, build=False)
+    screens = []
+    b.stub(SET_SCREEN, lambda board: screens.append(board.arg(1)))
+    b.mu.mem_write(APP_OBJ + 0x28, struct.pack("<H", 0x37))
+    b.call(bench.sym["fx_to_return"], APP_OBJ, 0x30, 0, 0)
+    res.check(screens == [0x23] and b.u16(APP_OBJ + 0x28) == 0x300, f"FX from DJ FX opens Return A {screens}")
+    page = 0x30020000
+    b.mu.mem_write(page, b"\0" * 0x3800)
+    b.call(0x080ABA84, page)
+    b.stub(0x080AB900, lambda board: None)
+    b.call(bench.sym["fxret_on_event"], page, _mix_ev(b, 0x66))
+    ids = [b.u32(page + 0x70 + i * 0xA0 + 0x14) for i in range(3)]
+    sel = [b.u8(page + 0x70 + i * 0xA0 + 0x96) for i in range(3)]
+    res.check(ids == [0x7A2, 0x7A1, 0x7A0] and sel == [0, 0, 1], f"tabs EQ/B/A (drawn A | B | EQ) with A lit {ids} {sel}")
+    screens.clear()
+    ev = _mix_ev(b, 1)
+    b.w32(ev + 0xC, 0x7A1)
+    r = b.call(bench.sym["fxret_child_event"], page, ev)
+    res.check(r == 0 and screens == [0x23] and b.u16(APP_OBJ + 0x28) == 0x310, f"B shows Reverb {screens}")
+    screens.clear()
+    b.w32(ev + 0xC, 0x7A2)
+    b.call(bench.sym["fxret_child_event"], page, ev)
+    res.check(screens == [0x36], f"EQ opens the EQ page {screens}")
+    b.mu.mem_write(APP_OBJ + 0x28, struct.pack("<H", 0x37))
+    screens.clear()
+    b.call(bench.sym["fx_to_return"], APP_OBJ, 0x30, 0, 0)
+    res.check(b.u16(APP_OBJ + 0x28) == 0x310, "FX returns to the last return shown (B)")
+
+
 def t_mix_button(bench, res):
     b = _mix_setup(bench, build=False)
     calls = []
@@ -1035,6 +1206,11 @@ def main():
             ("Mix centre detent draw", t_mix_detent_draw),
             ("Mix centre detent snap", t_mix_detent_snap),
             ("MIX button stays on Mix", t_mix_button),
+            ("encoders stop navigating", t_nav_knobs),
+            ("PADS/SEQS held + pad selects only", t_held_select),
+            ("Seq length knob and bar label", t_seq_length),
+            ("EQ tap a dot and drag", t_eq_tap),
+            ("FX toggles DJ FX and Return A/B/EQ", t_fx_return),
             ("INFO momentary Mute", t_info_momentary),
         ]
     for name, fn in cases:
