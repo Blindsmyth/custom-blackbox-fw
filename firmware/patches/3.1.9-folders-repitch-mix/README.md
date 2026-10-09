@@ -13,7 +13,7 @@
   | Top | Vol | Cutoff (Filter) | Pan | Send A (FX1) |
   | Bottom | Decay | Pitch | Attack | Send B (FX2) |
 
-- **Hold MIX** to show the second layer. While it's held, tapping a pad selects it without playing it.
+- **Hold MIX** to show the second layer. While it's held, tapping a pad selects it without playing it. The MIX press that opens the Mix screen doesn't count: press it again on Mix for the second layer.
 - **Blip from rest.** If a param sits at its rest position, a quick touch (under 0.3 s) sets the value under your finger and puts the rest value back on release. Touch longer and the new value stays. Rest positions: Vol at minimum, Cutoff centre, Pitch unshifted, Attack/Decay/Sends at 0. Pan never blips.
 - **Centre detent.** Cutoff, Pitch and Pan grow their bar from a white centre line. A drag that passes within a few pixels of the centre sticks at exactly 0.
 - **MIX** opens Mix from any screen. On Mix it no longer flips to Mute.
@@ -25,11 +25,9 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 
 ## Other screens
 
-- **Knobs no longer navigate.**
-  - On Pads and Seq, the top-left, top-right and bottom-left knobs no longer move the pad selection; the bottom-right knob still switches the side panel.
-  - In scroll lists (pad INFO pages, settings), the knob that used to move the row is off. Tap a row to select it; the other knob still changes its value.
+- **Knobs no longer select pads or sequences or switch pages.** On Pads all four knobs are off for now (pad selection and the VEL / CUT-COPY panel switch); on Seq the three pad-selection knobs and the panel switch are off and the top-right knob changes the length (below). Parameter menus keep both knobs: one moves through the list, the other changes the selected parameter.
 - **Hold PADS + tap a pad:** selects it without playing.
-- **Hold SEQS + tap a pad:** selects that sequence without starting or stopping it.
+- **Hold SEQS:** the side panel shows the layers A–D (tap one to pick it) and tapping a pad selects that sequence without starting or stopping it. Let go: OFF / UNDO / CLR come back.
 - **Seq length:**
   - The button above UNDO shows the current layer's length in bars ("1 bar", "0.5" …).
   - The top-right knob doubles the length (turn right) or halves it (turn left), at most once per quarter second.
@@ -37,7 +35,7 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 - **EQ:**
   - Touch a band's dot and drag it straight away; no INFO press to pick the band.
   - New EQs start as Low Shelf, Param, Param, High Shelf.
-- **FX button:** toggles between DJ FX and the FX Return page. On the Return page the top row is **A** (Delay), **B** (Reverb) and **EQ**; the right cell names the return shown. The send page is no longer in the cycle (sends live on Mix).
+- **FX button:** toggles between DJ FX and the FX Return page. The Return page has a button row along the bottom, like the pad page's Main / Pos / LFO / Conf: **A Delay | B Reverb | EQ |** (empty). The active return is lit; EQ opens the EQ page. The send page is no longer in the cycle (sends live on Mix).
 
 ## Flash
 
@@ -59,11 +57,12 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 7. INFO short press stays in Mute; press INFO again to return to Mix. Hold INFO: Mute while held, Mix on release.
 8. Save the preset and reload it: the values persist.
 9. Folders and Repitch behave as in 3.1.X.
-10. Pads / Seq: the three navigation knobs do nothing; the bottom-right knob still swaps the side panel. Pad INFO lists: tap rows to select them.
-11. Hold PADS, tap a pad: it's selected and silent. Hold SEQS, tap a pad: that sequence is selected and keeps its play state.
+10. Pads: no knob does anything. Seq: only the top-right knob (length). Pad INFO / settings lists: one knob still picks the row, the other changes it.
+11. Hold PADS, tap a pad: it's selected and silent. Hold SEQS: layers A–D replace OFF/UNDO/CLR; tap a layer, tap a pad (selected, play state unchanged), let go.
 12. Seq: the button above UNDO shows the length; turn the top-right knob right (double) and left (halve), then UNDO.
 13. EQ: drag each dot directly. A new preset's EQ shows Low Shelf / Param / Param / High Shelf.
-14. FX: DJ FX → FX again → Return page with A / B / EQ; A and B switch the return, EQ opens the EQ page, FX goes back to DJ FX.
+14. FX: DJ FX → FX again → Return page with A Delay / B Reverb / EQ / (empty) along the bottom; A and B switch the return, EQ opens the EQ page, FX goes back to DJ FX.
+15. Enter Mix with the MIX button: Vol / Decay / Cutoff / Pitch with matching labels. Press and hold MIX again: Pan / Attack / A / B; let go: back. Labels always match the bars.
 
 ## Rebuild and test
 

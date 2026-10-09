@@ -1,7 +1,8 @@
 @ Batch 1: FX button toggles DJ FX (0x37) and the FX Return page (0x23); EQ (0x36) and the
 @ send page (0x30) leave the cycle. The Return page's three blank tabs (button bar at
 @ page+0x34, buttons at page+0x70 + i*0xA0) become A (Delay 0x300), B (Reverb 0x310) and
-@ EQ, left to right. App+0x28 is the FX key the page shows; the page rebuilds on App_SetScreen(0x23).
+@ EQ, left to right, in a four-button row along the bottom (the fourth is empty), like the
+@ pad page's Main / Pos / LFO / Conf. A and B are wider so "A Delay" / "B Reverb" fit. App+0x28 is the FX key the page shows; the page rebuilds on App_SetScreen(0x23).
 
 .equ FXR_EVENT,   0x080AB901
 .equ FXR_CHILD,   0x080AB9B5
@@ -11,6 +12,9 @@
 .equ FXR_TAB_SZ,  0xA0
 .equ FXR_ID,      0x7A0                 @ our tab ids: 0x7A0 A, 0x7A1 B, 0x7A2 EQ
 .equ MX_FX_LAST,  28                    @ MX_STATE: last return shown
+.equ FXR_BAR,     0x34
+.equ FXR_BAR_H,   38
+.equ W_SETRECT,   0x080A3715            @ generic widget setRect (bar)
 
 .global fx_to_return
 .global fxret_on_event
@@ -63,46 +67,69 @@ fxret_on_event:
     cmpne   r5, #0x310
     it      eq
     streq   r5, [r0, #MX_FX_LAST]
+    sub     sp, #16
+    add.w   r0, r4, #FXR_BAR        @ bar along the bottom edge, like the pad page tabs
+    adr     r1, fxr_bar_rect
+    call    W_SETRECT
     movs    r6, #0
 1:
-    movs    r0, #FXR_TAB_SZ
-    mul     r0, r6, r0
-    add     r0, #FXR_TABS
-    add     r0, r4
-    adr     r1, fxr_tab_ids
-    ldrh.w  r1, [r1, r6, lsl #1]
-    str     r1, [r0, #0x14]          @ button id
+    adr     r0, fxr_btns
+    ldrh.w  r0, [r0, r6, lsl #1]
+    add     r0, r4                  @ button
+    movw    r1, #FXR_ID
+    add     r1, r6
+    str     r1, [r0, #0x14]         @ id: 0x7A0 + position
+    adr     r1, fxr_x
+    ldrh.w  r2, [r1, r6, lsl #1]
+    str     r2, [sp]                @ x
+    movs    r2, #0
+    str     r2, [sp, #4]
+    add.w   r1, r1, r6, lsl #1
+    ldrh    r2, [r1, #2]
+    ldrh    r1, [r1]
+    subs    r2, r2, r1
+    str     r2, [sp, #8]            @ w
+    movs    r1, #FXR_BAR_H
+    str     r1, [sp, #12]
+    push    {r0, r1}
+    mov     r1, sp
+    adds    r1, #8
+    ldr     r2, [r0]
+    ldr     r2, [r2, #0x20]
+    blx     r2                      @ setRect
+    ldr     r0, [sp]
     adr     r1, fxr_labels
     ldr     r1, [r1, r6, lsl #2]
-    push    {r0, r1}
     call    BTN_TEXT
     pop     {r0, r1}
-    ldr     r2, [r0, #0x14]
-    movw    r3, #FXR_ID
-    subs    r2, r2, r3              @ 0 A, 1 B, 2 EQ
     movs    r1, #0
-    cmp     r2, #1
+    cmp     r6, #1
     bhi     2f
     movw    r3, #0x300
-    add.w   r3, r3, r2, lsl #4      @ the return this tab shows
+    add.w   r3, r3, r6, lsl #4      @ the return this button shows
     cmp     r3, r5
     it      eq
     moveq   r1, #1
 2:
     call    BTN_SELECT
     adds    r6, #1
-    cmp     r6, #3
+    cmp     r6, #4
     blo     1b
+    add     sp, #16
 9:
     pop     {r4, r5, r6, pc}
 
-@ The bar lays its buttons out right to left (tab 0 is third from the left, tab 2 is the
-@ narrow cell on the left; the FX name cell is on the right), so on screen: A | B | EQ | name.
+@ Buttons left to right: the three bar tabs and the old FX-name cell (stock writes the name
+@ there on every rebuild; we overwrite it with an empty label).
 .align 2
+fxr_btns:
+    .hword  FXR_TABS + 2 * FXR_TAB_SZ, FXR_TABS + FXR_TAB_SZ, FXR_TABS, 0x3AC
 fxr_labels:
-    .word   s_eq, s_rb, s_ra
-fxr_tab_ids:
-    .hword  FXR_ID + 2, FXR_ID + 1, FXR_ID
+    .word   s_ra, s_rb, s_eq, s_none
+fxr_x:                              @ button edges: labels are 12 px per character
+    .hword  0, 104, 216, 268, 320
+fxr_bar_rect:
+    .word   0, 0, 320, FXR_BAR_H
 
 @ Tab press (child event 1, id at +0xC): A/B show that return, EQ opens the EQ page.
 .thumb_func
@@ -113,8 +140,12 @@ fxret_child_event:
     ldr     r2, [r1, #0xC]
     movw    r3, #FXR_ID
     subs    r2, r2, r3
-    cmp     r2, #2
+    cmp     r2, #3
     bhi     9f
+    bne     2f
+    movs    r0, #0                  @ the empty fourth button does nothing
+    bx      lr
+2:
     push    {r4, lr}
     ldr     r0, =APP
     movs    r1, #0x36
@@ -140,8 +171,9 @@ fxret_child_event:
     bx      r12
 
 .align 2
-s_ra: .asciz "A"
-s_rb: .asciz "B"
+s_ra: .asciz "A Delay"
+s_rb: .asciz "B Reverb"
 s_eq: .asciz "EQ"
+s_none: .asciz ""
 .align 2
 .ltorg

@@ -3,7 +3,7 @@
 
 Reuses ../3.1.9-folders-repitch/build_patch.py (sites, linker, verify) and adds the Mix hooks
 (two App_HandleInput call sites, three Mix vtable words) and the Batch 0 encoder hooks
-(Pads/Seq onEvent words, the scroll-list row-select entry). Does not modify the
+(Pads/Seq onEvent words). Does not modify the
 stock file. Writes BLACKBOX.BIN, BLACKBOX.sym.json and cave.dis here.
 """
 
@@ -32,7 +32,6 @@ MAX_CAVE = 0x3000
 SITES = base.SITES + [
     (0x080A32DE, "mix_btn_screen", True, "fbf705fc"),  # MIX button: Mix -> Mute toggle
     (0x080A30DC, "info_to_mute", True, "fbf706fd"),    # INFO on Mix -> Mute
-    (0x080B9BA4, "list_row_knob", False, "30b587b0"),  # scroll-list encoder row select
     (0x080A32BE, "fx_to_return", True, "fbf715fc"),    # FX button: DJ FX -> send page
 ]
 
@@ -45,6 +44,7 @@ VTABLE = [
     (0x080F0E80, "pads_child_event", 0x080B3E85),      # Pads onChildEvent
     (0x080F0EC4, "seq_on_event", 0x080B5285),          # Seq onEvent
     (0x080F0EC0, "seq_child_event", 0x080B4DED),       # Seq onChildEvent
+    (0x080F0E90, "seq_tick", 0x080B55F5),              # Seq tick (layer panel while SEQS held)
     (0x080F066C, "eq_touch_down", 0x080A9B41),         # EQ graph touchDown
     (0x080F07F0, "fxret_on_event", 0x080AB901),        # FX Return page onEvent
     (0x080F07EC, "fxret_child_event", 0x080AB9B5),     # FX Return page onChildEvent

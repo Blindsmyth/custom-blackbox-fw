@@ -15,14 +15,15 @@ Planned features for the `mix-overhaul` line (3.1.Q and later). Addresses are st
 
 ## Done (3.1.Q, continued)
 
-- **Batch 0:** encoders stop navigating (Pads/Seq knobs 0–2, scroll-list row knob).
-- **Batch 1:** PADS/SEQS held + tap selects; Seq bar label and double/halve; EQ tap-and-drag and default bands; FX toggles DJ FX ↔ Return with A / B / EQ.
+- **Batch 0:** encoders no longer select pads/sequences or switch Pads/Seq pages (all Pads knobs, Seq knobs 0, 1, 3). Parameter menus (row knob + value knob) stay stock.
+- **Batch 1:** PADS/SEQS held + tap selects; SEQS held shows layers A–D; Seq bar label and double/halve; EQ tap-and-drag and default bands; FX toggles DJ FX ↔ Return with a bottom row A Delay / B Reverb / EQ / (empty).
+- Fix: Mix fader labels repaint on every layer change; the MIX press that opens Mix isn't a hold.
 
 ## Next, in order
 
 ### Batch 0 (done): encoders stop navigating
 
-Encoders no longer select pads, sequences or menu items. Selection is PADS held + tap and SEQS held + tap. The freed encoders do nothing until they're remapped.
+Encoders no longer select pads or sequences, and no longer switch pages on the Pads and Seq screens. Selection is PADS held + tap and SEQS held + tap. Parameter menus, where one encoder picks the row and the other changes it, stay as they are. The freed encoders do nothing until they're remapped.
 - **Known navigation encoders:**
   - Pads onEvent `0x080B4134` idx 0/2/1;
   - Seq onEvent `0x080B5284` (slider `+0x1AB0`);

@@ -818,6 +818,7 @@ def t_mix_layout(bench, res):
     fl = _mix_tick(bench)
     ids = {n: _fader(b, n)["id"] for n in MIX_FADERS}
     res.check(fl[0] & 1 and ids == MIX_HELD, f"MIX held: Pan/Attack/SendA/SendB {ids}")
+    res.check(fl[1] & 1, "layer change also asks for the partial pass (fader labels repaint there)")
     res.check(_slider_ids(b) == MIX_HELD, f"knobs follow the MIX layer {_slider_ids(b)}")
     res.check(not any(_fader(b, n)["hidden"] for n in MIX_FADERS), "all four faders shown in both layers")
     b.mu.mem_write(BTN_MIX, b"\x01")
@@ -950,13 +951,11 @@ def t_nav_knobs(bench, res):
             if idx < 3:
                 res.check(not moved, f"{name} encoder {idx} no longer navigates {[hex(m - obj) for m in moved]}")
             else:
-                res.check(len(moved) == 1, f"{name} encoder 3 still switches the side panel")
-    moved.clear()
-    b.call(0x080B9BA4, obj, 1)
-    res.check(not moved, "scroll-list encoder row select is off")
-    img = bench.b.image
-    res.check(img[0x080B9A3C - bd.BASE: 0x080B9A3C - bd.BASE + 4] == open(STOCK_IMAGE, "rb").read()[0x080B9A3C - bd.BASE: 0x080B9A3C - bd.BASE + 4],
-              "list value knob (FUN_080B9A3C) untouched")
+                res.check(not moved, f"{name} encoder 3 no longer switches the side panel")
+    img, stock = bench.b.image, open(STOCK_IMAGE, "rb").read()
+    for va, what in ((0x080B9BA4, "row select"), (0x080B9A3C, "value change")):
+        res.check(img[va - bd.BASE: va - bd.BASE + 0x40] == stock[va - bd.BASE: va - bd.BASE + 0x40],
+                  f"parameter-menu encoders stay stock ({what}, {va:#x})")
 
 
 def _btn(b, idx, pressed):
@@ -1082,9 +1081,13 @@ def t_fx_return(bench, res):
     b.call(0x080ABA84, page)
     b.stub(0x080AB900, lambda board: None)
     b.call(bench.sym["fxret_on_event"], page, _mix_ev(b, 0x66))
-    ids = [b.u32(page + 0x70 + i * 0xA0 + 0x14) for i in range(3)]
-    sel = [b.u8(page + 0x70 + i * 0xA0 + 0x96) for i in range(3)]
-    res.check(ids == [0x7A2, 0x7A1, 0x7A0] and sel == [0, 0, 1], f"tabs EQ/B/A (drawn A | B | EQ) with A lit {ids} {sel}")
+    btns = [page + 0x70 + 2 * 0xA0, page + 0x70 + 0xA0, page + 0x70, page + 0x3AC]   # left to right
+    ids = [b.u32(btn + 0x14) for btn in btns]
+    sel = [b.u8(btn + 0x96) for btn in btns]
+    xs = [struct.unpack("<4i", b.mu.mem_read(btn + 4, 16)) for btn in btns]
+    res.check(ids == [0x7A0, 0x7A1, 0x7A2, 0x7A3] and sel == [1, 0, 0, 0], f"buttons A Delay / B Reverb / EQ / empty, A lit {ids} {sel}")
+    res.check([r[1] for r in xs] == [0, 0, 0, 0] and [r[0] for r in xs] == [0, 104, 216, 268], f"row along the bottom edge {xs}")
+    res.check(struct.unpack("<4i", b.mu.mem_read(page + 0x34 + 4, 16))[1] == 0, "button bar moved to the bottom")
     screens.clear()
     ev = _mix_ev(b, 1)
     b.w32(ev + 0xC, 0x7A1)
@@ -1094,10 +1097,50 @@ def t_fx_return(bench, res):
     b.w32(ev + 0xC, 0x7A2)
     b.call(bench.sym["fxret_child_event"], page, ev)
     res.check(screens == [0x36], f"EQ opens the EQ page {screens}")
+    screens.clear()
+    b.w32(ev + 0xC, 0x7A3)
+    r = b.call(bench.sym["fxret_child_event"], page, ev)
+    res.check(r == 0 and not screens, "the empty button does nothing")
     b.mu.mem_write(APP_OBJ + 0x28, struct.pack("<H", 0x37))
     screens.clear()
     b.call(bench.sym["fx_to_return"], APP_OBJ, 0x30, 0, 0)
     res.check(b.u16(APP_OBJ + 0x28) == 0x310, "FX returns to the last return shown (B)")
+
+
+def t_mix_enter_press(bench, res):
+    """The MIX press that opens Mix is not a hold; the second layer needs a fresh press."""
+    b = _mix_setup(bench)
+    b.stub(SET_SCREEN, lambda board: None)
+    b.mu.mem_write(BTN_MIX, b"\x00")
+    b.call(bench.sym["mix_btn_screen"], APP_OBJ, 0x2E, 0, 0)    # MIX pressed on Pads
+    _mix_tick(bench)
+    res.check({n: _fader(b, n)["id"] for n in MIX_FADERS} == MIX_MAIN, "entering press shows the main layer")
+    b.mu.mem_write(BTN_MIX, b"\x01")
+    _mix_tick(bench)
+    b.mu.mem_write(BTN_MIX, b"\x00")
+    _mix_tick(bench)
+    res.check({n: _fader(b, n)["id"] for n in MIX_FADERS} == MIX_HELD, "a new press on Mix shows the MIX layer")
+    b.call(bench.sym["mix_on_event"], MIX_OBJ, _mix_ev(b, 0x66, key=0))
+    fl = _mix_tick(bench)
+    res.check(fl[0] & 1 and fl[1] & 1, f"a value refresh asks for both redraw passes {fl.hex()}")
+
+
+def t_seq_panel(bench, res):
+    b = _mix_setup(bench, build=False)
+    seq = 0x30020000
+    b.mu.mem_write(seq, b"\0" * 0x6000)
+    b.call(0x080B4F34, seq)
+    b.stub(0x080B55F4, lambda board: None)
+    hid = lambda: (b.u8(seq + 0x3D5C + 0x30), b.u8(seq + 0x4010 + 0x30))
+    fl = MIX_FL
+    res.check(hid() == (0, 1), f"stock shows OFF/UNDO/CLR {hid()}")
+    _btn(b, 2, True)
+    b.mu.mem_write(fl, b"\0\0")
+    b.call(bench.sym["seq_tick"], seq, fl)
+    res.check(hid() == (1, 0) and b.mu.mem_read(fl, 2) == b"\1\1", f"SEQS held shows the layer panel A-D {hid()}")
+    _btn(b, 2, False)
+    b.call(bench.sym["seq_tick"], seq, fl)
+    res.check(hid() == (0, 1), f"release brings OFF/UNDO/CLR back {hid()}")
 
 
 def t_mix_button(bench, res):
@@ -1206,9 +1249,11 @@ def main():
             ("Mix centre detent draw", t_mix_detent_draw),
             ("Mix centre detent snap", t_mix_detent_snap),
             ("MIX button stays on Mix", t_mix_button),
+            ("entering MIX press is not a hold", t_mix_enter_press),
             ("encoders stop navigating", t_nav_knobs),
             ("PADS/SEQS held + pad selects only", t_held_select),
             ("Seq length knob and bar label", t_seq_length),
+            ("SEQS held shows the layer panel", t_seq_panel),
             ("EQ tap a dot and drag", t_eq_tap),
             ("FX toggles DJ FX and Return A/B/EQ", t_fx_return),
             ("INFO momentary Mute", t_info_momentary),

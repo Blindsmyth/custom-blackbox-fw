@@ -36,6 +36,8 @@
 .equ MX_T0,       12                @ uwTick when INFO opened Mute
 .equ MX_BLIP,     16                @ fader touched at its rest value, or 0
 .equ MX_BT0,      20                @ uwTick of that touch
+.equ MX_REDRAW,   32                @ 1: labels/values changed, ask for both redraw passes
+.equ MX_WAIT,     36                @ 1: MIX was pressed to enter Mix, ignore it until released
 .equ MX_HOLD_MS,  400
 .equ MX_BLIP_MS,  300
 
@@ -115,6 +117,11 @@ mx_state:
     str     r1, [r0, #MX_T0]
     str     r1, [r0, #MX_BLIP]
     str     r1, [r0, #MX_BT0]
+    str     r1, [r0, #MX_REDRAW]
+    str     r1, [r0, #MX_WAIT]
+    str     r1, [r0, #24]           @ seqtools MX_SEQ_T
+    str     r1, [r0, #28]           @ fxret MX_FX_LAST
+    str     r1, [r0, #40]           @ seqtools MX_SEQ_PANEL
 1:
     pop     {r2}
     bx      lr
@@ -313,6 +320,9 @@ show_layer:
     adds    r5, #12
     b       2b
 4:
+    bl      mx_state
+    movs    r1, #1
+    str     r1, [r0, #MX_REDRAW]    @ fader labels only repaint in the partial pass
     pop     {r4, r5, r6, r7, r8, pc}
 
 @ Corner rects in GUI coordinates (fader, x, y, w, h).
@@ -409,6 +419,14 @@ mix_tick:
     ite     eq
     moveq   r1, #1                  @ level 0 = pressed
     movne   r1, #0
+    ldr     r2, [r0, #MX_WAIT]
+    cbz     r2, 3f
+    cbnz    r1, 4f                  @ still the press that opened Mix: not a hold
+    str     r1, [r0, #MX_WAIT]      @ released: holds count from now on
+    b       3f
+4:
+    movs    r1, #0
+3:
     ldr     r2, [r0, #MX_LAYER]
     cmp     r1, r2
     beq     1f
@@ -418,10 +436,15 @@ mix_tick:
     bl      show_layer
     movs    r6, #1
 1:
+    bl      mx_state
+    ldr     r1, [r0, #MX_REDRAW]
+    orrs    r6, r1
+    movs    r1, #0
+    str     r1, [r0, #MX_REDRAW]
     cbz     r6, 2f
-    ldrb    r0, [r5]                @ full redraw: faders appeared or changed layer
-    orr     r0, r0, #1
+    movs    r0, #1                  @ full pass repaints the faders, partial pass their labels
     strb    r0, [r5]
+    strb    r0, [r5, #1]
 2:
     bl      mx_state
     ldr     r1, [r0, #MX_INFO]
@@ -700,6 +723,11 @@ mix_btn_screen:
     bne     1f
     bx      lr
 1:
+    push    {r0, r1, r2, r3, r4, lr}
+    bl      mx_state
+    movs    r1, #1
+    str     r1, [r0, #MX_WAIT]      @ this press opens Mix; it is not a hold
+    pop     {r0, r1, r2, r3, r4, lr}
     ldr     r12, =SCREEN
     bx      r12
 

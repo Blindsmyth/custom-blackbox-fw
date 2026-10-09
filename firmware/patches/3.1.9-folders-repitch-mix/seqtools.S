@@ -2,6 +2,9 @@
 @ - Seq onEvent wrapper (vtable 0x080F0E90 +0x34). Encoders 0/1 no longer navigate
 @   (Batch 0). Encoder 2 (top right) doubles (turn right) or halves (turn left) the current
 @   layer of the selected sequence, at most once per SEQ_LEN_MS. Encoder 3 stays stock.
+@ - Encoder 3 no longer swaps the side panel. While SEQS is held the layer panel (A-D,
+@   Seq+0x4010) shows instead of the OFF/UNDO/CLR panel (Seq+0x3D5C); tap a layer there.
+@   Stock swaps them by their hidden bytes (+0x30), so the Seq tick wrapper does the same.
 @ - The unlabelled button above UNDO (Seq+0x3F70) shows the length in bars:
 @   bars = 0x86 notestepcount x step length (table 0x080ECA6C, beats) / 4.
 @ Double is stock FUN_0809C5B4. Halve mirrors it: undo snapshot, copy the layer's events,
@@ -31,8 +34,14 @@
 .equ APP_SCRATCH, 0xE920                @ app scratch sequence object, list at +0x18
 
 .equ MX_SEQ_T,    24                    @ MX_STATE: uwTick of the last length change
+.equ MX_SEQ_PANEL, 40                   @ MX_STATE: 1 while the layer panel is shown
+.equ SEQ_TICK,    0x080B55F5
+.equ SEQ_PANEL_A, 0x3D5C
+.equ SEQ_PANEL_B, 0x4010
+.equ BTN_SEQS_LV, 0x24009AEE
 
 .global seq_on_event
+.global seq_tick
 .global seq_halve
 .global seq_bar_label
 
@@ -43,8 +52,7 @@ seq_on_event:
     bne     5f
     ldrh    r2, [r1, #0xC]
     cmp     r2, #2
-    blo     9f                      @ 0, 1: navigation, off
-    bhi     8f                      @ 3: stock (side panel)
+    bne     9f                      @ 0, 1: navigation; 3: panel swap. All off.
     push    {r4, r5, r6, lr}
     mov     r4, r0
     ldrsh.w r5, [r1, #0x10]
@@ -91,11 +99,39 @@ seq_on_event:
     bl      seq_bar_label
 7:
     pop     {r4, r5, r6, pc}
-8:
-    ldr     r12, =SEQ_EVENT
-    bx      r12
 9:
     bx      lr
+
+@ tick(seq, flags): stock, then show the layer panel while SEQS is held.
+.thumb_func
+seq_tick:
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    mov     r5, r1
+    call    SEQ_TICK
+    ldr     r1, =BTN_SEQS_LV
+    ldrb    r1, [r1]
+    cmp     r1, #0
+    ite     eq
+    moveq   r6, #1                  @ held
+    movne   r6, #0
+    bl      mx_state
+    ldr     r1, [r0, #MX_SEQ_PANEL]
+    cmp     r1, r6
+    beq     9f
+    str     r6, [r0, #MX_SEQ_PANEL]
+    movw    r0, #SEQ_PANEL_A
+    add     r0, r4
+    strb    r6, [r0, #0x30]         @ OFF/UNDO/CLR hidden while held
+    eor     r1, r6, #1
+    movw    r0, #SEQ_PANEL_B
+    add     r0, r4
+    strb    r1, [r0, #0x30]         @ layers shown while held
+    movs    r0, #1
+    strb    r0, [r5]
+    strb    r0, [r5, #1]
+9:
+    pop     {r4, r5, r6, pc}
 
 @ r0 = app, r1 = sequence pad byte. Sets r0 = layer object, r1 = layer, r2 = base object,
 @ and fills ref at [r3] (8 bytes). Clobbers r12.
