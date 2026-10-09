@@ -17,6 +17,8 @@
 @ - Knobs drive the four stock value-engine sliders, bound to the same corner's param, so
 @   step, acceleration and App_SetParam stay stock. Logical encoder order is column-major:
 @   0 top-left, 1 bottom-left, 2 top-right, 3 bottom-right.
+@ - Bipolar params (min = -max: Cutoff, Pitch, Pan) draw a white centre line with the bar
+@   growing from the centre, and a drag within MX_SNAP_PX of the centre sticks at 0.
 @ - Blip: touching a fader whose param sits at its rest position (rest_values) sets the
 @   value under the finger as usual; letting go within MX_BLIP_MS puts the rest value
 @   back. Longer touches keep the new value. Our faders get their own copy of the fader
@@ -52,6 +54,18 @@
 .equ FADER_RECT,  0x080C1EE5        @ fader setRect (also places its label)
 .equ FADER_DOWN,  0x080C1F19        @ stock touchDown (calls vtable +0x14 touchMove)
 .equ FADER_UP,    0x080C1F2F        @ stock touchUp
+.equ FADER_DRAW,  0x080C2135        @ stock draw
+.equ FADER_VALUE, 0x080C1FB5        @ (fader, dy, h, id) -> value under the finger
+.equ FADER_BAR,   0x080C2040 + 1    @ (fader, value): bar rect +0x44..+0x50
+.equ PARAM_MIN,   0x0808E2D1
+.equ PARAM_MAX,   0x0808E305
+.equ FILL_RECT,   0x0808EA23        @ (rect*, colour, canvas)
+.equ OUTLINE,     0x0808E995        @ (rect*, colour, canvas)
+.equ DRAW_KIDS,   0x080AEAF9        @ (widget, ctx)
+.equ MX_SNAP_PX,  4
+.equ C_GREY,      1
+.equ C_WHITE,     3
+.equ C_CYAN,      5
 .equ SLIDER_BIND, 0x080A7EE1        @ (id, value, slider, 0)
 .equ SLIDER_STEP, 0x080B0D55        @ (slider, delta)
 .equ GET_PARAM,   0x08099505        @ (app, ref, id, &out)
@@ -81,6 +95,8 @@
 .global fader_vt
 .global fader_down
 .global fader_up
+.global fader_draw
+.global fader_move
 
 @ r0 = MX_STATE, initialised if the magic is missing. Clobbers r1.
 .thumb_func
@@ -514,15 +530,155 @@ fader_up:
     add     sp, #28
     pop     {r4, r5, pc}
 
+@ r0 = fader. Returns r0 = 1 if its param is bipolar: min < 0 and min = -max (Cutoff,
+@ Pitch, Pan; not Vol, which is -96 dB..+12 dB). Clobbers r1-r3, r12.
+.thumb_func
+is_bipolar:
+    push    {r4, r5, r6, lr}
+    ldrh    r5, [r0, #F_ID]
+    mov     r0, r5
+    call    PARAM_MIN
+    mov     r4, r0
+    mov     r0, r5
+    call    PARAM_MAX
+    adds    r0, r0, r4
+    bne     1f
+    cmp     r4, #0
+    bge     1f
+    movs    r0, #1
+    pop     {r4, r5, r6, pc}
+1:
+    movs    r0, #0
+    pop     {r4, r5, r6, pc}
+
+@ draw(fader, ctx): stock look for unipolar params; bipolar ones get a centre line and a
+@ bar from the centre to the value. ctx[0] = full redraw, ctx+4 = canvas.
+.thumb_func
+fader_draw:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #20
+    mov     r4, r0
+    mov     r5, r1
+    ldrb    r0, [r5]
+    cbz     r0, 8f
+    mov     r0, r4
+    bl      is_bipolar
+    cbz     r0, 8f
+    ldr     r6, [r5, #4]            @ canvas
+    add.w   r0, r4, #4
+    movs    r1, #C_GREY
+    mov     r2, r6
+    call    FILL_RECT
+    add.w   r0, r4, #4
+    movs    r1, #C_CYAN
+    mov     r2, r6
+    call    OUTLINE
+    ldr     r0, [r4, #0x10]         @ h
+    lsrs    r7, r0, #1              @ centre offset c
+    ldr     r0, [r4, #0x50]         @ bar height from the bottom edge
+    ldr     r1, [r4, #4]
+    str     r1, [sp]                @ x
+    ldr     r1, [r4, #0xC]
+    str     r1, [sp, #8]            @ w
+    ldr     r1, [r4, #8]            @ y
+    cmp     r0, r7
+    blt     1f
+    add     r2, r1, r7              @ value above centre: y+c .. y+bar
+    str     r2, [sp, #4]
+    subs    r0, r0, r7
+    b       2f
+1:
+    add     r2, r1, r0              @ below centre: y+bar .. y+c
+    str     r2, [sp, #4]
+    subs    r0, r7, r0
+2:
+    str     r0, [sp, #12]
+    cbz     r0, 3f
+    mov     r0, sp
+    movs    r1, #C_CYAN
+    mov     r2, r6
+    call    FILL_RECT
+3:
+    ldr     r1, [r4, #8]            @ centre line, 1 px, full width
+    add     r1, r7
+    str     r1, [sp, #4]
+    movs    r1, #1
+    str     r1, [sp, #12]
+    mov     r0, sp
+    movs    r1, #C_WHITE
+    mov     r2, r6
+    call    FILL_RECT
+    mov     r0, r4
+    mov     r1, r5
+    call    DRAW_KIDS
+    add     sp, #20
+    pop     {r4, r5, r6, r7, pc}
+8:
+    mov     r0, r4
+    mov     r1, r5
+    add     sp, #20
+    pop     {r4, r5, r6, r7, lr}
+    ldr     r12, =FADER_DRAW
+    bx      r12
+
+@ touchMove(fader, point): stock value mapping, plus a centre snap for bipolar params.
+.thumb_func
+fader_move:
+    push    {r4, r5, r6, lr}
+    sub     sp, #24
+    mov     r4, r0
+    ldr     r5, [r1, #4]            @ touch y
+    ldr     r0, [r4, #8]
+    subs    r5, r5, r0              @ dy from the bottom edge
+    mov     r0, r4
+    mov     r1, r5
+    ldr     r2, [r4, #0x10]
+    ldrh    r3, [r4, #F_ID]
+    call    FADER_VALUE
+    mov     r6, r0
+    mov     r0, r4
+    bl      is_bipolar
+    cbz     r0, 1f
+    ldr     r0, [r4, #0x10]
+    lsrs    r0, r0, #1
+    subs    r0, r5, r0              @ dy - h/2
+    it      mi
+    negmi   r0, r0
+    cmp     r0, #MX_SNAP_PX
+    it      ls
+    movls   r6, #0
+1:
+    mov     r0, r4
+    mov     r1, r6
+    call    FADER_BAR
+    movs    r0, #0x6E               @ what stock touchMove posts
+    strh    r0, [sp]
+    ldr     r0, =EV_TAG
+    str     r0, [sp, #4]
+    ldrh    r0, [r4, #F_PAD]
+    strh    r0, [sp, #8]
+    ldrh    r0, [r4, #F_ID]
+    str     r0, [sp, #12]
+    str     r6, [sp, #16]
+    movs    r0, #0
+    str     r0, [sp, #20]
+    mov     r0, r4
+    mov     r1, sp
+    call    UI_POST_UP
+    movs    r0, #1
+    strb    r0, [r4, #0x40]         @ redraw
+    add     sp, #24
+    pop     {r4, r5, r6, pc}
+
 @ Copy of the stock fader vtable 0x080F16D8 with touchDown/touchUp wrapped.
 .align 2
 fader_vt:
     .word   0x080C1EC1              @ +0x00 tick
-    .word   0x080C2135              @ +0x04 draw
+    .word   fader_draw              @ +0x04 draw (centre detent for bipolar params)
     .word   0x080AEB1D
     .word   0x080AEBAB              @ +0x0C contains
     .word   fader_down              @ +0x10 touchDown (Thumb bit from the symbol)
-    .word   0x080C20E5              @ +0x14 touchMove
+    .word   fader_move              @ +0x14 touchMove (snap to centre)
     .word   fader_up                @ +0x18 touchUp
     .word   0x080C1EE1              @ +0x1C acceptsTouch
     .word   0x080C1EE5              @ +0x20 setRect

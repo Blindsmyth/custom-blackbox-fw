@@ -15,10 +15,13 @@
 
 - **Hold MIX** to show the second layer. While it's held, tapping a pad selects it without playing it.
 - **Blip from rest.** If a param sits at its rest position, a quick touch (under 0.3 s) sets the value under your finger and puts the rest value back on release. Touch longer and the new value stays. Rest positions: Vol at minimum, Cutoff centre, Pitch unshifted, Attack/Decay/Sends at 0. Pan never blips.
+- **Centre detent.** Cutoff, Pitch and Pan grow their bar from a white centre line. A drag that passes within a few pixels of the centre sticks at exactly 0.
 - **MIX** opens Mix from any screen. On Mix it no longer flips to Mute.
 - **INFO** on Mix opens Mute:
   - A short press stays in Mute, and INFO again goes back to Mix (as before).
   - Holding INFO for more than 0.4 s makes Mute momentary: releasing it returns to Mix.
+
+Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 
 ## Flash
 
@@ -35,10 +38,11 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 2. Turn each knob, in both layers. The fader in the same corner moves and you hear the change. If a knob moves the wrong fader, the encoder order is off: swap the entries in `knob_slider` in `mixui.S` and rebuild.
 3. Drag each fader. The value changes for the selected pad.
 4. Hold MIX: Pan / Attack / Send A / Send B appear, and tapping a pad selects it silently. Let go: Vol / Decay / Cutoff / Pitch return.
-5. With Send A at 0, tap its fader quickly: a short send blip, then back to 0. Hold it longer: the send stays.
-6. INFO short press stays in Mute; press INFO again to return to Mix. Hold INFO: Mute while held, Mix on release.
-7. Save the preset and reload it: the values persist.
-8. Folders and Repitch behave as in 3.1.X.
+5. Drag Cutoff, Pitch and Pan through the middle: the bar flips sides at the white line, and the value sticks at 0 near it.
+6. With Send A at 0, tap its fader quickly: a short send blip, then back to 0. Hold it longer: the send stays.
+7. INFO short press stays in Mute; press INFO again to return to Mix. Hold INFO: Mute while held, Mix on release.
+8. Save the preset and reload it: the values persist.
+9. Folders and Repitch behave as in 3.1.X.
 
 ## Rebuild and test
 
@@ -51,4 +55,4 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 - two `bl App_SetScreen` calls in `App_HandleInput` (MIX at `0x080A32DE`, INFO on Mix at `0x080A30DC`);
 - three words of the Mix vtable (tick, onChildEvent, onEvent).
 
-The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with touchDown/touchUp wrapped for the blip, so faders on other screens are untouched.
+The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with draw, touchDown, touchMove and touchUp wrapped for the centre detent and the blip, so faders on other screens are untouched.

@@ -883,6 +883,52 @@ def t_mix_blip(bench, res):
     MIX_VALUES[0x62] = 300
 
 
+def _draw_rects(bench, name):
+    """Run the Mix fader draw with a full-redraw context; return (colour, rect) fills."""
+    b = bench.b
+    fills = []
+    b.stub(0x0808EA22, lambda board: fills.append((board.arg(1), struct.unpack("<4i", board.mu.mem_read(board.arg(0), 16)))))
+    b.stub(0x0808E994, lambda board: None)
+    ctx = MIX_EV + 0x80
+    b.mu.mem_write(ctx, struct.pack("<BBHIi", 1, 1, 0, 0x30016000, 0))
+    b.call(bench.sym["fader_draw"], MIX_OBJ + MIX_FADERS[name], ctx)
+    b.unstub(0x0808EA22)
+    b.unstub(0x0808E994)
+    return fills
+
+
+def t_mix_detent_draw(bench, res):
+    b = _mix_setup(bench)
+    MIX_VALUES[0xC8] = -500
+    _mix_tick(bench)
+    fills = _draw_rects(bench, "tr")                 # Cutoff, logical rect (288,111,30,109)
+    centre = 111 + 109 // 2
+    res.check((3, (288, centre, 30, 1)) in fills, f"Cutoff draws a white centre line {fills}")
+    bars = [r for c, r in fills if c == 5]
+    res.check(len(bars) == 1 and bars[0][1] + bars[0][3] == centre and bars[0][3] > 20,
+              f"negative Cutoff bar hangs below the centre {bars}")
+    MIX_VALUES[0xC8] = 400
+    b.call(bench.sym["mix_on_event"], MIX_OBJ, _mix_ev(b, 0x66, key=0))
+    bars = [r for c, r in _draw_rects(bench, "tr") if c == 5]
+    res.check(len(bars) == 1 and bars[0][1] == centre and bars[0][3] > 15, f"positive Cutoff bar rises from the centre {bars}")
+    fills = _draw_rects(bench, "tl")                 # Vol: -96..+12 dB is not bipolar
+    res.check(not any(c == 3 for c, _ in fills), f"Vol keeps the stock look {fills}")
+
+
+def t_mix_detent_snap(bench, res):
+    b, posts = _touch_setup(bench)
+    MIX_VALUES[0xC8] = 400                          # not at rest: no blip
+    centre = 111 + 109 // 2
+    _touch(bench, "tr", centre + 3, 600)
+    res.check(posts and posts[-1][2:] == (0xC8, 0), f"3 px off centre snaps Cutoff to 0 {posts}")
+    posts.clear()
+    _touch(bench, "tr", centre + 10, 600)
+    res.check(posts and posts[-1][3] > 0, f"10 px off centre does not snap {posts}")
+    posts.clear()
+    _touch(bench, "tl", centre + 2, 600)
+    res.check(posts and posts[-1][2] == 0x04 and posts[-1][3] != 0, f"Vol never snaps {posts}")
+
+
 def t_mix_button(bench, res):
     b = _mix_setup(bench, build=False)
     calls = []
@@ -986,6 +1032,8 @@ def main():
             ("Mix faders and MIX-hold layout", t_mix_layout),
             ("Mix fader touch sets the pad", t_mix_fader_touch),
             ("Mix fader blip from rest", t_mix_blip),
+            ("Mix centre detent draw", t_mix_detent_draw),
+            ("Mix centre detent snap", t_mix_detent_snap),
             ("MIX button stays on Mix", t_mix_button),
             ("INFO momentary Mute", t_info_momentary),
         ]
