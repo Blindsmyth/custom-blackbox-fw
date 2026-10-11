@@ -186,3 +186,119 @@ address,name,comment
 0x080AEC44,Widget_AddChild,(parent, child); prepends; sets child+0x2C
 0x0807794C,HAL_GetTick,uwTick at 0x24015CE4
 0x24009AB0,ButtonTable,data; 13 x 0x18; +0xE debounced level, 0 = pressed; MIX 5, INFO 12
+# --- 3.1.Q session (UI model, sequencer, recording, FX/EQ); see docs/firmware/README.md
+0x080AEC08,Widget_ctor,0x34-byte base; rect +4, children +0x18/+0x1C, parent +0x2C, hidden +0x30
+0x080AEAF8,Widget_DrawChildren,(w, ctx); skips hidden
+0x080AEB44,Widget_TickChildren,(w, flags)
+0x080AEB5E,Widget_HitTest,generic; children oldest first
+0x080AB4FC,Container_Show,(container, page): old page 0xD3, new setRect(0,0,320,220) + 0xD4
+0x080AB57E,Container_Tick,calls the active screen tick with flags
+0x0808BE4C,GUI_ctor,builds every screen
+0x0808B654,GUI_Update,App_Update then app->GUI events (show-screen switch)
+0x0808B2D0,GUI_Render,full pass ctx{1,0} / partial pass ctx{0,1}
+0x0808F454,Canvas_Init,(canvas, w, h, fmt, rot)
+0x0808EA22,Draw_FillRect,(rect*, colour, canvas)
+0x0808E994,Draw_Outline,(rect*, colour, canvas)
+0x0808EA7E,Draw_Line,(p1, p2, colour, canvas)
+0x0808F524,Draw_Pixel,(canvas, x, y, colour); rot 1 flips y
+0x0808ED28,Text_Width,12 px per character
+0x08041C68,DMA2D_Fill,(dma, colour32, rect{.,.,w,h,x,y}, canvas)
+0x080A3D34,FrameButton_ctor,0xA0 bytes; vtable 0x080EFE48
+0x080A3714,Widget_SetRect,generic; reads the rect with LDM
+0x080A3758,FrameButton_SetRect,LDM rect; then vtable +0x3C layout
+0x080A3978,FrameButton_Layout,centres the label
+0x080A3DEC,FrameButton_SetText,(btn, str)
+0x080A3E00,FrameButton_SetSelected,(btn, on)
+0x080A3808,FrameButton_Press,posts child event 1 {+0xC id = +0x14}
+0x080C4E70,ButtonBar_ctor,up to 5 frame buttons at +0x3C + i*0xA0
+0x080C4ED8,ButtonBar_Layout,(bar, btn)
+0x080C4FF0,ButtonBar_AddTab,(bar, label, id)
+0x080C2040,Fader_SetValue,bar rect from min/max and height
+0x080C20E4,Fader_TouchMove,posts 0x6E {pad +0x38, id +0x3E, value}
+0x080C1FB4,Fader_ValueAt,(fader, dy, h, id); 20 px dead zones
+0x080C2134,Fader_Draw,grey fill, cyan outline, bar
+0x080B0B74,Slider_Accumulate,list stepping: 400 units per entry, hysteresis
+0x080B08F4,Slider_SetListValue,
+0x080B9C84,ScrollList_ctor,rows in scroll view FUN_080C5700; selected row +0x986C
+0x080B9BA4,ScrollList_EncoderRow,upper encoders: move the row
+0x080B9A3C,ScrollList_EncoderValue,lower encoders: change the selected row
+0x080B9C2A,ScrollList_SelectRow,also from a row tap (child event 0x145)
+0x080A4A0C,PadCell_ctor,child events 3/4 = press/release
+0x080B4528,Pads_ctor,vtable 0x080F0E50; VEL panel +0x2110, edit panel +0x21F0
+0x080B4F34,Seq_ctor,vtable 0x080F0E90; panels +0x3D5C (OFF/UNDO/CLR), +0x4010 (A-D)
+0x080B4DEC,Seq_OnChildEvent,pad 3/4 -> 0xFA/0xFB
+0x080B5284,Seq_OnEvent,
+0x080B3E84,Pads_OnChildEvent,
+0x080B4134,Pads_OnEvent,
+0x080AA290,EQPage_ctor,vtable 0x080F06BC
+0x080AA8D2,EQPage_Layout,on 0xD4; graph rect on the stack
+0x080AA074,EQGraph_SetRect,
+0x080A9B40,EQGraph_TouchDown,
+0x080A9B9C,EQGraph_TouchMove,
+0x080AA03C,EQGraph_SetBand,
+0x080ABA84,FXReturn_ctor,vtable 0x080F07BC; bar page+0x34, name cell +0x3AC, knobs +0x450
+0x080AB900,FXReturn_OnEvent,rebuild on 0x66/0x67
+0x080ABF48,FXSend_ctor,
+0x080B20F0,LiveFX_ctor,DJ FX
+0x080C5450,Tools_ctor,pages Main/Rec/MIDI/Clock
+0x080437D4,Buttons_Scan,audio task; 13 entries at 0x24009AB0
+0x080436F8,LED_Set,(_, index, on); REC 8, PLAY 10
+0x080525D8,Rec_LedState,playing && recording
+0x080A16C4,App_DisplayWake,(app, off)
+0x08097CE8,Seq_Object,(app, ref, layer)
+0x08098288,Seq_RecordStart,0xBE = 1 + msg 0x68
+0x08098328,Seq_Select,
+0x080983D0,Seq_TogglePlay,
+0x08098254,Seq_UndoSnapshot,
+0x080985A0,Seq_PushLayer,(app, ref, layer)
+0x0809C5B4,Seq_Double,
+0x0809F820,Seq_Clear,
+0x0809843C,Seq_ClearAll,
+0x08097D78,Seq_FinishHangingNotes,
+0x080A02CE,Seq_RecordNote,note ring entry -> sequence event (gate App+0x8CC1 == 1)
+0x0809AC60,App_RecordState,(app, msg{+0xC on})
+0x0809D240,App_SeqStarted,(app, msg{+8 engine key}, started)
+0x08063D08,EventList_Get,
+0x08063B28,EventList_Add,max 512
+0x08063B38,EventList_Update,
+0x08063C08,EventList_Delete,
+0x08063CC0,EventList_Clear,
+0x0804C798,Engine_EventAdd,
+0x0804C7E8,Engine_EventDelete,handle 0 = all
+0x0804C87C,Engine_SeqLaunch,msg 0x68
+0x0804C8B4,Engine_Transport,(eng, rec, ?, ?): 0x73/0x74
+0x0804CA68,Engine_Ticks,(out u64, eng)
+0x080524CC,SE_RecButton,(SE, held)
+0x08051EB8,SE_Play,msg 0x74; lead-in while REC held
+0x08051738,SE_Post,(SE, msg)
+0x08069BEC,SE_SetTempo,(SE, float bpm); re-anchors
+0x080696D8,SE_AdvanceClock,SE+0x00 samples always; SE+0x30 ticks while playing
+0x0805C810,Player_NoteOn,
+0x0805C970,Player_NoteOff,
+0x0805D8C4,Player_Tick,re-reads 0x86 every step
+0x0805CB64,Player_Start,start tick = next quant boundary
+0x0806A428,SE_TapTempo,
+0x08097C1C,App_TempoFromEngine,(app, msg{+0xC milli-BPM})
+0x0809FE14,App_SetParam_LayerPick,layer-0 id set
+0x08099624,App_GetParam_LayerPick,
+0x0808C12C,Param_RegisterInt,(regs, id, ?, title, min, max, xml)
+0x0808E24C,Param_Type,
+0x0808E278,Param_Labels,
+0x0808E2A4,Param_Count,
+0x0808E2D0,Param_Min,
+0x0808E304,Param_Max,
+0x08093E9C,Param_Get,(bag, id)
+0x08093ECC,Param_Set,(bag, id, value); no-op if missing
+0x08093EF6,Param_Add,(bag, id, default)
+0x08093F20,Param_GroupTemplate,
+0x0809481C,Param_GlobalTemplate,
+0x08094A1C,Object_Init,(obj, &type)
+0x0808FA28,Settings_Save,settings.tml
+0x0808FB84,Settings_Load,
+0x24009A2C,LedTable,data; index 8 REC
+0x24015CE4,uwTick,data; ms
+0x24028D18,GlobalBag,data; App+0x8C90
+0x080ECA6C,StepLenTable,data; floats, beats per 0x85 option
+0x080ECC70,QuantTable,data; floats, beats per 0x46 option
+0x080EEF28,SeqPage0Ids,data; Duty, Quant Size, Step Mode, MIDI Out (+ Rec Len)
+0x080EED60,ToolsRecIds,data; RecToPlay, RecConfig, Lead In (+ Seq Rec Len)
