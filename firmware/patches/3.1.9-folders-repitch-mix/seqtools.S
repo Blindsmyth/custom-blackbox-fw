@@ -7,7 +7,10 @@
 @     (or a 2x longer step past 512), /2 = count /2 when even, else a 2x shorter step;
 @   * doubling copies the notes into the new half when Tools -> Rec -> Dbl Copy is On
 @     (as stock Double: scratch copy, re-add at +old length, push the layer, undo snapshot);
-@   * halving never deletes notes. The knob never selects Custom (settings page only).
+@   * halving never deletes notes. The list is Custom, 1/8 .. 32 bars: an empty Custom
+@     sequence steps up to 1/8, 1/8 steps down to Custom (length unchanged);
+@   * a /2 that shortened the step remembers the original step (MX_SQ_HOME); x2 lengthens
+@     the step back to it before doubling the count (15/16 -> 15/32 -> 15/16 -> 30/16).
 @ - The unlabelled button above UNDO (Seq+0x3F70) shows the length: a preset name ("2 bar"),
 @   otherwise count/denominator ("15/16", "63/16"), "Nst" for triplet/bar steps or when that
 @   doesn't fit five characters, and "Cust" for an empty Custom sequence.
@@ -39,6 +42,7 @@
 .equ MX_SEQ_PANEL, 40                   @ MX_STATE: 1 while the layer panel is shown
 .equ MX_SQ_ACC,   68                    @ MX_STATE: length knob accumulator
 .equ MX_SQ_KEY,   72                    @ MX_STATE: sequence the accumulator belongs to
+.equ MX_SQ_HOME,  76                    @ MX_STATE: step index + 1 before a /2 shortened it, 0 = none
 .equ SQ_UNITS,    400                   @ encoder units per step (stock list sliders)
 .equ EVL_ADD,     0x08063B29            @ (list, &event)
 .equ APP_HANDLE,  0xE808                @ next event handle
@@ -236,6 +240,7 @@ seq_len_knob:
     str     r1, [r6, #MX_SQ_KEY]    @ another sequence: start over
     movs    r2, #0
     str     r2, [r6, #MX_SQ_ACC]
+    str     r2, [r6, #MX_SQ_HOME]
 1:
     ldr     r7, [r6, #MX_SQ_ACC]
     add     r7, r5
@@ -277,9 +282,21 @@ sq_step:
     mul     r0, r7, r9
     bl      sq_preset_of
     mov     r10, r0                 @ preset or 0
+    ldr     r0, =APP
+    mov     r1, r4
+    movw    r2, #SR_LEN
+    bl      sr_getp
+    cbnz    r0, 1f
+    ldr     r0, [r6, #0x1C]
+    cbnz    r0, 1f
+    cmp     r5, #0                  @ empty Custom: the bottom of the list, up = 1/8
+    blt     9f
+    movs    r3, #1
+    b       3f                      @ (setting Rec Len sets the length)
+1:
     cmp     r10, #0
     beq     5f
-    cmp     r5, #0                  @ preset: next/previous preset
+    cmp     r5, #0                  @ preset: next/previous in Custom, 1/8 .. 32 bars
     blt     2f
     cmp     r10, #9
     bhs     9f
@@ -288,7 +305,10 @@ sq_step:
     b       3f
 2:
     cmp     r10, #1
-    bls     9f
+    bhi     4f
+    movs    r3, #0                  @ 1/8 down: Custom, length unchanged
+    b       3f
+4:
     bl      sq_halve
     sub     r3, r10, #1
 3:
@@ -319,6 +339,16 @@ sq_step:
 sq_double:
     push    {r10, r11, lr}
     sub     sp, #36
+    bl      mx_state                @ a /2 shortened the step: lengthen it back first
+    ldr     r0, [r0, #MX_SQ_HOME]
+    subs    r0, #1
+    blt     1f
+    cmp     r0, r8
+    bge     1f
+    adr     r0, sq_dbl_idx
+    ldrb    r3, [r0, r8]
+    b       8f
+1:
     lsls    r0, r7, #1
     cmp     r0, #512
     bgt     7f
@@ -420,6 +450,7 @@ sq_double:
 7:
     adr     r0, sq_dbl_idx          @ count would pass 512: 2x longer step
     ldrb    r3, [r0, r8]
+8:
     cmp     r3, #0xFF
     beq     9f
     ldr     r0, =APP
@@ -449,6 +480,12 @@ sq_halve:
     ldrb    r3, [r0, r8]
     cmp     r3, #0xFF
     beq     9f
+    bl      mx_state                @ remember the user's step for the way back up
+    ldr     r1, [r0, #MX_SQ_HOME]
+    cbnz    r1, 2f
+    add     r1, r8, #1
+    str     r1, [r0, #MX_SQ_HOME]
+2:
     ldr     r0, =APP
     mov     r1, r4
     movs    r2, #0x85

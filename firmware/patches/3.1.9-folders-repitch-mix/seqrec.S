@@ -4,11 +4,11 @@
 @   0x19D "Rec Len:"     per sequence, layer 0: Custom, 1/8, 1/4, 1/2, 1 bar ... 32 bars.
 @                        A fixed value sets the sequence length (0x86, and 0x85 = 1/16 when
 @                        the length isn't a whole number of steps and the layer is empty).
-@   0x19E "Seq Rec Len:" global (Tools -> Rec): 1 bar / Custom. Default for new sequences.
+@   0x19E "Seq Default:" global (Tools -> Rec): any Rec Len value, default 1 bar. New, loaded
+@                        (without their own Rec Len) and cleared sequences take it.
 @   0x1A0 "Loop BPM:"    global (Tools -> Rec): tempo range for looper takes, default 80-160.
 @   0x1A1 "Dbl Copy:"    global (Tools -> Rec): the length knob's x2 copies notes. Default On.
-@   0x19F "Rec Len Set:" per sequence, hidden: 1 once the user changed 0x19D. Untouched
-@                        sequences take the global default again when cleared.
+@   0x19F "Rec Len Set:" per sequence, hidden: 1 once the user changed 0x19D, 0 after CLR.
 @ App_SetParam/App_GetParam keep only some sequence ids in layer 0; two b.w patches add
 @ 0x19D/0x19F to that set.
 @
@@ -95,15 +95,13 @@ seqrec_register:
 .align 2
 sr_regs:
     .word   SR_LEN, s_sr_len, sr_len_labels, 10, x_sr_len
-    .word   SR_DEF, s_sr_def, sr_def_labels, 2, x_sr_def
+    .word   SR_DEF, s_sr_def, sr_len_labels, 10, x_sr_def
     .word   SR_SET, s_sr_set, sr_set_labels, 2, x_sr_set
     .word   SR_BPM, s_sr_bpm, sr_bpm_labels, 5, x_sr_bpm
     .word   SR_DBL, s_sr_dbl, sr_dbl_labels, 2, x_sr_dbl
     .word   0
 sr_len_labels:
     .word   s_custom, s_1_8, s_1_4, s_1_2, s_1bar, s_2bars, s_4bars, s_8bars, s_16bars, s_32bars
-sr_def_labels:
-    .word   s_1bar, s_custom
 sr_set_labels:
     .word   s_no, s_yes
 sr_bpm_labels:
@@ -113,7 +111,7 @@ sr_dbl_labels:
 sr_len_ticks:                           @ Rec Len -> ticks (960 per beat, 4 beats per bar)
     .word   0, 480, 960, 1920, 3840, 7680, 15360, 30720, 61440, 122880
 
-@ bl site 0x080949D2: global bag template, last add (0x19B). Add Seq Rec Len = 1 bar.
+@ bl site 0x080949D2: global bag template, last add (0x19B). Add Seq Default = 1 bar, Loop BPM, Dbl Copy.
 .thumb_func
 seqrec_global_tpl:
     push    {r4, lr}
@@ -121,7 +119,7 @@ seqrec_global_tpl:
     call    PARAM_ADD
     mov     r0, r4
     movw    r1, #SR_DEF
-    movs    r2, #0
+    movs    r2, #4                  @ 1 bar
     call    PARAM_ADD
     mov     r0, r4
     movw    r1, #SR_BPM
@@ -140,10 +138,9 @@ sr_default:
     ldr     r0, =GLOBAL_BAG
     movw    r1, #SR_DEF
     call    P_GET
-    cmp     r0, #1
-    ite     eq
-    moveq   r0, #0
-    movne   r0, #4
+    cmp     r0, #10
+    it      hs
+    movhs   r0, #4
     pop     {r4, pc}
 
 @ bl site 0x08094426: sequence bag template (case 0x47), last add (0x7A).
@@ -437,7 +434,8 @@ sr_marked:
 9:
     pop     {r4, r5, r6, pc}
 
-@ r0 = app, r1 = ref: an untouched sequence takes the global Rec Len again.
+@ r0 = app, r1 = ref: a cleared sequence takes Seq Default again (Rec Len and its length),
+@ touched or not, empty or not.
 .thumb_func
 sr_reset_default:
     push    {r4, r5, r6, lr}
@@ -447,14 +445,16 @@ sr_reset_default:
     ubfx    r2, r2, #8, #5
     cmp     r2, #1
     bne     9f
-    movw    r2, #SR_SET
-    bl      sr_getp
-    cbnz    r0, 9f
     bl      sr_default
     mov     r3, r0
     mov     r0, r4
     mov     r1, r5
     movw    r2, #SR_LEN
+    bl      sr_setp                 @ (seqrec_setparam sets the length)
+    mov     r0, r4
+    mov     r1, r5
+    movw    r2, #SR_SET
+    movs    r3, #0
     bl      sr_setp
 9:
     pop     {r4, r5, r6, pc}
@@ -643,10 +643,10 @@ seqrec_started:
 
 .align 2
 s_sr_len:   .asciz "Rec Len:"
-s_sr_def:   .asciz "Seq Rec Len:"
+s_sr_def:   .asciz "Seq Default:"
 s_sr_set:   .asciz "Rec Len Set:"
 x_sr_len:   .asciz "seqreclen"
-x_sr_def:   .asciz "seqreclendef"
+x_sr_def:   .asciz "seqdefault"
 x_sr_set:   .asciz "seqreclenset"
 s_custom:   .asciz "Custom"
 s_1_8:      .asciz "1/8"

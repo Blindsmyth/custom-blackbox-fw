@@ -89,7 +89,7 @@ Details: [../map-319.md#mix-and-mute](../map-319.md#mix-and-mute) and [#encoders
 - **App_SetParam** `0x0809FA50` / **App_GetParam** `0x08099504`. Sequence keys go to layer 0 for `0x46`/`0x49`/`0x6B`/`0x7A`/`0x88`/`0xB7`/`0xB9`/`0xBE`/`0xC0` and to the active layer otherwise. Global keys (kind 0x40) save `settings.tml`. **S**
 - **Persistence:** preset XML and `settings.tml` write every bag row as `name=value` (`FUN_0808FA28`); load runs the template, then sets the attributes present. **S** for settings; **L** for sequence bags.
 - **Encoder → list stepping:** `FUN_080B0B74` keeps a struct at slider+0x270 (int64 accumulator, divisor 400 for lists, index, count, wrap) and steps one entry per 400 accumulated units. **S**
-- **3.1.Q params:** `0x19D` Rec Len, `0x19E` Seq Rec Len, `0x19F` Rec Len Set (hidden), `0x1A0` Loop BPM, `0x1A1` Dbl Copy. Registry has 500 slots, so ids up to `0x1F3` are free to add. **S**
+- **3.1.Q params:** `0x19D` Rec Len, `0x19E` Seq Default, `0x19F` Rec Len Set (hidden), `0x1A0` Loop BPM, `0x1A1` Dbl Copy. Registry has 500 slots, so ids up to `0x1F3` are free to add. **S**
 - **Page lists:** `InfoPage_Build` `0x08098D40` walks ushort id lists (pad pages 0x48 bytes per page; sequence page 0 at `0x080EEF28`; layers `0x080EEE98`; Tools `0x080EED18` + page × 0x48). **S**
 
 ## Sequencer
@@ -114,7 +114,7 @@ Details: [../map-319.md#sequence-recording-31q-custom-rec-len](../map-319.md#seq
   - Notes reach the UI through the ring at SE+0xEFF8 (0x30-byte entries: type 5/6, note | vel, engine key, song ticks at +0x28; +0x20 unused). They arrive even while stopped and are recorded only by `FUN_080A02CE` while App+0x8CC1 == 1. **S**
   - Tap tempo: param `0x19A` → `FUN_0806A428`. **S**
 - **Step length table** `0x080ECA6C` (floats, beats), by `0x85`: 0 8 bars, 1 4 bars, 2 2 bars, 3 1 bar, 4 1/2, 5 1/2T, 6 1/4, 7 1/4T, 8 1/8, 9 1/8T, 10 1/16, 11 1/16T, 12 1/32, 13 1/32T, 14 1/64. A layer's length is `0x86` × table[`0x85`] × 960 ticks. **S**
-- **3.1.Q length knob** (`seqtools.S` `seq_len_knob`): 400 encoder units per step like stock lists; preset lengths step as Rec Len, others ×2/÷2 via `0x86` or a 2× step index; ×2 copies the events (scratch App+0xE920, re-add at +old length with handle 0, push `FUN_080985A0`, post `0x66`), gated by global `0x1A1` Dbl Copy.
+- **3.1.Q length knob** (`seqtools.S` `seq_len_knob`): 400 encoder units per step like stock lists; list Custom, 1/8 … 32 bars stored as Rec Len; other lengths ×2/÷2 via `0x86` or a 2× step index, and ×2 first restores the step a ÷2 shortened (MX_STATE+76); ×2 copies the events (scratch App+0xE920, re-add at +old length with handle 0, push `FUN_080985A0`, post `0x66`), gated by global `0x1A1` Dbl Copy.
 
 ## Clip / Slicer engine
 

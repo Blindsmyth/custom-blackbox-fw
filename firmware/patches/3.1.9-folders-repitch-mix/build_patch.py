@@ -72,7 +72,7 @@ BYTES = [
     (0x0808CE70, "4ff40073", "4ff48073"),               # 0x86 Step Count max 256 -> 512
     (0x080EEF30, "9d01", "0000"),                       # Seq page 0: Rec Len
     (0x080EEEE8, "9d01", "0000"),                       # Seq page 0 (MIDI display): Rec Len
-    (0x080EED66, "9e01", "0000"),                       # Tools -> Rec: Seq Rec Len
+    (0x080EED66, "9e01", "0000"),                       # Tools -> Rec: Seq Default
     (0x080EED68, "a001", "0000"),                       # Tools -> Rec: Loop BPM
     (0x080EED6A, "a101", "0000"),                       # Tools -> Rec: Dbl Copy
     (0x0809470E, "0222", "0022"),
@@ -86,7 +86,7 @@ BYTES = [
 # unaligned (Unicorn doesn't fault, so the bench can't catch it): keep them 4-byte aligned.
 WORD_TABLES = ["fxr_bar_rect", "fxr_labels", "fader_vt", "rest_values", "layer_main",
                "layer_held", "ticks_per_beat", "sr_short_labels", "sr_regs", "sr_len_labels",
-               "sr_def_labels", "sr_set_labels", "sr_len_ticks", "sr_960", "sr_bpm_labels",
+               "sr_set_labels", "sr_len_ticks", "sr_960", "sr_bpm_labels",
                "sr_dbl_labels", "sr_len_ticks_q"]
 
 

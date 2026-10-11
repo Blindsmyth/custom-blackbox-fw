@@ -134,6 +134,7 @@ mx_state:
     str     r1, [r0, #64]
     str     r1, [r0, #68]           @ seqtools MX_SQ_ACC
     str     r1, [r0, #72]           @ seqtools MX_SQ_KEY
+    str     r1, [r0, #76]           @ seqtools MX_SQ_HOME
 1:
     pop     {r2}
     bx      lr

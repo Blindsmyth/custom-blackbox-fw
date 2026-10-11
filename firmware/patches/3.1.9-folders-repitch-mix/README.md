@@ -29,8 +29,9 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 - **Hold PADS:** the side panel shows CUT / COPY / PSTE / CLR (instead of VEL), and tapping a pad selects it without playing. Let go: VEL comes back.
 - **Hold SEQS:** the side panel shows the layers A–D (tap one to pick it) and tapping a pad selects that sequence without starting or stopping it. Let go: OFF / UNDO / CLR come back.
 - **Seq length knob:** the top-right knob changes the sequence length, at the same speed as the Step Len list.
-  - On a Rec Len length (1/8, 1/4, 1/2, 1 bar … 32 bars) it steps to the next / previous one and stores it as Rec Len. It never selects Custom (set that on the settings page).
-  - On any other length (e.g. 15 steps of 1/16) it doubles / halves: ×2 doubles the step count (or, past 512 steps, makes the step 2× longer); ÷2 halves an even count, or makes the step 2× shorter for an odd one (15/16 → 15/32).
+  - The list is always Custom, 1/8, 1/4, 1/2, 1 bar … 32 bars, stored as Rec Len. Down from 1/8 is Custom (the length stays); up from an empty Custom sequence is 1/8.
+  - On any other length (e.g. 15 steps of 1/16, or a Custom recording) it doubles / halves: ×2 doubles the step count (or, past 512 steps, makes the step 2× longer); ÷2 halves an even count, or makes the step 2× shorter for an odd one (15/16 → 15/32 → 15/64).
+  - Going back up after that returns to your step length first: 15/64 → 15/32 → 15/16, then 30/16. Selecting another sequence forgets it.
   - **Dbl Copy** (Tools → Rec, default On): doubling copies the notes into the new half, like stock Double (one UNDO step). Off: it only lengthens.
   - Shortening never deletes notes; they come back when you lengthen again.
   - The field above UNDO / CLR / OFF shows the length: the Rec Len name ("2 bar", "1/8"), otherwise steps/denominator ("15/16", "63/16"), "Nst" for triplet or bar-length steps or when that doesn't fit ("100st"), and "Cust" for an empty Custom sequence.
@@ -51,9 +52,8 @@ Records MIDI into a sequence the way Ableton records into a new clip.
   2. **REC again** stops recording, and the loop closes on the next Quant Size boundary. The sequence keeps playing that length. STOP closes it the same way.
   3. A Custom recording can grow to 512 steps (32 bars at 1/16). Past that it loops and overdubs.
 - **Tools → Rec → Loop BPM** (60–120 … 100–200, default 80–160): tempo range for looper takes (next update).
-- **Tools → Rec → Seq Rec Len** (1 bar / Custom) is the Rec Len new sequences get.
-  - A sequence takes it when it is created or loaded without a Rec Len of its own, and when it's cleared (CLR) if you never changed its Rec Len.
-  - Once you set a sequence's Rec Len, it keeps it through clears and reloads.
+- **Tools → Rec → Seq Default** (Custom, 1/8 … 32 bars; default 1 bar) is the Rec Len a sequence gets when it is created, loaded without a Rec Len of its own, or cleared.
+  - **CLR always resets** the sequence to Seq Default (Rec Len and length), whether you changed it or not and whether it had notes or not.
 - **Step Count** now goes up to 512 (was 256).
 
 
@@ -79,15 +79,15 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 9. Folders and Repitch behave as in 3.1.X.
 10. Pads: no knob does anything. Seq: only the top-right knob (length). Pad INFO / settings lists: one knob still picks the row, the other changes it.
 11. Hold PADS: CUT / COPY / PSTE / CLR replace VEL; tap a pad (selected, silent), tap COPY, tap another pad, PSTE; let go: VEL. Hold SEQS: layers A–D replace OFF/UNDO/CLR; tap a layer, tap a pad (selected, play state unchanged), let go.
-12. Seq: turn the top-right knob: 1/8 → … → 32bar at Step Len speed (not skipping). A 1-bar pattern turned to 2 bar plays twice (Dbl Copy On); with Tools → Rec → Dbl Copy Off the second bar is empty. Set Step Count 15: the field shows 15/16; the knob gives 30/16, back 15/16, then 15/32.
+12. Seq: turn the top-right knob: 1/8 → … → 32bar at Step Len speed (not skipping). A 1-bar pattern turned to 2 bar plays twice (Dbl Copy On); with Tools → Rec → Dbl Copy Off the second bar is empty. Turn below 1/8: Custom. Set Step Count 15: the field shows 15/16; down gives 15/32, 15/64; up gives 15/32, 15/16, 30/16.
 13. EQ: drag each dot directly. A new preset's EQ, and an untouched EQ from an older preset, show Low Shelf / Param / Param / High Shelf.
 14. FX: DJ FX → FX again → Return page with A Delay / B Reverb / EQ / (empty) along the bottom; A and B switch the return, EQ opens the EQ page, FX goes back to DJ FX.
 15. Enter Mix with the MIX button: Vol / Decay / Cutoff / Pitch with matching labels. Press and hold MIX again: Pan / Attack / A / B; let go: back. Labels always match the bars.
 16. EQ page: the A Delay / B Reverb / EQ row is along the bottom with EQ lit, the EQ view sits above it, and dots still drag. A and B open that return; FX goes to DJ FX.
-17. Seq settings page: Rec Len after MIDI Out. Tools → Rec: Seq Rec Len, Loop BPM, Dbl Copy after Lead In.
+17. Seq settings page: Rec Len after MIDI Out. Tools → Rec: Seq Default, Loop BPM, Dbl Copy after Lead In.
 18. Empty sequence, Rec Len Custom, transport stopped: press REC. You get the lead-in, then the sequence starts at bar 1 and records. Play for 2½ bars, press REC: the loop closes at bar 3 and plays 3 bars back.
 19. Turn Rec Len to 2 bar: the sequence is 2 bars long. Save, reload: Rec Len is kept.
-20. Tools → Rec → Seq Rec Len = Custom. New preset: its sequences show Rec Len Custom. CLR a sequence you never touched: Custom. CLR one you set to 2 bars: still 2 bars.
+20. Tools → Rec → Seq Default = 2 bar. New preset: its sequences are 2 bars. Turn one to 8 bar, CLR: back to 2 bar. CLR an empty sequence set to 4 bar: 2 bar. Seq Default = Custom: CLR gives an empty Custom sequence (shows Cust).
 
 ## Rebuild and test
 

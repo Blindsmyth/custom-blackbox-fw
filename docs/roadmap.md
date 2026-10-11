@@ -20,7 +20,7 @@ Planned features for the `mix-overhaul` line (3.1.Q and later). Addresses are st
 - Fix: Mix fader labels repaint on every layer change; the MIX press that opens Mix isn't a hold.
 - Holding PADS shows the CUT / COPY / PSTE / CLR panel (stand-in until the Batch 3 picker).
 - The Seq screen's field above UNDO is Rec Len (top-right knob), replacing double/halve. Untouched EQs from older presets get the default bands.
-- Custom (free-length) sequence recording: Rec Len per sequence, Seq Rec Len default in Tools → Rec, REC launches on the next Quant Size boundary and closes the loop on the next one.
+- Custom (free-length) sequence recording: Rec Len per sequence, Seq Default in Tools → Rec (renamed from Seq Rec Len; CLR always resets to it), REC launches on the next Quant Size boundary and closes the loop on the next one.
 - The EQ page shares the FX selector row.
 - Fix: FX → Return crashed on the device: the bottom-bar rect sat at a 2-byte-aligned address and stock setRect reads it with LDM, which hard-faults on the M7 (Unicorn executes it). build_patch.py now checks word-table alignment.
 

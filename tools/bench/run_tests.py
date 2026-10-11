@@ -1093,7 +1093,12 @@ def t_seq_length(bench, res):
     res.check(w.sets == [], f"32 bars is the top {w.sets}")
     w = _knob_world(bench, 2, rec_len=1)
     turn(w, -400)
-    res.check(w.sets == [], f"1/8 is the bottom: never Custom {w.sets}")
+    res.check(w.sets == [(SR_LEN, 0), (SR_SET, 1)], f"1/8 down: Custom, length kept {w.sets}")
+    w = _knob_world(bench, 16, rec_len=0)
+    turn(w, -400)
+    res.check(w.sets == [] and w.labels[-1] == "Cust", f"empty Custom is the bottom {w.sets}")
+    turn(w, 400)
+    res.check(w.sets == [(SR_LEN, 1), (SR_SET, 1)], f"empty Custom up: 1/8 {w.sets}")
 
     w = _knob_world(bench, 15, rec_len=0, events=[(1, 0, 240, 1, 60, 0)])   # recorded 15/16
     turn(w, 0)
@@ -1104,7 +1109,14 @@ def t_seq_length(bench, res):
     res.check(w.sets[-1] == (0x86, 15), f"/2: 15/16 {w.sets}")
     turn(w, -400)
     res.check(w.sets[-1] == (0x85, 12) and w.labels[-1] == "15/32", f"/2 odd: 15/32 {w.sets} {w.labels}")
-    w = _knob_world(bench, 300, rec_len=0)
+    turn(w, -400)
+    res.check(w.sets[-1] == (0x85, 14) and w.labels[-1] == "15/64", f"/2 again: 15/64 {w.sets}")
+    turn(w, 400)
+    turn(w, 400)
+    res.check(w.sets[-2:] == [(0x85, 12), (0x85, 10)] and w.labels[-1] == "15/16", f"x2 goes back to the user's 1/16 first {w.sets} {w.labels}")
+    turn(w, 400)
+    res.check(w.sets[-1] == (0x86, 30), f"then doubles the count: 30/16 {w.sets}")
+    w = _knob_world(bench, 300, rec_len=0, events=[(1, 0, 240, 1, 60, 0)])
     turn(w, 400)
     res.check(w.sets == [(0x85, 8)], f"x2 past 512 steps: 2x longer step {w.sets}")
 
@@ -1424,7 +1436,7 @@ def t_seqrec_params(bench, res):
         b.call(0x0808C159)
     title = lambda i: b.cstr(b.call(0x0808E221, i))
     res.check(title(SR_LEN) == "Rec Len:" and b.call(0x0808E2A5, SR_LEN) == 10, f"Rec Len registered ({title(SR_LEN)!r})")
-    res.check(title(SR_DEF) == "Seq Rec Len:" and b.call(0x0808E2A5, SR_DEF) == 2, f"Seq Rec Len registered ({title(SR_DEF)!r})")
+    res.check(title(SR_DEF) == "Seq Default:" and b.call(0x0808E2A5, SR_DEF) == 10, f"Seq Default registered ({title(SR_DEF)!r})")
     res.check(title(SR_SET) == "Rec Len Set:", f"Rec Len Set registered ({title(SR_SET)!r})")
     res.check(title(0x2D) != "" and title(0x19B) != "", "the chained stock registration still ran")
     res.check(b.call(0x0808E305, 0x86) == 512, f"Step Count max {b.call(0x0808E305, 0x86)}")
@@ -1433,7 +1445,7 @@ def t_seqrec_params(bench, res):
     res.check(u16(0x080EEF30) == SR_LEN and u16(0x080EEF32) == 0, "Seq page 0 lists Rec Len")
     res.check(u16(0x080EEEE8) == SR_LEN and u16(0x080EEEEA) == 0, "Seq page 0 (MIDI) lists Rec Len")
     res.check(u16(0x080EED66) == SR_DEF and u16(0x080EED68) == 0x1A0 and u16(0x080EED6A) == 0x1A1
-              and u16(0x080EED6C) == 0, "Tools -> Rec lists Seq Rec Len, Loop BPM, Dbl Copy")
+              and u16(0x080EED6C) == 0, "Tools -> Rec lists Seq Default, Loop BPM, Dbl Copy")
     res.check(title(0x1A0) == "Loop BPM:" and b.call(0x0808E2A5, 0x1A0) == 5, f"Loop BPM registered ({title(0x1A0)!r})")
     res.check(title(0x1A1) == "Dbl Copy:" and b.call(0x0808E2A5, 0x1A1) == 2, f"Dbl Copy registered ({title(0x1A1)!r})")
 
@@ -1443,9 +1455,9 @@ def t_seqrec_templates(bench, res):
     adds = []
     b.stub(0x08093EF6, lambda board: adds.append((board.arg(1), board.arg(2))))
     b.call(bench.sym["seqrec_global_tpl"], 0x30040000, 0x19B, 0)
-    res.check(adds == [(0x19B, 0), (SR_DEF, 0), (0x1A0, 2), (0x1A1, 1)],
-              f"global template adds Seq Rec Len = 1 bar, Loop BPM 80-160, Dbl Copy On {adds}")
-    for glob, want in ((0, 4), (1, 0)):
+    res.check(adds == [(0x19B, 0), (SR_DEF, 4), (0x1A0, 2), (0x1A1, 1)],
+              f"global template adds Seq Default = 1 bar, Loop BPM 80-160, Dbl Copy On {adds}")
+    for glob, want in ((4, 4), (0, 0), (6, 6), (99, 4)):
         adds.clear()
         b.stub(P_GET_FN, lambda board, g=glob: g)
         b.call(bench.sym["seqrec_seq_tpl"], 0x30040000, 0x7A, 0)
@@ -1483,13 +1495,14 @@ def t_seqrec_setparam(bench, res):
 
 
 def t_seqrec_clear(bench, res):
-    for touched, glob, want in ((0, 1, [(SR_LEN, 0)]), (0, 0, [(SR_LEN, 4)]), (1, 1, [])):
+    for touched, glob, want in ((0, 0, [(SR_LEN, 0), (SR_SET, 0)]), (0, 4, [(SR_LEN, 4), (SR_SET, 0)]),
+                                (1, 6, [(SR_LEN, 6), (SR_SET, 0)]), (1, 0, [(SR_LEN, 0), (SR_SET, 0)])):
         w = _SeqWorld(bench, rec_len=5, touched=touched, glob=glob)
         w.b.call(bench.sym["seqrec_clear"], APP_OBJ, _ref(w.b, 0x123))
-        res.check(w.calls[:1] == [("0x809f820",)] and w.sets == want, f"CLR touched={touched} global={glob}: {w.sets}")
-    w = _SeqWorld(bench, rec_len=5, touched=0, glob=1)
+        res.check(w.calls[:1] == [("0x809f820",)] and w.sets == want, f"CLR touched={touched} default={glob}: {w.sets}")
+    w = _SeqWorld(bench, rec_len=5, touched=1, glob=0)
     w.b.call(bench.sym["seqrec_clear_all"], APP_OBJ, _ref(w.b, 0x123))
-    res.check(w.sets == [(SR_LEN, 0)], f"clear all resets an untouched sequence {w.sets}")
+    res.check(w.sets == [(SR_LEN, 0), (SR_SET, 0)], f"clear all resets to Seq Default {w.sets}")
 
 
 def t_seqrec_record(bench, res):
@@ -1638,7 +1651,7 @@ def main():
             ("entering MIX press is not a hold", t_mix_enter_press),
             ("encoders stop navigating", t_nav_knobs),
             ("PADS/SEQS held + pad selects only", t_held_select),
-            ("Seq Rec Len knob and label", t_seq_length),
+            ("Seq length knob and label", t_seq_length),
             ("untouched EQ gets the default bands", t_eq_untouched_defaults),
             ("SEQS held shows the layer panel", t_seq_panel),
             ("PADS held shows the edit panel", t_pads_panel),
