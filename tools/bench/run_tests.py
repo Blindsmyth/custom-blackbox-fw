@@ -1014,31 +1014,126 @@ def _seq_stubs(b, params, events):
     return log
 
 
+def _knob_world(bench, n, step_idx=10, rec_len=0, events=(), step_mode=0, dbl=1):
+    """_SeqWorld plus a live layer: App_SetParam 0x85/0x86 land in the layer, events in a list."""
+    w = _SeqWorld(bench, rec_len=rec_len, step_idx=step_idx, glob=dbl)
+    b = w.b
+    w.la[0x86] = n
+    w.l0[0x88] = step_mode
+    w.events = [list(e) for e in events]
+    w.snap = []
+    w.ops = []
+    b.w32(LA_OBJ + 0x1C, len(w.events))
+
+    def setp(board):
+        ident, val = board.arg(2), struct.unpack("<i", struct.pack("<I", board.arg(3)))[0]
+        w.sets.append((ident, val))
+        w.vals[ident] = val
+        if ident in (0x85, 0x86):
+            w.la[ident] = val
+    b.stub(APP_SETP, setp)
+    b.stub(0x08098254, lambda board: w.ops.append("snap") and None)
+    b.stub(0x08094A1C, lambda board: None)
+    b.stub(0x08063CC0, lambda board: None)
+    b.stub(0x08094BB2, lambda board: w.snap.__setitem__(slice(None), [list(e) for e in w.events]) and None)
+
+    def evl_get(board):
+        i = board.arg(1)
+        if i >= len(w.snap):
+            return 0
+        board.mu.mem_write(board.arg(2), struct.pack("<6I", *w.snap[i]))
+        return 1
+    b.stub(0x08063D08, evl_get)
+
+    def evl_add(board):
+        w.events.append(list(struct.unpack("<6I", board.mu.mem_read(board.arg(1), 24))))
+        board.w32(LA_OBJ + 0x1C, len(w.events))
+        return 1
+    b.stub(0x08063B28, evl_add)
+    b.stub(0x080985A0, lambda board: w.ops.append(("push", board.arg(2))) and None)
+    b.stub(0x080B5758, lambda board: w.ops.append(("post", board.u16(board.arg(1)))) and None)
+    b.stub(0x0809C2C8, lambda board: None)
+    return w
+
+
 def t_seq_length(bench, res):
-    """The field above UNDO is Rec Len: the top-right knob steps it, the button shows it."""
+    """Top-right knob on Seq: stock list speed, presets step, other lengths x2 / /2, labels."""
     seq = 0x30020000
-    labels = []
-    for start, delta, want_sets, want_label in ((4, 1, [(SR_LEN, 5), (SR_SET, 1), (0x86, 32)], "2 bar"),
-                                                (4, -1, [(SR_LEN, 3), (SR_SET, 1), (0x86, 8)], "1/2"),
-                                                (1, -1, [(SR_LEN, 0), (SR_SET, 1)], "Cust"),
-                                                (0, -1, [], None),
-                                                (9, 1, [], None)):
-        w = _SeqWorld(bench, rec_len=start)
+
+    def turn(w, *deltas, key=0x23):
         b = w.b
         b.mu.mem_write(seq, b"\0" * 0x4000)
-        b.mu.mem_write(seq + 0x1A90, b"\x23")
-        labels.clear()
-        b.stub(0x080A3DEC, lambda board: labels.append(board.cstr(board.arg(1))))
-        b.call(bench.sym["seq_on_event"], seq, _mix_ev(b, 0x32, idx=2, val=delta))
-        res.check(w.sets == want_sets, f"Rec Len {start} {delta:+d}: {w.sets}")
-        if want_label:
-            res.check(labels == [want_label], f"button above UNDO shows {want_label!r} ({labels})")
-    for val, want in ((0, "Cust"), (1, "1/8"), (4, "1 bar"), (8, "16bar"), (9, "32bar")):
-        w = _SeqWorld(bench, rec_len=val)
-        labels.clear()
-        w.b.stub(0x080A3DEC, lambda board: labels.append(board.cstr(board.arg(1))))
+        b.mu.mem_write(seq + 0x1A90, bytes([key]))
+        w.labels = []
+        b.stub(0x080A3DEC, lambda board: w.labels.append(board.cstr(board.arg(1))))
+        for d in deltas:
+            b.call(bench.sym["seq_on_event"], seq, _mix_ev(b, 0x32, idx=2, val=d))
+
+    w = _knob_world(bench, 16, rec_len=4)                     # 1 bar at 1/16
+    turn(w, 399)
+    res.check(w.sets == [] and w.labels == ["1 bar"], f"399 units do nothing {w.sets} {w.labels}")
+    turn(w, 1)
+    res.check(w.sets == [(0x86, 32), (SR_LEN, 5), (SR_SET, 1)] and w.labels[-1] == "2 bar",
+              f"400 units: 1 bar -> 2 bar {w.sets} {w.labels}")
+    w.sets.clear()
+    turn(w, -200, -199)
+    res.check(w.sets == [], f"-399 back does nothing {w.sets}")
+    turn(w, -1)
+    res.check(w.sets == [(0x86, 16), (SR_LEN, 4), (SR_SET, 1)], f"-400: 2 bar -> 1 bar {w.sets}")
+    w.sets.clear()
+    turn(w, 800)
+    res.check(w.sets[-3:] == [(0x86, 64), (SR_LEN, 6), (SR_SET, 1)] and len(w.sets) == 6, f"800 units = two steps {w.sets}")
+    w.sets.clear()
+    turn(w, 300)
+    turn(w, 300, key=0x24)
+    res.check(w.sets == [], f"another sequence restarts the accumulator {w.sets}")
+
+    w = _knob_world(bench, 512, rec_len=9)
+    turn(w, 400)
+    res.check(w.sets == [], f"32 bars is the top {w.sets}")
+    w = _knob_world(bench, 2, rec_len=1)
+    turn(w, -400)
+    res.check(w.sets == [], f"1/8 is the bottom: never Custom {w.sets}")
+
+    w = _knob_world(bench, 15, rec_len=0, events=[(1, 0, 240, 1, 60, 0)])   # recorded 15/16
+    turn(w, 0)
+    res.check(w.labels == ["15/16"], f"15 x 1/16 shows 15/16 {w.labels}")
+    turn(w, 400)
+    res.check(w.sets == [(0x86, 30)] and w.labels[-1] == "30/16", f"x2: 30/16 {w.sets} {w.labels}")
+    turn(w, -400)
+    res.check(w.sets[-1] == (0x86, 15), f"/2: 15/16 {w.sets}")
+    turn(w, -400)
+    res.check(w.sets[-1] == (0x85, 12) and w.labels[-1] == "15/32", f"/2 odd: 15/32 {w.sets} {w.labels}")
+    w = _knob_world(bench, 300, rec_len=0)
+    turn(w, 400)
+    res.check(w.sets == [(0x85, 8)], f"x2 past 512 steps: 2x longer step {w.sets}")
+
+    for n, si, rl, ev, want in ((63, 10, 0, 1, "63/16"), (48, 10, 0, 1, "48/16"), (100, 10, 0, 1, "100st"),
+                                (7, 5, 0, 1, "7st"), (12, 5, 0, 1, "4 bar"), (15, 10, 0, 0, "Cust"),
+                                (16, 10, 4, 0, "1 bar"), (16, 10, 0, 1, "1 bar"),
+                                (2, 10, 1, 0, "1/8"), (512, 10, 9, 0, "32bar")):
+        w = _knob_world(bench, n, step_idx=si, rec_len=rl, events=[(1, 0, 240, 1, 60, 0)] * ev)
+        w.labels = []
+        w.b.stub(0x080A3DEC, lambda board: w.labels.append(board.cstr(board.arg(1))))
         w.b.call(bench.sym["seq_bar_label"], seq)
-        res.check(labels == [want], f"Rec Len {val} label {labels}")
+        res.check(w.labels == [want], f"{n} steps idx {si} -> {w.labels} (want {want})")
+
+    notes = [(1, 0, 240, 7, 60 | 100 << 16, 0), (1, 1920, 240, 8, 64 | 100 << 16, 0)]
+    for mode, unit in ((0, 240), (1, 960)):
+        w = _knob_world(bench, 16, rec_len=4, events=notes, step_mode=mode)
+        turn(w, 400)
+        added = w.events[2:]
+        res.check([e[1] for e in added] == [16 * unit, 1920 + 16 * unit] and all(e[3] == 0 for e in added)
+                  and [e[4] for e in added] == [e[4] for e in notes],
+                  f"Dbl Copy (step mode {mode}) copies the notes one old length later {added}")
+        res.check(w.ops[0] == "snap" and ("push", 1) in w.ops and ("post", 0x66) in w.ops,
+                  f"undo snapshot, push, refresh {w.ops}")
+    w = _knob_world(bench, 16, rec_len=4, events=notes, dbl=0)
+    turn(w, 400)
+    res.check(len(w.events) == 2 and w.sets[0] == (0x86, 32) and "snap" not in w.ops, f"Dbl Copy Off only lengthens {w.sets}")
+    w = _knob_world(bench, 32, rec_len=5, events=notes + [(1, 5000, 240, 9, 67, 0)])
+    turn(w, -400)
+    res.check(len(w.events) == 3 and w.sets[0] == (0x86, 16), f"halving never deletes {w.sets}")
 
 
 def t_eq_untouched_defaults(bench, res):
@@ -1315,7 +1410,7 @@ class _SeqWorld:
         for fn in (0x0809F820, 0x0809843C, 0x0809D240):
             b.stub(fn, (lambda f: lambda board: self.calls.append((hex(f),)) and None)(fn))
         b.mu.mem_write(APP_OBJ + 0x18, struct.pack("<IH", 0x080EAF38, 0x123))
-        b.mu.mem_write(MX_STATE, b"\0" * 0x48)
+        b.mu.mem_write(MX_STATE, b"\0" * 0x60)
 
 
 def _ref(b, key):
@@ -1337,7 +1432,10 @@ def t_seqrec_params(bench, res):
     u16 = lambda a: struct.unpack_from("<H", img, a - bd.BASE)[0]
     res.check(u16(0x080EEF30) == SR_LEN and u16(0x080EEF32) == 0, "Seq page 0 lists Rec Len")
     res.check(u16(0x080EEEE8) == SR_LEN and u16(0x080EEEEA) == 0, "Seq page 0 (MIDI) lists Rec Len")
-    res.check(u16(0x080EED66) == SR_DEF and u16(0x080EED68) == 0, "Tools -> Rec lists Seq Rec Len")
+    res.check(u16(0x080EED66) == SR_DEF and u16(0x080EED68) == 0x1A0 and u16(0x080EED6A) == 0x1A1
+              and u16(0x080EED6C) == 0, "Tools -> Rec lists Seq Rec Len, Loop BPM, Dbl Copy")
+    res.check(title(0x1A0) == "Loop BPM:" and b.call(0x0808E2A5, 0x1A0) == 5, f"Loop BPM registered ({title(0x1A0)!r})")
+    res.check(title(0x1A1) == "Dbl Copy:" and b.call(0x0808E2A5, 0x1A1) == 2, f"Dbl Copy registered ({title(0x1A1)!r})")
 
 
 def t_seqrec_templates(bench, res):
@@ -1345,7 +1443,8 @@ def t_seqrec_templates(bench, res):
     adds = []
     b.stub(0x08093EF6, lambda board: adds.append((board.arg(1), board.arg(2))))
     b.call(bench.sym["seqrec_global_tpl"], 0x30040000, 0x19B, 0)
-    res.check(adds == [(0x19B, 0), (SR_DEF, 0)], f"global template adds Seq Rec Len = 1 bar {adds}")
+    res.check(adds == [(0x19B, 0), (SR_DEF, 0), (0x1A0, 2), (0x1A1, 1)],
+              f"global template adds Seq Rec Len = 1 bar, Loop BPM 80-160, Dbl Copy On {adds}")
     for glob, want in ((0, 4), (1, 0)):
         adds.clear()
         b.stub(P_GET_FN, lambda board, g=glob: g)

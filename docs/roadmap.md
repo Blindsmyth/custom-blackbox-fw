@@ -82,6 +82,22 @@ The next step after Custom recording (done in 3.1.Q):
 - The sequence pad is filled with the notes, quantised by its settings.
 - Building blocks from Custom recording: the REC hooks (`seqrec.S`), sequence length via `0x86`, note capture in `FUN_080A02CE`. New pieces: the armed state with the LED blink (`FUN_080436F8` LED index 8), and setting tempo `0x84` from the length.
 
+### Song mode: Play Count "Loop"
+
+- New option at the end of a song part's **Play Count**: **Loop**. The scene keeps repeating until the user moves on (another part, or STOP), instead of advancing after N plays.
+- To map first: where Play Count is stored per section (song section structs, `FUN_0809C2C8` section math) and where the song player decides to advance; Loop = never advance. M.
+
+### Scala tunings (microtuning)
+
+- A folder of Scala files on the card (e.g. `/Tunings/*.scl`, optionally `.kbm` keyboard maps).
+- **Where:** in Song mode, pressing SONG again opens a **Tuning** menu.
+- **Stage 1:** four tuning slots, each loads one `.scl` file from the folder; the slots can be hot-swapped while playing.
+- **Later options (to decide):**
+  - a tuning per song part (section), switched when the part starts;
+  - a tuning per sequence;
+  - one default tuning plus four extra slots used as exceptions (per part or per sequence).
+- To map first: how note → pitch is computed for Sample/Clip/Slicer voices (pitch param, `Engine_PadPress` note path, keys mode), whether pitch is a float ratio or semitone + cents, the FatFs folder listing (reuse the preset-folder code), and where the preset XML could store slot file names. Parsing `.scl` (text: description, count, cents or ratios) runs on the UI task at load; the engine only needs a 128-entry ratio table per slot. L.
+
 ### Time signatures
 
 - Stock has no meter: 1 bar = 4 beats is built into the step-length table (`0x080ECA6C`) and section math (`FUN_0809C2C8`). "TimeSignature" strings exist only in the Ableton XML parser (`FUN_0808A380`).

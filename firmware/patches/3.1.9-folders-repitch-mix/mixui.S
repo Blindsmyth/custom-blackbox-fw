@@ -42,6 +42,8 @@
 .equ SR_LEN,      0x19D             @ seqrec.S params, here so seqtools.S can use them
 .equ SR_DEF,      0x19E
 .equ SR_SET,      0x19F
+.equ SR_BPM,      0x1A0
+.equ SR_DBL,      0x1A1
 .equ MX_BLIP_MS,  300
 
 .equ APP,         0x24020088
@@ -122,7 +124,6 @@ mx_state:
     str     r1, [r0, #MX_BT0]
     str     r1, [r0, #MX_REDRAW]
     str     r1, [r0, #MX_WAIT]
-    str     r1, [r0, #24]           @ seqtools MX_SEQ_T
     str     r1, [r0, #28]           @ fxret MX_FX_LAST
     str     r1, [r0, #40]           @ seqtools MX_SEQ_PANEL
     str     r1, [r0, #44]           @ padsel MX_PADS_PANEL
@@ -131,6 +132,8 @@ mx_state:
     str     r1, [r0, #56]
     str     r1, [r0, #60]
     str     r1, [r0, #64]
+    str     r1, [r0, #68]           @ seqtools MX_SQ_ACC
+    str     r1, [r0, #72]           @ seqtools MX_SQ_KEY
 1:
     pop     {r2}
     bx      lr

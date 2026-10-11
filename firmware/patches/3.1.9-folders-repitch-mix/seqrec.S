@@ -5,6 +5,8 @@
 @                        A fixed value sets the sequence length (0x86, and 0x85 = 1/16 when
 @                        the length isn't a whole number of steps and the layer is empty).
 @   0x19E "Seq Rec Len:" global (Tools -> Rec): 1 bar / Custom. Default for new sequences.
+@   0x1A0 "Loop BPM:"    global (Tools -> Rec): tempo range for looper takes, default 80-160.
+@   0x1A1 "Dbl Copy:"    global (Tools -> Rec): the length knob's x2 copies notes. Default On.
 @   0x19F "Rec Len Set:" per sequence, hidden: 1 once the user changed 0x19D. Untouched
 @                        sequences take the global default again when cleared.
 @ App_SetParam/App_GetParam keep only some sequence ids in layer 0; two b.w patches add
@@ -95,6 +97,8 @@ sr_regs:
     .word   SR_LEN, s_sr_len, sr_len_labels, 10, x_sr_len
     .word   SR_DEF, s_sr_def, sr_def_labels, 2, x_sr_def
     .word   SR_SET, s_sr_set, sr_set_labels, 2, x_sr_set
+    .word   SR_BPM, s_sr_bpm, sr_bpm_labels, 5, x_sr_bpm
+    .word   SR_DBL, s_sr_dbl, sr_dbl_labels, 2, x_sr_dbl
     .word   0
 sr_len_labels:
     .word   s_custom, s_1_8, s_1_4, s_1_2, s_1bar, s_2bars, s_4bars, s_8bars, s_16bars, s_32bars
@@ -102,6 +106,10 @@ sr_def_labels:
     .word   s_1bar, s_custom
 sr_set_labels:
     .word   s_no, s_yes
+sr_bpm_labels:
+    .word   s_bpm60, s_bpm70, s_bpm80, s_bpm90, s_bpm100
+sr_dbl_labels:
+    .word   s_off, s_on
 sr_len_ticks:                           @ Rec Len -> ticks (960 per beat, 4 beats per bar)
     .word   0, 480, 960, 1920, 3840, 7680, 15360, 30720, 61440, 122880
 
@@ -114,6 +122,14 @@ seqrec_global_tpl:
     mov     r0, r4
     movw    r1, #SR_DEF
     movs    r2, #0
+    call    PARAM_ADD
+    mov     r0, r4
+    movw    r1, #SR_BPM
+    movs    r2, #2                  @ 80-160
+    call    PARAM_ADD
+    mov     r0, r4
+    movw    r1, #SR_DBL
+    movs    r2, #1                  @ On
     call    PARAM_ADD
     pop     {r4, pc}
 
@@ -644,5 +660,16 @@ s_16bars:   .asciz "16 bars"
 s_32bars:   .asciz "32 bars"
 s_no:       .asciz "No"
 s_yes:      .asciz "Yes"
+s_off:      .asciz "Off"
+s_on:       .asciz "On"
+s_sr_bpm:   .asciz "Loop BPM:"
+s_sr_dbl:   .asciz "Dbl Copy:"
+x_sr_bpm:   .asciz "seqloopbpm"
+x_sr_dbl:   .asciz "seqdblcopy"
+s_bpm60:    .asciz "60-120"
+s_bpm70:    .asciz "70-140"
+s_bpm80:    .asciz "80-160"
+s_bpm90:    .asciz "90-180"
+s_bpm100:   .asciz "100-200"
 .align 2
 .ltorg
