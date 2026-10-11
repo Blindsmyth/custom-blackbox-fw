@@ -26,13 +26,27 @@ OBJ = HERE / "cave.o"
 OUT = HERE / "BLACKBOX.BIN"
 SYMS = HERE / "BLACKBOX.sym.json"
 LETTER = "Q"
-MAX_CAVE = 0x3000
+MAX_CAVE = 0x4000
 
 # (site, cave symbol, bl?, stock bytes): both replace `bl App_SetScreen` in App_HandleInput.
 SITES = base.SITES + [
     (0x080A32DE, "mix_btn_screen", True, "fbf705fc"),  # MIX button: Mix -> Mute toggle
     (0x080A30DC, "info_to_mute", True, "fbf706fd"),    # INFO on Mix -> Mute
     (0x080A32BE, "fx_to_return", True, "fbf715fc"),    # FX button: DJ FX -> send page
+    (0x0808BF20, "eq_page_ctor", True, "1ef0b6f9"),     # GUI ctor -> EQ page ctor
+    (0x080AA8F8, "eq_graph_rect", True, "fff7bcfb"),    # EQ layout -> graph setRect
+    # Custom sequence recording (seqrec.S)
+    (0x0808C420, "seqrec_register", True, "fff75afe"),  # Param_RegisterAll: enum 0x2D
+    (0x080949D2, "seqrec_global_tpl", True, "fff790fa"),  # global bag template, last add
+    (0x08094426, "seqrec_seq_tpl", True, "fff766fd"),   # sequence bag template, last add
+    (0x0809FE98, "seqrec_set_layer", False, "092bcfd8"),  # App_SetParam layer-0 ids
+    (0x08099672, "seqrec_get_layer", False, "092be8d8"),  # App_GetParam layer-0 ids
+    (0x080A1BE6, "seqrec_setparam", True, "fdf733ff"),  # App_HandleUiEvent 0x6E -> App_SetParam
+    (0x080A1C8A, "seqrec_clear", True, "fdf7c9fd"),     # CLR
+    (0x080A1C92, "seqrec_clear_all", True, "f6f7d3fb"),  # clear all layers
+    (0x080A2F3C, "seqrec_rec_press", True, "fef7c2fb"),  # REC press
+    (0x080A282E, "seqrec_recstate", True, "f8f717fa"),  # recording on/off
+    (0x080A2696, "seqrec_started", True, "faf7d3fd"),   # sequence started
 ]
 
 # Mix/Mute widget vtable 0x080F0F10: (address, cave symbol, stock word)
@@ -49,11 +63,16 @@ VTABLE = [
     (0x080F066C, "eq_touch_down", 0x080A9B41),         # EQ graph touchDown
     (0x080F07F0, "fxret_on_event", 0x080AB901),        # FX Return page onEvent
     (0x080F07EC, "fxret_child_event", 0x080AB9B5),     # FX Return page onChildEvent
+    (0x080F06EC, "eq_child_event", 0x080AA24D),        # EQ page onChildEvent
 ]
 
 # (address, new bytes, stock bytes): EQ band types for new slots, `movs r2, #type` in the
 # group defaults (0x08093F20 case 0x36). L Shelf 2, Param 3, Param 3, H Shelf 4.
 BYTES = [
+    (0x0808CE70, "4ff40073", "4ff48073"),               # 0x86 Step Count max 256 -> 512
+    (0x080EEF30, "9d01", "0000"),                       # Seq page 0: Rec Len
+    (0x080EEEE8, "9d01", "0000"),                       # Seq page 0 (MIDI display): Rec Len
+    (0x080EED66, "9e01", "0000"),                       # Tools -> Rec: Seq Rec Len
     (0x0809470E, "0222", "0022"),
     (0x0809474E, "0322", "0022"),
     (0x0809478E, "0322", "0022"),
@@ -64,7 +83,8 @@ BYTES = [
 # Word tables in the cave. Stock code reads some with LDM, which hard-faults on the M7 when
 # unaligned (Unicorn doesn't fault, so the bench can't catch it): keep them 4-byte aligned.
 WORD_TABLES = ["fxr_bar_rect", "fxr_labels", "fader_vt", "rest_values", "layer_main",
-               "layer_held", "ticks_per_beat", "tenths_per_beat"]
+               "layer_held", "ticks_per_beat", "tenths_per_beat", "sr_regs", "sr_len_labels",
+               "sr_def_labels", "sr_set_labels", "sr_len_ticks", "sr_960"]
 
 
 def check_alignment():

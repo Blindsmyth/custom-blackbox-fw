@@ -19,6 +19,8 @@ Planned features for the `mix-overhaul` line (3.1.Q and later). Addresses are st
 - **Batch 1:** PADS/SEQS held + tap selects; SEQS held shows layers A–D; Seq bar label and double/halve; EQ tap-and-drag and default bands; FX toggles DJ FX ↔ Return with a bottom row A Delay / B Reverb / EQ / (empty).
 - Fix: Mix fader labels repaint on every layer change; the MIX press that opens Mix isn't a hold.
 - Holding PADS shows the CUT / COPY / PSTE / CLR panel (stand-in until the Batch 3 picker).
+- Custom (free-length) sequence recording: Rec Len per sequence, Seq Rec Len default in Tools → Rec, REC launches on the next Quant Size boundary and closes the loop on the next one.
+- The EQ page shares the FX selector row.
 - Fix: FX → Return crashed on the device: the bottom-bar rect sat at a 2-byte-aligned address and stock setRect reads it with LDM, which hard-faults on the M7 (Unicorn executes it). build_patch.py now checks word-table alignment.
 
 ## Next, in order
@@ -70,19 +72,14 @@ Encoders no longer select pads or sequences, and no longer switch pages on the P
 
 ## Later
 
-### Free Seq Rec (Ableton-style clip recording)
+### Loop-based sequence recording (Boss-looper style)
 
-- **Toggle:** "Free Rec: Off/On" in Tools → Rec, next to `0x98 recquant`, `0x97 recpresetlen` and `0xD5 reccountdown`.
-- **Only when the selected sequence is not playing.** If it's playing, REC keeps the stock behaviour.
-- **REC press** arms. On the next bar it starts that sequence playing and recording (msg `0x60`), with free length: `FUN_080A02CE` skips its modulo wrap so positions keep growing.
-- **REC again** (msg `0x61`): set `0x86 notestepcount` to the recorded length rounded up to whole bars, push with `FUN_080985A0`. The sequence keeps looping.
-- **Quantise:** recorded notes use `0x46 quantsizeseq`, shown on the Seq screen.
-- **Unknowns:**
-  - the Tools → Rec page id list;
-  - launching one sequence on a bar boundary (`FUN_080983D0` toggles `0xBE`, engine `FUN_0804C87C`);
-  - the engine `0x60`/`0x61` handlers;
-  - growing `0x86` during play.
-- Size: L.
+The next step after Custom recording (done in 3.1.Q):
+- REC arms: the REC LED blinks and the sequence waits for MIDI.
+- The first note starts the recording into a buffer.
+- REC again ends it. The tempo is derived from the recorded length, as audio loopers do.
+- The sequence pad is filled with the notes, quantised by its settings.
+- Building blocks from Custom recording: the REC hooks (`seqrec.S`), sequence length via `0x86`, note capture in `FUN_080A02CE`. New pieces: the armed state with the LED blink (`FUN_080436F8` LED index 8), and setting tempo `0x84` from the length.
 
 ### Time signatures
 

@@ -35,7 +35,24 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 - **EQ:**
   - Touch a band's dot and drag it straight away; no INFO press to pick the band.
   - New EQs start as Low Shelf, Param, Param, High Shelf.
-- **FX button:** toggles between DJ FX and the FX Return page. The Return page has a button row along the bottom, like the pad page's Main / Pos / LFO / Conf: **A Delay | B Reverb | EQ |** (empty). The active return is lit; EQ opens the EQ page. The send page is no longer in the cycle (sends live on Mix).
+- **FX button:** toggles between DJ FX and the FX Return page. The Return page and the EQ page share a button row along the bottom, like the pad page's Main / Pos / LFO / Conf: **A Delay | B Reverb | EQ |** (empty). The page you're on is lit. On the EQ page the EQ view is 40 px shorter to make room. The send page is no longer in the cycle (sends live on Mix).
+
+## Custom sequence recording
+
+Records MIDI into a sequence the way Ableton records into a new clip.
+
+- **Rec Len** (Seq settings page, after MIDI Out): Custom, 1/8, 1/4, 1/2, 1 bar, 2, 4, 8, 16, 32 bars. 1/4 is a quarter note (a quarter of a bar), as in the pad record menu.
+  - A fixed value sets the sequence's length. If that length isn't a whole number of steps at the current step length and the layer is empty, the step length switches to 1/16 first.
+  - **Custom** changes what REC does, below.
+- **Custom recording** works when the selected sequence is set to Custom, its current layer is empty, and it isn't playing:
+  1. **REC** starts recording. If the transport is stopped, REC starts it, with the Lead In from Tools → Rec. The sequence starts playing on its next **Quant Size** boundary (Seq settings, usually 1 bar) and records with no length limit.
+  2. **REC again** stops recording, and the loop closes on the next Quant Size boundary. The sequence keeps playing that length. STOP closes it the same way.
+  3. A Custom recording can grow to 512 steps (32 bars at 1/16). Past that it loops and overdubs.
+- **Tools → Rec → Seq Rec Len** (1 bar / Custom) is the Rec Len new sequences get.
+  - A sequence takes it when it is created or loaded without a Rec Len of its own, and when it's cleared (CLR) if you never changed its Rec Len.
+  - Once you set a sequence's Rec Len, it keeps it through clears and reloads.
+- **Step Count** now goes up to 512 (was 256).
+
 
 ## Flash
 
@@ -63,6 +80,11 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 13. EQ: drag each dot directly. A new preset's EQ shows Low Shelf / Param / Param / High Shelf.
 14. FX: DJ FX → FX again → Return page with A Delay / B Reverb / EQ / (empty) along the bottom; A and B switch the return, EQ opens the EQ page, FX goes back to DJ FX.
 15. Enter Mix with the MIX button: Vol / Decay / Cutoff / Pitch with matching labels. Press and hold MIX again: Pan / Attack / A / B; let go: back. Labels always match the bars.
+16. EQ page: the A Delay / B Reverb / EQ row is along the bottom with EQ lit, the EQ view sits above it, and dots still drag. A and B open that return; FX goes to DJ FX.
+17. Seq settings page: Rec Len after MIDI Out. Tools → Rec: Seq Rec Len after Lead In.
+18. Empty sequence, Rec Len Custom, transport stopped: press REC. You get the lead-in, then the sequence starts at bar 1 and records. Play for 2½ bars, press REC: the loop closes at bar 3 and plays 3 bars back.
+19. Set Rec Len to 2 bars: the length (button above UNDO) shows 2 bar. Save, reload: Rec Len is kept.
+20. Tools → Rec → Seq Rec Len = Custom. New preset: its sequences show Rec Len Custom. CLR a sequence you never touched: Custom. CLR one you set to 2 bars: still 2 bars.
 
 ## Rebuild and test
 
@@ -77,6 +99,6 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 - widget vtable words: Mix tick/onChildEvent/onEvent, Pads and Seq onChildEvent/onEvent, EQ graph touchDown, FX Return onChildEvent/onEvent;
 - four EQ default band-type bytes.
 
-Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1).
+Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording).
 
 The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with draw, touchDown, touchMove and touchUp wrapped for the centre detent and the blip, so faders on other screens are untouched.

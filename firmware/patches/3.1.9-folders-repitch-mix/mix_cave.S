@@ -30,3 +30,8 @@
 .ltorg
 
 .include "fxret.S"
+
+.align 2
+.ltorg
+
+.include "seqrec.S"

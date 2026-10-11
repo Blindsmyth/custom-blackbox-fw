@@ -67,7 +67,6 @@ fxret_on_event:
     cmpne   r5, #0x310
     it      eq
     streq   r5, [r0, #MX_FX_LAST]
-    sub     sp, #16
     add.w   r0, r4, #FXR_BAR        @ bar along the bottom edge, like the pad page tabs
     adr     r1, fxr_bar_rect
     call    W_SETRECT
@@ -76,47 +75,59 @@ fxret_on_event:
     adr     r0, fxr_btns
     ldrh.w  r0, [r0, r6, lsl #1]
     add     r0, r4                  @ button
-    movw    r1, #FXR_ID
-    add     r1, r6
-    str     r1, [r0, #0x14]         @ id: 0x7A0 + position
-    adr     r1, fxr_x
-    ldrh.w  r2, [r1, r6, lsl #1]
-    str     r2, [sp]                @ x
     movs    r2, #0
-    str     r2, [sp, #4]
-    add.w   r1, r1, r6, lsl #1
-    ldrh    r2, [r1, #2]
-    ldrh    r1, [r1]
-    subs    r2, r2, r1
-    str     r2, [sp, #8]            @ w
-    movs    r1, #FXR_BAR_H
-    str     r1, [sp, #12]
-    push    {r0, r1}
-    mov     r1, sp
-    adds    r1, #8
-    ldr     r2, [r0]
-    ldr     r2, [r2, #0x20]
-    blx     r2                      @ setRect
-    ldr     r0, [sp]
-    adr     r1, fxr_labels
-    ldr     r1, [r1, r6, lsl #2]
-    call    BTN_TEXT
-    pop     {r0, r1}
-    movs    r1, #0
     cmp     r6, #1
     bhi     2f
     movw    r3, #0x300
     add.w   r3, r3, r6, lsl #4      @ the return this button shows
     cmp     r3, r5
     it      eq
-    moveq   r1, #1
+    moveq   r2, #1
 2:
-    call    BTN_SELECT
+    mov     r1, r6
+    bl      fx_row_button
     adds    r6, #1
     cmp     r6, #4
     blo     1b
-    add     sp, #16
 9:
+    pop     {r4, r5, r6, pc}
+
+@ fx_row_button(button r0, position r1 (0..3), lit r2): place one button of the bottom row
+@ (A Delay | B Reverb | EQ | empty), with id 0x7A0 + position, its label and highlight.
+.thumb_func
+fx_row_button:
+    push    {r4, r5, r6, lr}
+    sub     sp, #16
+    mov     r4, r0
+    mov     r5, r1
+    mov     r6, r2
+    movw    r1, #FXR_ID
+    add     r1, r5
+    str     r1, [r4, #0x14]         @ id
+    adr     r1, fxr_x
+    add.w   r1, r1, r5, lsl #1
+    ldrh    r2, [r1]
+    str     r2, [sp]                @ x
+    ldrh    r3, [r1, #2]
+    subs    r3, r3, r2
+    str     r3, [sp, #8]            @ w
+    movs    r2, #0
+    str     r2, [sp, #4]            @ y: bottom edge
+    movs    r2, #FXR_BAR_H
+    str     r2, [sp, #12]
+    mov     r0, r4
+    mov     r1, sp                  @ stack rect: word aligned for the LDM in setRect
+    ldr     r2, [r4]
+    ldr     r2, [r2, #0x20]
+    blx     r2
+    mov     r0, r4
+    adr     r1, fxr_labels
+    ldr     r1, [r1, r5, lsl #2]
+    call    BTN_TEXT
+    mov     r0, r4
+    mov     r1, r6
+    call    BTN_SELECT
+    add     sp, #16
     pop     {r4, r5, r6, pc}
 
 @ Buttons left to right: the three bar tabs and the old FX-name cell (stock writes the name
@@ -177,5 +188,100 @@ s_ra: .asciz "A Delay"
 s_rb: .asciz "B Reverb"
 s_eq: .asciz "EQ"
 s_none: .asciz ""
+.align 2
+.ltorg
+
+@ ---- EQ page (0x36): the same row along the bottom, the EQ view 40 px shorter.
+@ The page has no spare buttons, so four frame buttons (ctor 0x080A3D34, 0xA0 bytes) live in
+@ SRAM4 at EQ_BTNS and are attached once per boot after the page ctor. The layout
+@ (FUN_080AA8D2, on every show) passes the graph rect on the stack to the graph setRect at
+@ 0x080AA8F8; the value boxes and the ON button read y/h back from it, so shrinking it there
+@ moves them all.
+
+.equ EQ_BTNS,     0x38005400            @ 4 x 0xA0, past MX_STATE
+.equ EQ_CTOR,     0x080AA291
+.equ EQ_GRAPH_RECT, 0x080AA075
+.equ EQ_CHILD,    0x080AA24D
+.equ FRAME_CTOR,  0x080A3D35
+.equ EQ_ROW_H,    40
+
+.global eq_page_ctor
+.global eq_graph_rect
+.global eq_child_event
+
+@ bl site 0x0808BF20 (GUI ctor -> EQ page ctor).
+.thumb_func
+eq_page_ctor:
+    push    {r4, r5, r6, lr}
+    call    EQ_CTOR
+    mov     r4, r0                  @ page (the ctor returns this)
+    ldr     r5, =EQ_BTNS
+    movs    r6, #0
+1:
+    mov     r0, r5
+    movs    r1, #0
+    movs    r2, #0xA0
+    call    MEMSET
+    mov     r0, r5
+    call    FRAME_CTOR
+    mov     r0, r4
+    mov     r1, r5
+    call    ADD_CHILD
+    adds    r5, #0xA0
+    adds    r6, #1
+    cmp     r6, #4
+    blo     1b
+    mov     r0, r4
+    pop     {r4, r5, r6, pc}
+
+@ bl site 0x080AA8F8: graph setRect(graph r0, rect r1 on the layout's stack).
+.thumb_func
+eq_graph_rect:
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    ldr     r2, [r1, #4]
+    adds    r2, #EQ_ROW_H
+    str     r2, [r1, #4]
+    ldr     r2, [r1, #12]
+    subs    r2, #EQ_ROW_H
+    str     r2, [r1, #12]
+    call    EQ_GRAPH_RECT
+    ldr     r5, =EQ_BTNS
+    movs    r6, #0
+1:
+    mov     r0, r5
+    mov     r1, r6
+    cmp     r6, #2
+    ite     eq
+    moveq   r2, #1                  @ EQ lit on the EQ page
+    movne   r2, #0
+    bl      fx_row_button
+    adds    r5, #0xA0
+    adds    r6, #1
+    cmp     r6, #4
+    blo     1b
+    pop     {r4, r5, r6, pc}
+
+@ EQ onChildEvent: row taps; A/B open that return, EQ and the empty button do nothing.
+.thumb_func
+eq_child_event:
+    ldrh    r2, [r1]
+    cmp     r2, #1
+    bne     9f
+    ldr     r2, [r1, #0xC]
+    movw    r3, #FXR_ID
+    subs    r2, r2, r3
+    cmp     r2, #3
+    bhi     9f
+    cmp     r2, #2
+    beq     8f
+    b.w     fxret_child_event       @ A, B, empty: same as on the Return page
+8:
+    movs    r0, #0
+    bx      lr
+9:
+    ldr     r12, =EQ_CHILD
+    bx      r12
+
 .align 2
 .ltorg

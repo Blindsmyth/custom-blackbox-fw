@@ -1161,6 +1161,266 @@ def t_pads_panel(bench, res):
     res.check(hid() == (0, 1), f"release brings VEL back {hid()}")
 
 
+# Functions using double-precision VFP that Unicorn's M7 can't execute (EQ curve maths, the EQ
+# graph draw): stubbed for the real-GUI flow. Pure maths/drawing, no layout or event state.
+GUI_DP_STUBS = (0x080602B0, 0x08060538, 0x080606C0, 0x08060880, 0x08060930, 0x08060A28,
+                0x080A9900, 0x080AAC28, 0x080AB130)
+GUI_DRAW_STUBS = (0x08041C68, 0x08041EC0, 0x08041E5C, 0x08041E8E, 0x08041BA4, 0x08041BF2,
+                  0x08041BE8, 0x08041C1C, 0x0808F7E8, 0x080451DC, 0x080451EC, 0x08043DEA)
+
+
+def t_gui_fx_flow(bench, res):
+    """Real GUI + App: FX/Return/EQ navigation with the draw loop, no faults, no unaligned words.
+
+    Unicorn doesn't fault on an unaligned LDM (the M7 does), so every unaligned word access is
+    recorded; 3.1.Q once hard-faulted on FX -> Return that way."""
+    from unicorn import UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
+    from unicorn import arm_const as A
+    b = bench.b
+    mu = b.mu
+    mu.mem_write(0xE000ED88, struct.pack("<I", 0xF << 20))
+    b.unstub(SET_SCREEN)
+    b.stub(0x080A2258, lambda board: 0)            # App_Update: the bench preset state resets screens
+    tick = [0]
+
+    def gettick(board):
+        tick[0] += 5
+        board.w32(UWTICK, tick[0])
+        return tick[0]
+    b.stub(0x0807794C, gettick)
+    for fn in GUI_DP_STUBS + GUI_DRAW_STUBS:
+        b.stub(fn, lambda board: 0)
+    unaligned = {}
+
+    def watch(mu_, access, addr, size, value, data):
+        if size >= 4 and addr & 3:
+            pc = mu_.reg_read(A.UC_ARM_REG_PC)
+            unaligned[pc] = unaligned.get(pc, 0) + 1
+    mu.hook_add(UC_HOOK_MEM_READ, watch)
+    mu.hook_add(UC_HOOK_MEM_WRITE, watch)
+    gui = 0xC2000000
+    mu.mem_write(gui, b"\0" * 0x100000)
+    b.call(0x0808BE4C, gui)
+    b.w32(0x24002E6C, gui)
+    for off, typ in ((0x2FC0, 0x26), (0x2FD8, 0x4B), (0x2FF0, 0x36), (0x3008, 0)):
+        mu.mem_write(0x2001C800, bytes([typ]))
+        b.call(0x08094A1C, APP_OBJ + off, 0x2001C800)
+    ev = 0x2001C600
+
+    def pump():
+        for _ in range(3):
+            b.call(0x0808B654, gui)
+            b.call(0x0808B2D0, gui, limit=50_000_000)
+
+    def fx():
+        mu.mem_write(ev, b"\0" * 0x40)
+        mu.mem_write(ev, struct.pack("<H", 0xF9))
+        b.w32(ev + 0xC, 4)
+        b.call(0x080A2E60, APP_OBJ, ev)
+
+    def tap(fn, ident):
+        mu.mem_write(ev, b"\0" * 0x40)
+        mu.mem_write(ev, struct.pack("<H", 1))
+        b.w32(ev + 0xC, ident)
+        b.call(bench.sym[fn], 0, ev)
+
+    def where():
+        return b.u8(APP_OBJ + 0x8CA4), b.u32(gui + 0x280 + 0x34) - gui
+    mu.mem_write(APP_OBJ + 0x8CA4, b"\x02")
+    mu.mem_write(APP_OBJ + 0x8CC3, b"\x00")
+    b.call(SET_SCREEN, APP_OBJ, 2, 0, 0)
+    pump()
+    steps = [("FX", None, (0x37, 0x905A0)), ("FX", None, (0x23, 0x36910)),
+             ("fxret_child_event", 0x7A2, (0x36, 0x8DE50)), ("eq_child_event", 0x7A1, (0x23, 0x36910)),
+             ("fxret_child_event", 0x7A2, (0x36, 0x8DE50)), ("eq_child_event", 0x7A2, (0x36, 0x8DE50)),
+             ("FX", None, (0x37, 0x905A0))]
+    for what, ident, want in steps:
+        if what == "FX":
+            fx()
+        else:
+            tap(what, ident)
+        pump()
+        res.check(where() == want, f"{what} {ident and hex(ident) or ''} -> screen/page {[hex(x) for x in where()]}")
+    eq = gui + 0x8DE50
+    res.check(struct.unpack("<4i", mu.mem_read(eq + 0x34 + 4, 16))[1] == 40, "EQ graph starts above the row")
+    res.check(all(b.u32(0x38005400 + i * 0xA0 + 0x2C) == eq for i in range(4)), "EQ row buttons attached to the EQ page")
+    res.check(not unaligned, f"no unaligned word accesses {[(hex(k), v) for k, v in unaligned.items()][:5]}")
+
+
+# ---- Custom sequence recording (seqrec.S)
+
+SR_LEN, SR_DEF, SR_SET = 0x19D, 0x19E, 0x19F
+APP_SETP, GETP = 0x0809FA50, 0x08099504
+SEQ_OBJ_FN, P_GET_FN = 0x08097CE8, 0x08093E9C
+L0_OBJ, LA_OBJ = 0x30030000, 0x30031000
+SE_OBJ = 0x30032000
+
+
+class _SeqWorld:
+    """Stubs for the stock param/sequence calls seqrec makes; records App_SetParam calls."""
+
+    def __init__(self, bench, rec_len=0, touched=0, events=0, playing=0, step_idx=10, quant_idx=1, glob=1):
+        b = self.b = bench.b
+        self.sets = []
+        self.vals = {SR_LEN: rec_len, SR_SET: touched}
+        self.l0 = {0xBE: 0, 0xC0: 1, 0x46: quant_idx}       # active layer B
+        self.la = {0x85: step_idx}
+        self.glob = glob
+        self.ticks = 0
+        self.calls = []
+        b.mu.mem_write(LA_OBJ, b"\0" * 0x40)
+        b.w32(LA_OBJ + 0x1C, events)
+        b.w32(0x2400A9C0 + 0x9A74, SE_OBJ)
+        b.mu.mem_write(SE_OBJ, b"\0" * 0x40)
+        b.mu.mem_write(SE_OBJ + 0x38, bytes([playing]))
+
+        def setp(board):
+            ident, val = board.arg(2), struct.unpack("<i", struct.pack("<I", board.arg(3)))[0]
+            self.sets.append((ident, val))
+            self.vals[ident] = val
+        b.stub(APP_SETP, setp)
+
+        def getp(board):
+            board.w32(board.arg(3), self.vals.get(board.arg(2), 0))
+            return 1
+        b.stub(GETP, getp)
+        b.stub(SEQ_OBJ_FN, lambda board: L0_OBJ if board.arg(2) == 0 else LA_OBJ)
+
+        def pget(board):
+            obj, ident = board.arg(0), board.arg(1)
+            if obj == 0x24028D18:
+                return self.glob
+            return (self.l0 if obj == L0_OBJ else self.la).get(ident, 0)
+        b.stub(P_GET_FN, pget)
+
+        def ticks(board):
+            board.mu.mem_write(board.arg(0), struct.pack("<q", self.ticks))
+        b.stub(0x0804CA68, ticks)
+        def ac60(board):
+            on = board.u32(board.arg(1) + 0xC)
+            self.calls.append(("ac60", on, list(self.sets)))
+            board.mu.mem_write(APP_OBJ + 0x8CC1, b"\x01" if on else b"\x00")
+        b.stub(0x0809AC60, ac60)
+        b.stub(0x0804C8B4, lambda board: self.calls.append(("recplay", board.arg(1), board.arg(3))) and None)
+        b.stub(0x080A16C4, lambda board: None)
+        for fn in (0x0809F820, 0x0809843C, 0x0809D240):
+            b.stub(fn, (lambda f: lambda board: self.calls.append((hex(f),)) and None)(fn))
+        b.mu.mem_write(APP_OBJ + 0x18, struct.pack("<IH", 0x080EAF38, 0x123))
+        b.mu.mem_write(MX_STATE, b"\0" * 0x48)
+
+
+def _ref(b, key):
+    b.mu.mem_write(MIX_EV + 0x60, struct.pack("<IH", 0x080EAF38, key))
+    return MIX_EV + 0x60
+
+
+def t_seqrec_params(bench, res):
+    b = _mix_setup(bench, build=False)
+    if b.call(0x0808E305, 0x3E) == 0:
+        b.call(0x0808C159)
+    title = lambda i: b.cstr(b.call(0x0808E221, i))
+    res.check(title(SR_LEN) == "Rec Len:" and b.call(0x0808E2A5, SR_LEN) == 10, f"Rec Len registered ({title(SR_LEN)!r})")
+    res.check(title(SR_DEF) == "Seq Rec Len:" and b.call(0x0808E2A5, SR_DEF) == 2, f"Seq Rec Len registered ({title(SR_DEF)!r})")
+    res.check(title(SR_SET) == "Rec Len Set:", f"Rec Len Set registered ({title(SR_SET)!r})")
+    res.check(title(0x2D) != "" and title(0x19B) != "", "the chained stock registration still ran")
+    res.check(b.call(0x0808E305, 0x86) == 512, f"Step Count max {b.call(0x0808E305, 0x86)}")
+    img = b.image
+    u16 = lambda a: struct.unpack_from("<H", img, a - bd.BASE)[0]
+    res.check(u16(0x080EEF30) == SR_LEN and u16(0x080EEF32) == 0, "Seq page 0 lists Rec Len")
+    res.check(u16(0x080EEEE8) == SR_LEN and u16(0x080EEEEA) == 0, "Seq page 0 (MIDI) lists Rec Len")
+    res.check(u16(0x080EED66) == SR_DEF and u16(0x080EED68) == 0, "Tools -> Rec lists Seq Rec Len")
+
+
+def t_seqrec_templates(bench, res):
+    b = _mix_setup(bench, build=False)
+    adds = []
+    b.stub(0x08093EF6, lambda board: adds.append((board.arg(1), board.arg(2))))
+    b.call(bench.sym["seqrec_global_tpl"], 0x30040000, 0x19B, 0)
+    res.check(adds == [(0x19B, 0), (SR_DEF, 0)], f"global template adds Seq Rec Len = 1 bar {adds}")
+    for glob, want in ((0, 4), (1, 0)):
+        adds.clear()
+        b.stub(P_GET_FN, lambda board, g=glob: g)
+        b.call(bench.sym["seqrec_seq_tpl"], 0x30040000, 0x7A, 0)
+        res.check(adds == [(0x7A, 0), (SR_LEN, want), (SR_SET, 0)], f"sequence template follows the global ({glob}) {adds}")
+
+
+def t_seqrec_layer(bench, res):
+    b = _mix_setup(bench, build=False)
+    from unicorn import arm_const as A
+    hit = []
+    for a in (0x0809FE9C, 0x0809FE3C, 0x080A0296, 0x08099676, 0x08099648, 0x08099684):
+        b.stub(a, (lambda x: lambda board: hit.append(x))(a))
+    for fn, reg, cases in (("seqrec_set_layer", A.UC_ARM_REG_R5, ((0xBE, 0x0809FE9C), (SR_LEN, 0x080A0296), (SR_SET, 0x080A0296), (0xD0, 0x0809FE3C))),
+                           ("seqrec_get_layer", A.UC_ARM_REG_R8, ((0xBE, 0x08099676), (SR_LEN, 0x08099684), (SR_SET, 0x08099684), (0xD0, 0x08099648)))):
+        for ident, want in cases:
+            hit.clear()
+            b.mu.reg_write(reg, ident)
+            b.call(bench.sym[fn], 0, 0, 0, (ident - 0xB7) & 0xFFFF)
+            res.check(hit == [want], f"{fn} id {ident:#x} -> {[hex(h) for h in hit]}")
+
+
+def t_seqrec_setparam(bench, res):
+    for val, step_idx, events, want in ((5, 10, 0, [(SR_LEN, 5), (SR_SET, 1), (0x86, 32)]),
+                                       (1, 10, 0, [(SR_LEN, 1), (SR_SET, 1), (0x86, 2)]),
+                                       (9, 10, 0, [(SR_LEN, 9), (SR_SET, 1), (0x86, 512)]),
+                                       (1, 6, 0, [(SR_LEN, 1), (SR_SET, 1), (0x85, 10), (0x86, 2)]),
+                                       (0, 10, 0, [(SR_LEN, 0), (SR_SET, 1)])):
+        w = _SeqWorld(bench, step_idx=step_idx, events=events)
+        sp_arg = 0x2001F700
+        w.b.call(bench.sym["seqrec_setparam"], APP_OBJ, _ref(w.b, 0x123), SR_LEN, val, 0)
+        res.check(w.sets == want, f"Rec Len {val} with step index {step_idx}: {w.sets}")
+    w = _SeqWorld(bench)
+    w.b.call(bench.sym["seqrec_setparam"], APP_OBJ, _ref(w.b, 0x023), SR_LEN, 5, 0)
+    res.check(w.sets == [(SR_LEN, 5)], f"a non-sequence key only passes through {w.sets}")
+
+
+def t_seqrec_clear(bench, res):
+    for touched, glob, want in ((0, 1, [(SR_LEN, 0)]), (0, 0, [(SR_LEN, 4)]), (1, 1, [])):
+        w = _SeqWorld(bench, rec_len=5, touched=touched, glob=glob)
+        w.b.call(bench.sym["seqrec_clear"], APP_OBJ, _ref(w.b, 0x123))
+        res.check(w.calls[:1] == [("0x809f820",)] and w.sets == want, f"CLR touched={touched} global={glob}: {w.sets}")
+    w = _SeqWorld(bench, rec_len=5, touched=0, glob=1)
+    w.b.call(bench.sym["seqrec_clear_all"], APP_OBJ, _ref(w.b, 0x123))
+    res.check(w.sets == [(SR_LEN, 0)], f"clear all resets an untouched sequence {w.sets}")
+
+
+def t_seqrec_record(bench, res):
+    w = _SeqWorld(bench, rec_len=0)
+    b = w.b
+    res.check(b.call(bench.sym["sr_eligible"], APP_OBJ) == 1, "empty stopped Custom sequence is eligible")
+    b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    res.check(("recplay", 1, 1) in w.calls, f"REC with the transport stopped starts it recording {w.calls}")
+    msg = MIX_EV + 0x80
+    b.mu.mem_write(msg, b"\0" * 0x20)
+    b.w32(msg + 0xC, 1)
+    w.ticks = 1000
+    w.sets.clear()
+    b.call(bench.sym["seqrec_recstate"], APP_OBJ, msg)
+    res.check(w.sets == [(0x86, 512)] and b.u32(MX_STATE + 48) == 1 and b.u32(MX_STATE + 56) == 3840,
+              f"recording on: grow to 512 steps, start at the next bar {w.sets} start={b.u32(MX_STATE + 56)}")
+    b.w32(msg + 8, 0x010203)          # engine key: kind 1, row 2, col 3 -> UI 0x123
+    w.ticks = 3900
+    b.call(bench.sym["seqrec_started"], APP_OBJ, msg, 1)
+    res.check(b.u32(MX_STATE + 56) == 3840 and b.u32(MX_STATE + 64) == 1, "start taken from the sequence-started message")
+    b.w32(msg + 0xC, 0)
+    w.ticks = 3840 + 9600             # 2.5 bars in
+    w.sets.clear()
+    w.calls.clear()
+    b.call(bench.sym["seqrec_recstate"], APP_OBJ, msg)
+    res.check(w.sets == [(0x86, 48)], f"REC again: loop closes at the next bar (3 bars = 48 steps) {w.sets}")
+    res.check(w.calls and w.calls[0][0] == "ac60" and w.calls[0][2] == [(0x86, 48)], "length set before stock finalises notes")
+    res.check(b.u32(MX_STATE + 48) == 0, "custom recording done")
+    for kw, why in ((dict(rec_len=4), "1 bar"), (dict(events=3), "not empty"), (dict(playing=1), "transport playing")):
+        w = _SeqWorld(bench, **kw)
+        w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+        res.check(not any(c[0] == "recplay" for c in w.calls), f"REC does not start the transport when {why}")
+    w = _SeqWorld(bench, rec_len=4)
+    w.b.mu.mem_write(msg, b"\0" * 0x20)
+    w.b.w32(msg + 0xC, 1)
+    w.b.call(bench.sym["seqrec_recstate"], APP_OBJ, msg)
+    res.check(not w.sets and w.b.u32(MX_STATE + 48) == 0, "a 1-bar sequence records as stock")
+
+
 def t_mix_button(bench, res):
     b = _mix_setup(bench, build=False)
     calls = []
@@ -1275,6 +1535,13 @@ def main():
             ("PADS held shows the edit panel", t_pads_panel),
             ("EQ tap a dot and drag", t_eq_tap),
             ("FX toggles DJ FX and Return A/B/EQ", t_fx_return),
+            ("real GUI: FX / Return / EQ flow", t_gui_fx_flow),
+            ("seq rec: params and lists", t_seqrec_params),
+            ("seq rec: templates follow the global", t_seqrec_templates),
+            ("seq rec: layer-0 routing", t_seqrec_layer),
+            ("seq rec: Rec Len sets the length", t_seqrec_setparam),
+            ("seq rec: CLR resets untouched", t_seqrec_clear),
+            ("seq rec: Custom recording", t_seqrec_record),
             ("INFO momentary Mute", t_info_momentary),
         ]
     for name, fn in cases:
