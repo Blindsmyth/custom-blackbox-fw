@@ -19,8 +19,8 @@ Current caves (from `0x080F1E80`):
 | Image | Cave | End |
 | --- | --- | --- |
 | Folders 3.1.V | 2.4 KB (`0x96C`) | `0x080F27EC` |
-| Warp 3.1.W (incl. Smooth+Snap) | 13.1 KB (`0x3438`) | `0x080F52B8` |
-| Combined 3.1.Y (folders+Warp+Smooth+Snap+slices) | 16.5 KB (`0x411C`) | `0x080F5F9C` |
+| Warp 3.1.W (Smooth+Snap+Vari+Grain) | 15.9 KB (`0x3F8C`) | `0x080F5E0C` |
+| Combined 3.1.Z (folders+Warp+Vari+Grain+slices) | 19.4 KB (`0x4C70`) | `0x080F6AF0` |
 
 ### The cave size check is not the chip
 
@@ -43,7 +43,7 @@ Bank 2 is a different flash bank. Stay in bank 1 (`0x080F1E80`–`0x080FFFFF`) u
 
 | Region | Size | Stock | Patches | Use |
 | --- | --- | --- | --- | --- |
-| **SRAM4** `0x38000000` | 64 KB | unused | folders 18.3 KB (`S_SIZE` `0x4930`); Warp flags at `0x38005000`; slice pool header at `0x38006000`; Smooth/Snap voice at `0x38007000` (~32 KB, one owner) | **Patch state.** Magic word; re-init on boot. |
+| **SRAM4** `0x38000000` | 64 KB | unused | folders 18.3 KB (`S_SIZE` `0x4930`); Warp flags at `0x38005000`; slice pool header at `0x38006000`; Smooth/Snap/Vari voice at `0x38007000` (~32 KB, one owner); Vari epoch map at `0x3800E800` (~6 KB) | **Patch state.** Magic word; re-init on boot. |
 | **SRAM1–3** `0x30000000` | 288 KB | clocked, no static use | 3.1.Y: SRAM1+2 grown slice tables (8 KB each); SRAM3 XML `ext` scratch | First use of this region. |
 | **Backup** `0x38800000` | 4 KB | clocks never enabled | none | Skip. Needs `BKPRAMEN` + `DBP`. |
 | **ITCM** `0x00000000` | 64 KB | no `.text` copy | none | Only if we start executing from RAM. |

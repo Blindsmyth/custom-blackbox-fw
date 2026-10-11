@@ -436,13 +436,15 @@ def t_smooth_enum_labels(bench, res):
     slot = base + ID_REPITCH * 0x1C
     n = b.u32(slot + 0xC)
     labels = b.u32(slot + 8)
-    res.check(n == 4, f"Warp enum count {n}")
+    res.check(n == 6, f"Warp enum count {n}")
     res.check(labels != 0, f"labels ptr {labels:#x}")
     if labels:
         res.check(b.cstr(b.u32(labels)) == "Stretch", "label0 Stretch")
         res.check(b.cstr(b.u32(labels + 4)) == "Repitch", "label1 Repitch")
         res.check(b.cstr(b.u32(labels + 8)) == "Smooth", "label2 Smooth")
         res.check(b.cstr(b.u32(labels + 12)) == "Snap", "label3 Snap")
+        res.check(b.cstr(b.u32(labels + 16)) == "Vari", "label4 Vari")
+        res.check(b.cstr(b.u32(labels + 20)) == "Grain", "label5 Grain")
 
 
 def t_smooth_clip_flag(bench, res):
@@ -540,6 +542,101 @@ def t_snap_lane_hook(bench, res):
     res.check("snap_mix" in bench.sym, "snap_mix in cave")
     res.check("snap_process" in bench.sym, "snap_process in cave")
     res.check("snap_init" in bench.sym, "snap_init in cave")
+
+
+def t_vari_clip_flag(bench, res):
+    b = bench.b
+    clip = 0x2001C800
+    tempo = 0x2001CC00
+    msg = 0x2001CD00
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(tempo, b"\x00" * 0x20)
+    b.mu.mem_write(msg, b"\x00" * 0x18)
+    b.w32(clip + 0x18, 0x100)
+    b.w32(msg + 0xC, ID_REPITCH)
+    b.w32(msg + 0x10, 4)
+    b.call(bench.sym["state_init"])
+    b.call(0x08067648, clip, tempo, msg, 0)
+    flag = b.u8(clip + 0xBB1)
+    res.check(flag == 4, f"clip +0xBB1 Vari is {flag}")
+    flags = 0x38005010 if "fm_init" in bench.sym else 0x38000010
+    res.check(b.u8(flags + 4) == 4, f"SRAM4 flag {b.u8(flags + 4)}")
+
+
+def t_vari_main_rate_sets_reset(bench, res):
+    b = bench.b
+    clip = 0x2001C800
+    grain = 0x2001D000
+    A = bd.A
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(grain, b"\x00" * 0x80)
+    b.mu.mem_write(SM_BASE, b"\x00" * 0x40)
+    b.mu.mem_write(clip + 0xBB1, b"\x04")
+    b.mu.reg_write(A.UC_ARM_REG_R3, grain)
+    b.mu.reg_write(A.UC_ARM_REG_R4, clip)
+    b.mu.reg_write(A.UC_ARM_REG_S15, 0x3F800000)
+    b.mu.reg_write(A.UC_ARM_REG_SP, bd.BENCH_SP)
+    b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
+    b.mu.emu_start(bench.sym["hook_main_rate"] | 1, bd.STOP, count=200)
+    r3 = b.mu.reg_read(A.UC_ARM_REG_R3)
+    res.check(r3 == grain, f"r3 clobbered to {r3:#x}")
+    res.check(b.u32(grain + 0x48) == 0x3F800000, "Vari leaves grain rate")
+    res.check(b.u32(SM_BASE + 20) == 1, f"reset_req {b.u32(SM_BASE + 20)}")
+
+
+def t_vari_lane_hook(bench, res):
+    res.check("vari_mix" in bench.sym, "vari_mix in cave")
+    res.check("vari_process" in bench.sym, "vari_process in cave")
+    res.check("vari_init" in bench.sym, "vari_init in cave")
+    res.check("vari_analyze" in bench.sym, "vari_analyze in cave")
+
+
+def t_grain_clip_flag(bench, res):
+    b = bench.b
+    clip = 0x2001C800
+    tempo = 0x2001CC00
+    msg = 0x2001CD00
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(tempo, b"\x00" * 0x20)
+    b.mu.mem_write(msg, b"\x00" * 0x18)
+    b.w32(clip + 0x18, 0x100)
+    b.w32(msg + 0xC, ID_REPITCH)
+    b.w32(msg + 0x10, 5)
+    b.call(bench.sym["state_init"])
+    b.call(0x08067648, clip, tempo, msg, 0)
+    flag = b.u8(clip + 0xBB1)
+    res.check(flag == 5, f"clip +0xBB1 Grain is {flag}")
+    flags = 0x38005010 if "fm_init" in bench.sym else 0x38000010
+    res.check(b.u8(flags + 4) == 5, f"SRAM4 flag {b.u8(flags + 4)}")
+
+
+def t_grain_main_rate_rewrites_window(bench, res):
+    """Warp Grain keeps stock rate and rewrites Clip_StartGrain #256 window to 2048."""
+    b = bench.b
+    clip = 0x2001C800
+    grain = 0x2001D000
+    A = bd.A
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(grain, b"\x00" * 0x80)
+    b.mu.mem_write(SM_BASE, b"\x00" * 0x40)
+    b.mu.mem_write(clip + 0xBB1, b"\x05")
+    # Stock-like: window 256, end clamp at +0x58 = end - 256 (use end=10000).
+    b.w32(grain + 0x54, 256)
+    b.w32(grain + 0x5c, 256)
+    b.w32(grain + 0x58, 10000 - 256)
+    b.mu.reg_write(A.UC_ARM_REG_R3, grain)
+    b.mu.reg_write(A.UC_ARM_REG_R4, clip)
+    b.mu.reg_write(A.UC_ARM_REG_S15, 0x3F800000)
+    b.mu.reg_write(A.UC_ARM_REG_SP, bd.BENCH_SP)
+    b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
+    b.mu.emu_start(bench.sym["hook_main_rate"] | 1, bd.STOP, count=200)
+    r3 = b.mu.reg_read(A.UC_ARM_REG_R3)
+    res.check(r3 == grain, f"r3 clobbered to {r3:#x}")
+    res.check(b.u32(grain + 0x48) == 0x3F800000, "Grain leaves grain rate")
+    res.check(b.u32(grain + 0x54) == 2048, f"window +0x54 {b.u32(grain + 0x54)}")
+    res.check(b.u32(grain + 0x5c) == 2048, f"window +0x5c {b.u32(grain + 0x5c)}")
+    res.check(b.u32(grain + 0x58) == 10000 - 2048, f"end clamp +0x58 {b.u32(grain + 0x58)}")
+    res.check(b.u32(SM_BASE + 20) == 0, f"Grain must not set SM_RESET ({b.u32(SM_BASE + 20)})")
 
 
 def t_smooth_state_clears_owner(bench, res):
@@ -847,7 +944,7 @@ def _cell_count(bench, session=None, row=2, col=0):
 
 
 def t_slice_hooks(bench, res):
-    res.check(bench.b.image[VERSION_OFF] == ord("Y"), "menu letter is Y")
+    res.check(chr(bench.b.image[VERSION_OFF]) in "ZS", "menu letter is Z (or S for faster Smooth)")
     for name in ("hook_slices_max", "hook_slice_max", "hook_engine_cap",
                  "hook_cell_cap", "hook_save_iter", "hook_save_bag", "hook_cell_ext",
                  "hook_pad_slice", "hook_pad_done"):
@@ -975,13 +1072,18 @@ def main():
             ("repitch clip-engine flag", t_repitch_clip_flag),
             ("repitch grain store keeps r3", t_repitch_main_rate_preserves_r3),
             ("slicer grain keeps stack args", t_repitch_slicer_grain_stack),
-            ("Warp enum has Smooth+Snap", t_smooth_enum_labels),
+            ("Warp enum has Smooth+Snap+Vari+Grain", t_smooth_enum_labels),
             ("Smooth clip-engine flag", t_smooth_clip_flag),
             ("Smooth grain store sets reset", t_smooth_main_rate_sets_reset),
             ("Smooth lane hook present", t_smooth_lane_hook),
             ("Snap clip-engine flag", t_snap_clip_flag),
             ("Snap grain store sets reset", t_snap_main_rate_sets_reset),
             ("Snap lane symbols present", t_snap_lane_hook),
+            ("Vari clip-engine flag", t_vari_clip_flag),
+            ("Vari grain store sets reset", t_vari_main_rate_sets_reset),
+            ("Vari lane symbols present", t_vari_lane_hook),
+            ("Grain clip-engine flag", t_grain_clip_flag),
+            ("Grain rewrites StartGrain window", t_grain_main_rate_rewrites_window),
             ("Smooth state_init clears owner", t_smooth_state_clears_owner),
         ]
     slices = "hook_slices_max" in sym
@@ -989,7 +1091,7 @@ def main():
     if slices:
         kind = kind + "+slices"
         cases += [
-            ("slice hooks and letter Y", t_slice_hooks),
+            ("slice hooks and letter Z", t_slice_hooks),
             ("cell list grows past 128", t_slice_cell_grow),
         ]
         extra_reads.append(("ext attribute restores extra slices", t_slice_xml_load, SLICE_TREE))

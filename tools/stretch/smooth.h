@@ -1,6 +1,7 @@
 /* One-voice waveform-similarity overlap-add for Clip Warp "Smooth".
  * Window 2048, hop 1024, search ±160 at 48 kHz. Host and cave share this file.
- * Correlation uses SMOOTH_MATCH samples of the hop (not the full 1024).
+ * Correlation uses SMOOTH_MATCH samples of the hop (not the full 1024) and
+ * stops a candidate as soon as its partial SAD can no longer win.
  */
 #ifndef SMOOTH_H
 #define SMOOTH_H
@@ -33,8 +34,10 @@ typedef struct SmoothVoice {
     int32_t emitted;      /* 28 samples of the current hop already copied */
     int32_t have_grain;   /* 32 */
     int32_t prev_active;  /* 36 lane was sounding last block */
-    float acc_l[SMOOTH_WIN];
-    float acc_r[SMOOTH_WIN];
+    float out_l[SMOOTH_HOP];   /* finished hop being emitted */
+    float out_r[SMOOTH_HOP];
+    float tail_l[SMOOTH_HOP];  /* second half of the last grain, added into the next hop */
+    float tail_r[SMOOTH_HOP];
     float prev_l[SMOOTH_HOP];
     float scratch[SMOOTH_SPAN];
 } SmoothVoice;

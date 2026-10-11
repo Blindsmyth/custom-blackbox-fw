@@ -1,14 +1,18 @@
 /* Offline Warp prototype: stretch a real WAV the same way the cave does.
  *
  *   clang -O2 -o tools/stretch/proto tools/stretch/proto.c \
- *       tools/stretch/smooth.c tools/stretch/snap.c -lm
+ *       tools/stretch/smooth.c tools/stretch/snap.c tools/stretch/vari.c -lm
  *   tools/stretch/proto --mode smooth --in loop.wav --ratio 1.25 --out out/smooth.wav
  *   tools/stretch/proto --mode snap --in loop.wav --slices 0,12000,24000 --out out/snap.wav
+ *   tools/stretch/proto --mode vari --in loop.wav --ratio 1.25 --out out/vari.wav
+ *   tools/stretch/proto --mode grain --in loop.wav --ratio 1.25 --out out/grain.wav
+ *   tools/stretch/proto --mode naive --in loop.wav --ratio 1.25 --out out/naive.wav
  *
  * Uses 1024-sample blocks like the Blackbox DMA half so join bugs show up here.
  */
 #include "smooth.h"
 #include "snap.h"
+#include "vari.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -166,11 +170,17 @@ static int read_chs(void *sample, float *dest, int count, int pos, int chan)
     return 1;
 }
 
-static void naive_grain(const float *src, int length, float *dst, int n, float ratio)
+/* Stock Clip Stretch ≈ win 256 / hop 128. Warp Grain ≈ win 2048 / hop 1024. */
+static void ola_grain(const float *src, int length, float *dst, int n, float ratio,
+                      int win, int hop)
 {
-    int win = 256, hop = 128, pos = 0, out = 0, have = 0, emitted = hop;
-    float acc[256];
-    memset(acc, 0, sizeof acc);
+    int pos = 0, out = 0, have = 0, emitted = hop;
+    float *acc;
+    if (win < 2 || hop < 1 || hop * 2 > win)
+        die("ola_grain: need hop*2 <= win");
+    acc = calloc((size_t)win, sizeof(float));
+    if (!acc)
+        die("oom");
     while (out < n) {
         int i, take;
         if (!have || emitted >= hop) {
@@ -204,6 +214,7 @@ static void naive_grain(const float *src, int length, float *dst, int n, float r
         emitted += take;
         out += take;
     }
+    free(acc);
 }
 
 static float crackle_score(const float *x, int n)
@@ -241,26 +252,41 @@ static int parse_slices(const char *s, uint32_t *out, int max)
     return n;
 }
 
+static void dump_marks(const char *path, const uint32_t *marks, int n)
+{
+    FILE *f = fopen(path, "w");
+    int i;
+    if (!f)
+        die("cannot open --marks output");
+    for (i = 0; i < n; i++)
+        fprintf(f, "%u\n", marks[i]);
+    fclose(f);
+}
+
 static void usage(void)
 {
     fprintf(stderr,
-            "usage: proto --in file.wav --out file.wav [--mode smooth|snap|naive]\n"
-            "             [--ratio 1.25] [--mono] [--slices p0,p1,...]\n"
+            "usage: proto --in file.wav --out file.wav [--mode smooth|snap|vari|grain|naive]\n"
+            "             [--ratio 1.25] [--mono] [--slices p0,p1,...] [--marks file.txt]\n"
             "  16-bit PCM wav in. Renders in 1024-sample blocks (device DMA half).\n"
-            "  --slices is used by --mode snap (Sync-to-Slice style markers).\n");
+            "  --slices is used by --mode snap (Sync-to-Slice style markers).\n"
+            "  --mode vari builds an epoch/onset map; --marks dumps it.\n"
+            "  --mode grain is Clip_StartGrain-like OLA at win 2048 / hop 1024;\n"
+            "  --mode naive is stock Stretch-like OLA at win 256 / hop 128.\n");
     exit(2);
 }
 
 int main(int argc, char **argv)
 {
     const char *in_path = 0, *out_path = 0, *mode = "smooth", *slices_arg = 0;
+    const char *marks_path = 0;
     float ratio = 1.25f;
     int force_mono = 0, i, out_n, block = SMOOTH_HOP;
     Wav in;
     float *ol, *or_;
     const float *chs[2];
     uint32_t slices[256];
-    int n_slices = 0;
+    int n_slices = 0, n_marks_report = 0;
     const char *tag;
 
     for (i = 1; i < argc; i++) {
@@ -274,6 +300,8 @@ int main(int argc, char **argv)
             mode = argv[++i];
         else if (!strcmp(argv[i], "--slices") && i + 1 < argc)
             slices_arg = argv[++i];
+        else if (!strcmp(argv[i], "--marks") && i + 1 < argc)
+            marks_path = argv[++i];
         else if (!strcmp(argv[i], "--naive"))
             mode = "naive";
         else if (!strcmp(argv[i], "--mono"))
@@ -285,8 +313,9 @@ int main(int argc, char **argv)
         usage();
     if (!(ratio > 0.25f) || ratio > 4.f)
         die("ratio must be in 0.25 .. 4");
-    if (strcmp(mode, "smooth") && strcmp(mode, "snap") && strcmp(mode, "naive"))
-        die("--mode must be smooth, snap, or naive");
+    if (strcmp(mode, "smooth") && strcmp(mode, "snap") &&
+        strcmp(mode, "vari") && strcmp(mode, "grain") && strcmp(mode, "naive"))
+        die("--mode must be smooth, snap, vari, grain, or naive");
     if (slices_arg)
         n_slices = parse_slices(slices_arg, slices, 256);
 
@@ -306,7 +335,10 @@ int main(int argc, char **argv)
     chs[1] = in.r;
     tag = mode;
     if (!strcmp(mode, "naive")) {
-        naive_grain(in.l, in.n, ol, out_n, ratio);
+        ola_grain(in.l, in.n, ol, out_n, ratio, 256, 128);
+        memcpy(or_, ol, (size_t)out_n * sizeof(float));
+    } else if (!strcmp(mode, "grain")) {
+        ola_grain(in.l, in.n, ol, out_n, ratio, 2048, 1024);
         memcpy(or_, ol, (size_t)out_n * sizeof(float));
     } else if (!strcmp(mode, "snap")) {
         SnapVoice *voice = calloc(1, sizeof *voice);
@@ -326,6 +358,38 @@ int main(int argc, char **argv)
         free(voice);
         if (n_slices == 0)
             fprintf(stderr, "proto: snap with no --slices (fixed-hop XF only)\n");
+    } else if (!strcmp(mode, "vari")) {
+        VariVoice *voice = calloc(1, sizeof *voice);
+        uint32_t *marks = calloc(VARI_MAX_MARKS, sizeof(uint32_t));
+        int n_marks, done = 0, stereo = (!force_mono && in.ch == 2);
+        if (!voice || !marks)
+            die("oom");
+        {
+            float *ascratch = calloc(VARI_SCRATCH_N, sizeof(float));
+            if (!ascratch)
+                die("oom");
+            n_marks = vari_analyze((void *)chs, in.n, stereo, read_chs,
+                                   marks, VARI_MAX_MARKS, ascratch, VARI_SCRATCH_N);
+            free(ascratch);
+        }
+        if (n_marks < 2)
+            die("vari_analyze produced too few marks");
+        n_marks_report = n_marks;
+        if (marks_path)
+            dump_marks(marks_path, marks, n_marks);
+        fprintf(stderr, "proto: vari marks=%d\n", n_marks);
+        vari_init(voice);
+        while (done < out_n) {
+            int n = out_n - done;
+            if (n > block)
+                n = block;
+            vari_process(voice, (void *)chs, in.n, stereo, read_chs,
+                         marks, n_marks,
+                         ol + done, or_ + done, n, ratio, done == 0);
+            done += n;
+        }
+        free(voice);
+        free(marks);
     } else {
         SmoothVoice *voice = calloc(1, sizeof *voice);
         int done = 0, stereo = (!force_mono && in.ch == 2);
@@ -351,8 +415,8 @@ int main(int argc, char **argv)
             if (a > peak) peak = a;
             if (b > peak) peak = b;
         }
-        printf("%s  in=%d  out=%d  sr=%d  ratio=%.3f  slices=%d  peak=%.3f  crackle/k=%.2f/%.2f\n",
-               tag, in.n, out_n, in.sr, ratio, n_slices, peak, cL, cR);
+        printf("%s  in=%d  out=%d  sr=%d  ratio=%.3f  slices=%d  marks=%d  peak=%.3f  crackle/k=%.2f/%.2f\n",
+               tag, in.n, out_n, in.sr, ratio, n_slices, n_marks_report, peak, cL, cR);
         printf("  (crackle/k = large |Δ| jumps per 1000 samples; hop clicks raise this)\n");
     }
 

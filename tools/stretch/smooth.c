@@ -8,17 +8,6 @@ _Static_assert(offsetof(SmoothVoice, reset_req) == SMOOTH_OFF_RESET, "reset offs
 _Static_assert(offsetof(SmoothVoice, block_done) == SMOOTH_OFF_BLOCK, "block offset");
 _Static_assert(sizeof(SMOOTH_HANN) / sizeof(SMOOTH_HANN[0]) == SMOOTH_WIN, "hann size");
 
-static float window_at(int i, int first)
-{
-    float h = SMOOTH_HANN[i];
-    if (!first)
-        return h;
-    /* Fade the first grain in; keep Hann on the overlap half so OLA stays flat. */
-    if (i < 64)
-        return h * (float)(i + 1) * (1.f / 64.f);
-    return h;
-}
-
 static void fzero(float *p, int n)
 {
     int i;
@@ -89,36 +78,49 @@ static float energy(const float *p, int n)
     return e;
 }
 
-/* Coarse then refine over SMOOTH_MATCH only (not the full hop). */
-static int seek_offset(const float *prev, const float *span)
+/* SAD of prev against span at d, every STEPth sample, 4 lanes so the FPU
+ * adds overlap. Bails once the partial sum reaches `limit`: abs diffs only
+ * grow it, so a candidate that has hit the best score cannot beat it. */
+#define SAD_BODY(STEP)                                                     \
+    const float *p = prev, *q = span + SMOOTH_SEARCH + d;                  \
+    const float *end = prev + SMOOTH_MATCH;                                \
+    float s0 = 0.f, s1 = 0.f, s2 = 0.f, s3 = 0.f;                          \
+    while (p < end) {                                                      \
+        const float *stop = p + 16 * (STEP);                               \
+        do {                                                               \
+            s0 += __builtin_fabsf(p[0] - q[0]);                            \
+            s1 += __builtin_fabsf(p[STEP] - q[STEP]);                      \
+            s2 += __builtin_fabsf(p[2 * (STEP)] - q[2 * (STEP)]);          \
+            s3 += __builtin_fabsf(p[3 * (STEP)] - q[3 * (STEP)]);          \
+            p += 4 * (STEP);                                               \
+            q += 4 * (STEP);                                               \
+        } while (p < stop);                                                \
+        if (s0 + s1 + s2 + s3 >= limit)                                    \
+            break;                                                         \
+    }                                                                      \
+    return s0 + s1 + s2 + s3;
+
+static float sad_coarse(const float *prev, const float *span, int d, float limit)
 {
-    int best = 0;
+    SAD_BODY(4)
+}
+
+static float sad_fine(const float *prev, const float *span, int d, float limit)
+{
+    SAD_BODY(1)
+}
+
+static int seek_range(const float *prev, const float *span, int best, int reach, int step)
+{
     float best_score = 1.0e30f;
-    int d, i, d0, d1;
-    for (d = -SMOOTH_SEARCH; d <= SMOOTH_SEARCH; d += 16) {
-        float score = 0.f;
-        for (i = 0; i < SMOOTH_MATCH; i += 4) {
-            float diff = prev[i] - span[SMOOTH_SEARCH + d + i];
-            score += diff < 0.f ? -diff : diff;
-        }
-        if (score < best_score) {
-            best_score = score;
-            best = d;
-        }
-    }
-    d0 = best - 16;
-    d1 = best + 16;
+    int d, d0 = best - reach, d1 = best + reach;
     if (d0 < -SMOOTH_SEARCH)
         d0 = -SMOOTH_SEARCH;
     if (d1 > SMOOTH_SEARCH)
         d1 = SMOOTH_SEARCH;
-    best_score = 1.0e30f;
-    for (d = d0; d <= d1; d++) {
-        float score = 0.f;
-        for (i = 0; i < SMOOTH_MATCH; i++) {
-            float diff = prev[i] - span[SMOOTH_SEARCH + d + i];
-            score += diff < 0.f ? -diff : diff;
-        }
+    for (d = d0; d <= d1; d += step) {
+        float score = step > 4 ? sad_coarse(prev, span, d, best_score)
+                               : sad_fine(prev, span, d, best_score);
         if (score < best_score) {
             best_score = score;
             best = d;
@@ -127,15 +129,46 @@ static int seek_offset(const float *prev, const float *span)
     return best;
 }
 
-static void shift_acc(SmoothVoice *v)
+/* Coarse (16) on every 4th sample, then 4 and 1 over SMOOTH_MATCH. */
+static int seek_offset(const float *prev, const float *span)
 {
-    int i;
-    for (i = 0; i < SMOOTH_HOP; i++) {
-        v->acc_l[i] = v->acc_l[i + SMOOTH_HOP];
-        v->acc_r[i] = v->acc_r[i + SMOOTH_HOP];
+    int best = seek_range(prev, span, 0, SMOOTH_SEARCH, 16);
+    best = seek_range(prev, span, best, 12, 4);
+    return seek_range(prev, span, best, 3, 1);
+}
+
+/* out = tail + first half of the grain; tail = second half. Same sums as a
+ * 2048 accumulator that shifts by a hop, without the shift or the zeroing. */
+static void overlap_add(float *out, float *tail, const float *src, int first, int transient)
+{
+    int i = 0;
+    if (first) {
+        /* Fade the first grain in; keep Hann on the overlap half so OLA stays flat. */
+        for (; i < 64; i++) {
+            float w = SMOOTH_HANN[i] * (float)(i + 1) * (1.f / 64.f);
+            out[i] = tail[i] + src[i] * w;
+        }
+    } else if (transient) {
+        /* Push the new grain in with a short crossfade instead of ducking the
+         * whole hop (that read as a click every kick). */
+        for (; i < 128; i++) {
+            float keep = 1.f - (float)(i + 1) * (1.f / 128.f);
+            float w = (float)(i + 1) * (1.f / 128.f);
+            out[i] = tail[i] * keep + src[i] * w;
+        }
     }
-    fzero(v->acc_l + SMOOTH_HOP, SMOOTH_HOP);
-    fzero(v->acc_r + SMOOTH_HOP, SMOOTH_HOP);
+    {
+        const float *w = SMOOTH_HANN + i, *x = src + i, *t = tail + i;
+        float *o = out + i, *end = out + SMOOTH_HOP;
+        while (o < end)
+            *o++ = *t++ + *x++ * *w++;
+    }
+    {
+        const float *w = SMOOTH_HANN + SMOOTH_HOP, *x = src + SMOOTH_HOP;
+        float *t = tail, *end = tail + SMOOTH_HOP;
+        while (t < end)
+            *t++ = *x++ * *w++;
+    }
 }
 
 static void synthesize(SmoothVoice *v, void *sample, int length, int stereo,
@@ -170,37 +203,16 @@ static void synthesize(SmoothVoice *v, void *sample, int length, int stereo,
         start = 0;
     if (start > SMOOTH_SPAN - SMOOTH_WIN)
         start = SMOOTH_SPAN - SMOOTH_WIN;
-    /* On a transient, push the new grain in with a short crossfade instead of
-     * ducking the whole hop (that read as a click every kick). */
-    if (transient) {
-        for (i = 0; i < 128 && i < SMOOTH_HOP; i++) {
-            float keep = 1.f - (float)(i + 1) * (1.f / 128.f);
-            v->acc_l[i] *= keep;
-            v->acc_r[i] *= keep;
-        }
-    }
     for (i = 0; i < SMOOTH_HOP; i++)
         v->prev_l[i] = v->scratch[start + SMOOTH_HOP + i];
-    for (i = 0; i < SMOOTH_WIN; i++) {
-        float w = window_at(i, first);
-        if (transient && i < 128)
-            w = (float)(i + 1) * (1.f / 128.f);
-        v->acc_l[i] += v->scratch[start + i] * w;
-    }
+    overlap_add(v->out_l, v->tail_l, v->scratch + start, first, transient);
     if (stereo) {
         read_span(read, sample, length, v->scratch, nominal + offset, SMOOTH_WIN, 1);
-        for (i = 0; i < SMOOTH_WIN; i++) {
-            float w = window_at(i, first);
-            if (transient && i < 128)
-                w = (float)(i + 1) * (1.f / 128.f);
-            v->acc_r[i] += v->scratch[i] * w;
-        }
+        overlap_add(v->out_r, v->tail_r, v->scratch, first, transient);
     } else {
-        for (i = 0; i < SMOOTH_WIN; i++) {
-            float w = window_at(i, first);
-            if (transient && i < 128)
-                w = (float)(i + 1) * (1.f / 128.f);
-            v->acc_r[i] += v->scratch[start + i] * w;
+        for (i = 0; i < SMOOTH_HOP; i++) {
+            v->out_r[i] = v->out_l[i];
+            v->tail_r[i] = v->tail_l[i];
         }
     }
     v->have_grain = 1;
@@ -234,18 +246,26 @@ void smooth_process(SmoothVoice *v, void *sample, int length, int stereo,
     while (produced < n) {
         int take, i;
         if (!v->have_grain || v->emitted >= SMOOTH_HOP) {
-            if (v->have_grain && v->emitted >= SMOOTH_HOP)
-                shift_acc(v);
             synthesize(v, sample, length, stereo, read, ratio);
             v->emitted = 0;
         }
         take = SMOOTH_HOP - v->emitted;
         if (take > n - produced)
             take = n - produced;
-        for (i = 0; i < take; i++) {
-            dst_l[produced + i] += v->acc_l[v->emitted + i];
-            if (dst_r)
-                dst_r[produced + i] += v->acc_r[v->emitted + i];
+        {
+            const float *sl = v->out_l + v->emitted;
+            const float *sr = v->out_r + v->emitted;
+            float *ol = dst_l + produced;
+            if (dst_r) {
+                float *or_ = dst_r + produced;
+                for (i = 0; i < take; i++) {
+                    ol[i] += sl[i];
+                    or_[i] += sr[i];
+                }
+            } else {
+                for (i = 0; i < take; i++)
+                    ol[i] += sl[i];
+            }
         }
         v->emitted += take;
         produced += take;

@@ -1,4 +1,4 @@
-@ 3.1.Y: 3.1.X folders + Warp, plus a 2048-slice cap (see slice.S).
+@ 3.1.Z: 3.1.X folders + Warp (Smooth/Snap/Vari), plus a 2048-slice cap (see slice.S).
 @
 @ Folder state lives in SRAM4 at 0x38000000 (reset by fm_boot each boot). Not DTCM: stock's
 @ small-block allocator (0x080443A8) hands out DTCM from 0x20000000 upward. SRAM4 has no

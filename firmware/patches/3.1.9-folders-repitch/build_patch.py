@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the 3.1.Y folders+Warp+2048-slices image from stock 3.1.9. Does not modify the stock file.
+"""Build the 3.1.Z folders+Warp+Vari+2048-slices image from stock 3.1.9. Does not modify the stock file.
 
 Writes BLACKBOX.BIN, BLACKBOX.sym.json (cave symbols, used by tools/bench) and cave.dis.
 Folders: docs/preset-folders.md. Clip/Slicer Warp and slices: docs/map-319.md.
@@ -26,7 +26,7 @@ BASE = 0x08040000
 CAVE_VA = 0x080F1E80
 CAVE_OFF = CAVE_VA - BASE
 VERSION_OFF = 0x8F294  # the '9' in "3.1.9"
-LETTER = "Y"
+LETTER = "Z"
 
 # (site, cave symbol, bl?, stock bytes at the site)
 SITES = [
@@ -177,7 +177,8 @@ def main():
     stretch = ROOT / "tools" / "stretch"
     blob, symbols = link_cave(
         [CAVE_S, stretch / "smooth.c", stretch / "smooth_fw.c",
-         stretch / "snap.c", stretch / "snap_fw.c"],
+         stretch / "snap.c", stretch / "snap_fw.c",
+         stretch / "vari.c", stretch / "vari_fw.c"],
         OBJ, CAVE_VA, includes=[stretch])
     if len(blob) > 0xE000 or CAVE_VA + len(blob) >= 0x080FFF00:
         raise SystemExit(f"cave is unexpectedly large: {len(blob):#x}")
