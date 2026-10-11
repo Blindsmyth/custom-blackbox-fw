@@ -1015,35 +1015,44 @@ def _seq_stubs(b, params, events):
 
 
 def t_seq_length(bench, res):
-    b = _mix_setup(bench, build=False)
-    params = {0xC0: 1, 0x88: 0, 0x85: 10, 0x86: 16}                 # 16 x 1/16 = 1 bar
-    events = [(0, 1), (960, 2), (1920, 3), (3000, 4)]
-    log = _seq_stubs(b, params, events)
-    b.call(bench.sym["seq_halve"], APP_OBJ, 0x23)
-    res.check(log["set"] == [(0x86, 8)] and log["snap"] == 1, f"halve sets 8 steps with an undo snapshot {log['set']}")
-    res.check(sorted(log["del"]) == [3, 4], f"halve drops events at or past 8 x 240 ticks {log['del']}")
-    res.check(log["push"] == [1], f"halve pushes the current layer {log['push']}")
+    """The field above UNDO is Rec Len: the top-right knob steps it, the button shows it."""
     seq = 0x30020000
-    b.mu.mem_write(seq, b"\0" * 0x4000)
-    b.mu.mem_write(seq + 0x1A90, b"\x23")
-    for k in log:
-        log[k] = [] if isinstance(log[k], list) else 0
-    b.w32(UWTICK, 10000)
-    b.call(bench.sym["seq_on_event"], seq, _mix_ev(b, 0x32, idx=2, val=1))
-    res.check(log["double"] == [0x23], f"TR knob right doubles {log['double']}")
-    b.w32(UWTICK, 10100)
-    b.call(bench.sym["seq_on_event"], seq, _mix_ev(b, 0x32, idx=2, val=-1))
-    res.check(not log["set"], "a second turn within 250 ms is ignored")
-    b.w32(UWTICK, 10400)
-    b.call(bench.sym["seq_on_event"], seq, _mix_ev(b, 0x32, idx=2, val=-1))
-    res.check(log["set"] == [(0x86, 8)], f"TR knob left halves {log['set']}")
-    res.check(log["text"][-1:] == ["1 bar"], f"bar label refreshed after a change {log['text']}")
-    for n, want in ((16, "1 bar"), (8, "0.5"), (64, "4 bar"), (6, "0.4")):
-        params[0x86] = n
-        log["text"].clear()
-        b.call(bench.sym["seq_bar_label"], seq)
-        res.check(log["text"] == [want], f"{n} x 1/16 shows {want!r} ({log['text']})")
+    labels = []
+    for start, delta, want_sets, want_label in ((4, 1, [(SR_LEN, 5), (SR_SET, 1), (0x86, 32)], "2 bar"),
+                                                (4, -1, [(SR_LEN, 3), (SR_SET, 1), (0x86, 8)], "1/2"),
+                                                (1, -1, [(SR_LEN, 0), (SR_SET, 1)], "Cust"),
+                                                (0, -1, [], None),
+                                                (9, 1, [], None)):
+        w = _SeqWorld(bench, rec_len=start)
+        b = w.b
+        b.mu.mem_write(seq, b"\0" * 0x4000)
+        b.mu.mem_write(seq + 0x1A90, b"\x23")
+        labels.clear()
+        b.stub(0x080A3DEC, lambda board: labels.append(board.cstr(board.arg(1))))
+        b.call(bench.sym["seq_on_event"], seq, _mix_ev(b, 0x32, idx=2, val=delta))
+        res.check(w.sets == want_sets, f"Rec Len {start} {delta:+d}: {w.sets}")
+        if want_label:
+            res.check(labels == [want_label], f"button above UNDO shows {want_label!r} ({labels})")
+    for val, want in ((0, "Cust"), (1, "1/8"), (4, "1 bar"), (8, "16bar"), (9, "32bar")):
+        w = _SeqWorld(bench, rec_len=val)
+        labels.clear()
+        w.b.stub(0x080A3DEC, lambda board: labels.append(board.cstr(board.arg(1))))
+        w.b.call(bench.sym["seq_bar_label"], seq)
+        res.check(labels == [want], f"Rec Len {val} label {labels}")
 
+
+def t_eq_untouched_defaults(bench, res):
+    for pristine, want in ((True, [(0x11C, 2), (0x121, 3), (0x126, 3), (0x12B, 4)]), (False, [])):
+        w = _SeqWorld(bench)
+        for n in range(4):
+            w.vals[0x118 + 5 * n] = 0 if pristine or n else 300       # band 1 gain moved when not pristine
+            w.vals[0x119 + 5 * n] = 200 * (n + 1)
+            w.vals[0x11C + 5 * n] = 0
+        page = 0x30020000
+        w.b.mu.mem_write(page, b"\0" * 0x2000)
+        w.b.mu.mem_write(page + 0x1BCC, struct.pack("<H", 0x320))
+        w.b.call(bench.sym["eq_fix_defaults"], page)
+        res.check(w.sets == want, f"{'untouched' if pristine else 'edited'} EQ -> {w.sets}")
 
 def t_eq_tap(bench, res):
     b = _mix_setup(bench, build=False)
@@ -1530,7 +1539,8 @@ def main():
             ("entering MIX press is not a hold", t_mix_enter_press),
             ("encoders stop navigating", t_nav_knobs),
             ("PADS/SEQS held + pad selects only", t_held_select),
-            ("Seq length knob and bar label", t_seq_length),
+            ("Seq Rec Len knob and label", t_seq_length),
+            ("untouched EQ gets the default bands", t_eq_untouched_defaults),
             ("SEQS held shows the layer panel", t_seq_panel),
             ("PADS held shows the edit panel", t_pads_panel),
             ("EQ tap a dot and drag", t_eq_tap),

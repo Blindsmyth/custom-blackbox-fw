@@ -1,19 +1,15 @@
-@ Batch 1: Seq screen length tools.
-@ - Seq onEvent wrapper (vtable 0x080F0E90 +0x34). Encoders 0/1 no longer navigate
-@   (Batch 0). Encoder 2 (top right) doubles (turn right) or halves (turn left) the current
-@   layer of the selected sequence, at most once per SEQ_LEN_MS. Encoder 3 stays stock.
-@ - Encoder 3 no longer swaps the side panel. While SEQS is held the layer panel (A-D,
-@   Seq+0x4010) shows instead of the OFF/UNDO/CLR panel (Seq+0x3D5C); tap a layer there.
-@   Stock swaps them by their hidden bytes (+0x30), so the Seq tick wrapper does the same.
-@ - The unlabelled button above UNDO (Seq+0x3F70) shows the length in bars:
-@   bars = 0x86 notestepcount x step length (table 0x080ECA6C, beats) / 4.
-@ Double is stock FUN_0809C5B4. Halve mirrors it: undo snapshot, copy the layer's events,
-@ drop the ones at or past the new end, set 0x86 = n / 2, push the layer, refresh.
+@ Seq screen: the length field above UNDO / CLR / OFF is the sequence's Rec Len (seqrec.S).
+@ - Seq onEvent wrapper (vtable 0x080F0E90 +0x34). Encoders 0/1 no longer navigate and 3 no
+@   longer swaps the side panel (Batch 0). Encoder 2 (top right) steps Rec Len: Custom, 1/8,
+@   1/4, 1/2, 1 bar ... 32 bars. A fixed value sets the length (notes past the end are kept).
+@ - The unlabelled button above UNDO (Seq+0x3F70) shows Rec Len ("Cust", "1/8" ... "32bar";
+@   the button fits five characters).
+@ - While SEQS is held the layer panel (A-D, Seq+0x4010) shows instead of the OFF/UNDO/CLR
+@   panel (Seq+0x3D5C); tap a layer there. Stock swaps them by their hidden bytes (+0x30).
 
 .equ SEQ_EVENT,   0x080B5285
 .equ SEQ_KEY,     0x1A90                @ selected sequence pad (byte)
 .equ SEQ_BARS,    0x3F70                @ button above UNDO
-.equ SEQ_LEN_MS,  250
 
 .equ SEQ_OBJ,     0x08097CE9            @ (app, ref, layer) -> sequence object
 .equ P_GET,       0x08093E9D            @ (obj, id)
@@ -42,7 +38,6 @@
 
 .global seq_on_event
 .global seq_tick
-.global seq_halve
 .global seq_bar_label
 
 .thumb_func
@@ -54,34 +49,40 @@ seq_on_event:
     cmp     r2, #2
     bne     9f                      @ 0, 1: navigation; 3: panel swap. All off.
     push    {r4, r5, r6, lr}
+    sub     sp, #8
     mov     r4, r0
     ldrsh.w r5, [r1, #0x10]
     cbz     r5, 4f
-    bl      mx_state
-    ldr     r1, =UWTICK
-    ldr     r1, [r1]
-    ldr     r2, [r0, #MX_SEQ_T]
-    subs    r2, r1, r2
-    cmp     r2, #SEQ_LEN_MS
-    blo     4f
-    str     r1, [r0, #MX_SEQ_T]
     add.w   r1, r4, #0x1000
     ldrb.w  r1, [r1, #(SEQ_KEY - 0x1000)]
+    orr     r1, r1, #0x100
+    ldr     r2, =REF_TAG
+    str     r2, [sp]
+    strh    r1, [sp, #4]            @ ref of the selected sequence
     ldr     r0, =APP
-    cmp     r5, #0
-    blt     2f
-    sub     sp, #24                 @ stock Double reads the key at event+8
-    strh    r1, [sp, #8]
     mov     r1, sp
-    call    SEQ_DOUBLE
-    add     sp, #24
-    b       3f
-2:
-    bl      seq_halve
-3:
+    movw    r2, #SR_LEN
+    bl      sr_getp
+    mov     r6, r0
+    cmp     r5, #0
+    ite     gt
+    addgt   r2, r6, #1
+    suble   r2, r6, #1
+    cmp     r2, #0
+    it      lt
+    movlt   r2, #0
+    cmp     r2, #9
+    it      gt
+    movgt   r2, #9
+    cmp     r2, r6
+    beq     4f
+    ldr     r0, =APP
+    mov     r1, sp
+    bl      sr_user_set
     mov     r0, r4
     bl      seq_bar_label
 4:
+    add     sp, #8
     pop     {r4, r5, r6, pc}
 5:
     push    {r4, r5, r6, lr}
@@ -170,155 +171,42 @@ step_ticks:
 
 .align 2
 ticks_per_beat: .float 960.0
-tenths_per_beat: .float 2.5         @ bars x 10 per beat (4 beats per bar)
 
-@ seq_halve(app, pad byte): halve the current layer of that sequence.
-.thumb_func
-seq_halve:
-    push    {r4, r5, r6, r7, r8, r9, r10, r11, lr}
-    sub     sp, #44
-    mov     r4, r0                  @ app
-    mov     r8, r1                  @ pad byte
-    add     r3, sp, #32             @ ref
-    bl      seq_layer
-    mov     r5, r0                  @ layer object
-    mov     r9, r1                  @ layer
-    mov     r0, r2
-    movs    r1, #0x88               @ step mode keeps positions as step x 960
-    call    P_GET
-    mov     r10, r0
-    mov     r0, r5
-    movs    r1, #0x86
-    call    P_GET
-    cmp     r0, #2
-    blt     9f
-    lsrs    r6, r0, #1              @ new step count
-    mov.w   r7, #960
-    cmp     r10, #0
-    bne     1f
-    mov     r0, r5
-    bl      step_ticks
-    mov     r7, r0
-1:
-    mul     r7, r6, r7              @ first tick past the new end
-    mov     r0, r4
-    add     r1, sp, #32
-    call    SEQ_SNAP
-    add.w   r11, r4, #0xE000
-    add.w   r11, r11, #(APP_SCRATCH - 0xE000)
-    movs    r0, #0x47
-    strb    r0, [sp, #24]
-    mov     r0, r11
-    add     r1, sp, #24
-    call    OBJ_INIT
-    add.w   r0, r11, #0x18
-    call    EVL_CLEAR
-    mov     r0, r11
-    mov     r1, r5
-    call    OBJ_COPY
-    mov     r10, #0
-2:
-    add.w   r0, r11, #0x18
-    mov     r1, r10
-    mov     r2, sp                  @ event: +4 position, +0xC handle
-    call    EVL_GET
-    cbz     r0, 3f
-    add     r10, r10, #1
-    ldr     r0, [sp, #4]
-    cmp     r0, r7
-    blo     2b
-    add.w   r0, r5, #0x18
-    ldr     r1, [sp, #12]
-    call    EVL_DEL
-    b       2b
-3:
-    mov     r0, r5
-    movs    r1, #0x86
-    mov     r2, r6
-    call    P_SET
-    mov     r0, r4
-    add     r1, sp, #32
-    mov     r2, r9
-    call    SEQ_PUSH
-    movs    r0, #0x66               @ refresh, as stock Double posts it
-    strh    r0, [sp]
-    ldr     r0, =EV_TAG
-    str     r0, [sp, #4]
-    orr     r0, r8, #0x100
-    strh    r0, [sp, #8]
-    movs    r0, #1
-    str     r0, [sp, #12]
-    movs    r0, #0
-    str     r0, [sp, #16]
-    str     r0, [sp, #20]
-    add.w   r0, r4, #0x30
-    mov     r1, sp
-    call    UI_POST
-    add.w   r0, r4, #0x8000
-    movs    r1, #1
-    strb.w  r1, [r0, #0xCC4]        @ unsaved changes
-    mov     r0, r4
-    call    SONG_RELEN
-9:
-    add     sp, #44
-    pop     {r4, r5, r6, r7, r8, r9, r10, r11, pc}
-
-@ seq_bar_label(seq widget): "N bar" or "N.N" on the button above UNDO.
-@ Frame: [sp] snprintf's 5th argument, sp+16 text, sp+40 ref.
+@ seq_bar_label(seq widget): the selected sequence's Rec Len on the button above UNDO.
 .thumb_func
 seq_bar_label:
     push    {r4, r5, r6, lr}
-    sub     sp, #48
+    sub     sp, #8
     mov     r4, r0
     add.w   r1, r4, #0x1000
     ldrb.w  r1, [r1, #(SEQ_KEY - 0x1000)]
+    orr     r1, r1, #0x100
+    ldr     r2, =REF_TAG
+    str     r2, [sp]
+    strh    r1, [sp, #4]
     ldr     r0, =APP
-    add     r3, sp, #40
-    bl      seq_layer
-    mov     r5, r0
-    movs    r1, #0x86
-    call    P_GET
-    mov     r6, r0
-    mov     r0, r5
-    movs    r1, #0x85
-    call    P_GET
-    cmp     r0, #15
-    it      hs
-    movhs   r0, #10
-    ldr     r1, =STEP_TABLE
-    add.w   r1, r1, r0, lsl #2
-    vldr    s0, [r1]
-    vmov    s1, r6
-    vcvt.f32.s32 s1, s1
-    vmul.f32 s0, s0, s1
-    vldr    s1, tenths_per_beat
-    vmul.f32 s0, s0, s1
-    vmov.f32 s1, #0.5
-    vadd.f32 s0, s0, s1
-    vcvt.s32.f32 s0, s0
-    vmov    r3, s0                  @ bars x 10
-    movs    r1, #10
-    udiv    r2, r3, r1              @ whole bars
-    mls     r3, r2, r1, r3          @ tenths
-    str     r3, [sp]
-    cmp     r3, #0
-    mov     r3, r2
-    ite     eq
-    adreq   r2, fmt_bars
-    adrne   r2, fmt_frac
-    add     r0, sp, #16
-    movs    r1, #16
-    call    SNPRINTF
+    mov     r1, sp
+    movw    r2, #SR_LEN
+    bl      sr_getp
+    cmp     r0, #9
+    it      hi
+    movhi   r0, #0
+    adr     r1, sr_short_labels
+    ldr     r1, [r1, r0, lsl #2]
     ldr     r0, =SEQ_BARS
     add     r0, r4
-    add     r1, sp, #16
     call    BTN_TEXT
-    add     sp, #48
+    add     sp, #8
     pop     {r4, r5, r6, pc}
 
 .align 2
-fmt_bars: .asciz "%d bar"
-.align 2
-fmt_frac: .asciz "%d.%d"
+sr_short_labels:                        @ five characters fit the button (12 px each)
+    .word   s_cust, s_1_8, s_1_4, s_1_2, s_1bar, s_2bar, s_4bar, s_8bar, s_16bar, s_32bar
+s_cust:  .asciz "Cust"
+s_2bar:  .asciz "2 bar"
+s_4bar:  .asciz "4 bar"
+s_8bar:  .asciz "8 bar"
+s_16bar: .asciz "16bar"
+s_32bar: .asciz "32bar"
 .align 2
 .ltorg

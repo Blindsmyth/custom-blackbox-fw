@@ -28,20 +28,19 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 - **Knobs no longer select pads or sequences or switch pages.** On Pads all four knobs are off for now (pad selection and the VEL / CUT-COPY panel switch); on Seq the three pad-selection knobs and the panel switch are off and the top-right knob changes the length (below). Parameter menus keep both knobs: one moves through the list, the other changes the selected parameter.
 - **Hold PADS:** the side panel shows CUT / COPY / PSTE / CLR (instead of VEL), and tapping a pad selects it without playing. Let go: VEL comes back.
 - **Hold SEQS:** the side panel shows the layers A–D (tap one to pick it) and tapping a pad selects that sequence without starting or stopping it. Let go: OFF / UNDO / CLR come back.
-- **Seq length:**
-  - The button above UNDO shows the current layer's length in bars ("1 bar", "0.5" …).
-  - The top-right knob doubles the length (turn right) or halves it (turn left), at most once per quarter second.
-  - Halving drops the notes past the new end; UNDO brings them back.
+- **Seq Rec Len:** the field above UNDO / CLR / OFF is the sequence's **Rec Len** (see Custom sequence recording).
+  - It shows "Cust", "1/8", "1/4", "1/2", "1 bar" … "32bar".
+  - The top-right knob steps it. A fixed value sets the length; notes past a shorter end are kept and come back when you lengthen it again.
 - **EQ:**
   - Touch a band's dot and drag it straight away; no INFO press to pick the band.
-  - New EQs start as Low Shelf, Param, Param, High Shelf.
+  - New EQs start as Low Shelf, Param, Param, High Shelf. So does an EQ from an older preset that nobody touched (all bands None, gains 0, frequencies 200/400/600/800) when you open it. An EQ you've edited stays as it is.
 - **FX button:** toggles between DJ FX and the FX Return page. The Return page and the EQ page share a button row along the bottom, like the pad page's Main / Pos / LFO / Conf: **A Delay | B Reverb | EQ |** (empty). The page you're on is lit. On the EQ page the EQ view is 40 px shorter to make room. The send page is no longer in the cycle (sends live on Mix).
 
 ## Custom sequence recording
 
 Records MIDI into a sequence the way Ableton records into a new clip.
 
-- **Rec Len** (Seq settings page, after MIDI Out): Custom, 1/8, 1/4, 1/2, 1 bar, 2, 4, 8, 16, 32 bars. 1/4 is a quarter note (a quarter of a bar), as in the pad record menu.
+- **Rec Len** (the field above UNDO on the Seq screen, set with the top-right knob; also on the Seq settings page after MIDI Out): Custom, 1/8, 1/4, 1/2, 1 bar, 2, 4, 8, 16, 32 bars. 1/4 is a quarter note (a quarter of a bar), as in the pad record menu.
   - A fixed value sets the sequence's length. If that length isn't a whole number of steps at the current step length and the layer is empty, the step length switches to 1/16 first.
   - **Custom** changes what REC does, below.
 - **Custom recording** works when the selected sequence is set to Custom, its current layer is empty, and it isn't playing:
@@ -76,14 +75,14 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 9. Folders and Repitch behave as in 3.1.X.
 10. Pads: no knob does anything. Seq: only the top-right knob (length). Pad INFO / settings lists: one knob still picks the row, the other changes it.
 11. Hold PADS: CUT / COPY / PSTE / CLR replace VEL; tap a pad (selected, silent), tap COPY, tap another pad, PSTE; let go: VEL. Hold SEQS: layers A–D replace OFF/UNDO/CLR; tap a layer, tap a pad (selected, play state unchanged), let go.
-12. Seq: the button above UNDO shows the length; turn the top-right knob right (double) and left (halve), then UNDO.
-13. EQ: drag each dot directly. A new preset's EQ shows Low Shelf / Param / Param / High Shelf.
+12. Seq: the field above UNDO shows Rec Len; turn the top-right knob: Cust → 1/8 → … → 32bar, and the length follows (fixed values).
+13. EQ: drag each dot directly. A new preset's EQ, and an untouched EQ from an older preset, show Low Shelf / Param / Param / High Shelf.
 14. FX: DJ FX → FX again → Return page with A Delay / B Reverb / EQ / (empty) along the bottom; A and B switch the return, EQ opens the EQ page, FX goes back to DJ FX.
 15. Enter Mix with the MIX button: Vol / Decay / Cutoff / Pitch with matching labels. Press and hold MIX again: Pan / Attack / A / B; let go: back. Labels always match the bars.
 16. EQ page: the A Delay / B Reverb / EQ row is along the bottom with EQ lit, the EQ view sits above it, and dots still drag. A and B open that return; FX goes to DJ FX.
 17. Seq settings page: Rec Len after MIDI Out. Tools → Rec: Seq Rec Len after Lead In.
 18. Empty sequence, Rec Len Custom, transport stopped: press REC. You get the lead-in, then the sequence starts at bar 1 and records. Play for 2½ bars, press REC: the loop closes at bar 3 and plays 3 bars back.
-19. Set Rec Len to 2 bars: the length (button above UNDO) shows 2 bar. Save, reload: Rec Len is kept.
+19. Turn Rec Len to 2 bar: the sequence is 2 bars long. Save, reload: Rec Len is kept.
 20. Tools → Rec → Seq Rec Len = Custom. New preset: its sequences show Rec Len Custom. CLR a sequence you never touched: Custom. CLR one you set to 2 bars: still 2 bars.
 
 ## Rebuild and test

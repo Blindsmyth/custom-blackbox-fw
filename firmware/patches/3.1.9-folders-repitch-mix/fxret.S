@@ -208,6 +208,7 @@ s_none: .asciz ""
 .global eq_page_ctor
 .global eq_graph_rect
 .global eq_child_event
+.global eq_fix_defaults
 
 @ bl site 0x0808BF20 (GUI ctor -> EQ page ctor).
 .thumb_func
@@ -246,6 +247,8 @@ eq_graph_rect:
     subs    r2, #EQ_ROW_H
     str     r2, [r1, #12]
     call    EQ_GRAPH_RECT
+    sub     r0, r4, #0x34           @ page
+    bl      eq_fix_defaults
     ldr     r5, =EQ_BTNS
     movs    r6, #0
 1:
@@ -261,6 +264,68 @@ eq_graph_rect:
     cmp     r6, #4
     blo     1b
     pop     {r4, r5, r6, pc}
+
+@ eq_fix_defaults(page): an EQ nobody has touched (all bands None, gain 0, stock
+@ frequencies 200/400/600/800) gets Low Shelf / Param / Param / High Shelf. New EQs get that
+@ from the template patch; this covers presets saved before it.
+.thumb_func
+eq_fix_defaults:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #12
+    movw    r1, #0x1BCC
+    ldrh    r1, [r0, r1]            @ the EQ's key
+    cmp     r1, #0
+    it      eq
+    moveq   r1, #0x320              @ master EQ slot
+    ldr     r2, =REF_TAG
+    str     r2, [sp]
+    strh    r1, [sp, #4]
+    movs    r4, #0                  @ band
+    movw    r5, #0x118              @ band's first id (gain)
+1:
+    ldr     r0, =APP
+    mov     r1, sp
+    adds    r2, r5, #4              @ type
+    bl      sr_getp
+    cbnz    r0, 9f
+    ldr     r0, =APP
+    mov     r1, sp
+    mov     r2, r5                  @ gain
+    bl      sr_getp
+    cbnz    r0, 9f
+    ldr     r0, =APP
+    mov     r1, sp
+    adds    r2, r5, #1              @ freq
+    bl      sr_getp
+    adds    r1, r4, #1
+    movs    r2, #200
+    mul     r1, r1, r2
+    cmp     r0, r1
+    bne     9f
+    adds    r4, #1
+    adds    r5, #5
+    cmp     r4, #4
+    blo     1b
+    movs    r4, #0
+    movw    r5, #0x11C
+2:
+    adr     r3, eq_default_types
+    ldrb    r3, [r3, r4]
+    ldr     r0, =APP
+    mov     r1, sp
+    mov     r2, r5
+    bl      sr_setp
+    adds    r4, #1
+    adds    r5, #5
+    cmp     r4, #4
+    blo     2b
+9:
+    add     sp, #12
+    pop     {r4, r5, r6, r7, pc}
+
+.align 2
+eq_default_types:
+    .byte   2, 3, 3, 4                  @ L Shelf, Param, Param, H Shelf
 
 @ EQ onChildEvent: row taps; A/B open that return, EQ and the empty button do nothing.
 .thumb_func

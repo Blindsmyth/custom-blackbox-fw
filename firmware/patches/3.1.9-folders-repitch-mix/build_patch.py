@@ -83,7 +83,7 @@ BYTES = [
 # Word tables in the cave. Stock code reads some with LDM, which hard-faults on the M7 when
 # unaligned (Unicorn doesn't fault, so the bench can't catch it): keep them 4-byte aligned.
 WORD_TABLES = ["fxr_bar_rect", "fxr_labels", "fader_vt", "rest_values", "layer_main",
-               "layer_held", "ticks_per_beat", "tenths_per_beat", "sr_regs", "sr_len_labels",
+               "layer_held", "ticks_per_beat", "sr_short_labels", "sr_regs", "sr_len_labels",
                "sr_def_labels", "sr_set_labels", "sr_len_ticks", "sr_960"]
 
 

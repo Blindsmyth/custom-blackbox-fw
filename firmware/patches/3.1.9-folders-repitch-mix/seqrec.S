@@ -18,9 +18,7 @@
 @ - Recording off (REC again, or STOP): before stock finalises hanging notes, set 0x86 so the
 @   loop ends on the next Quant Size boundary. The sequence keeps playing and loops there.
 
-.equ SR_LEN,      0x19D
-.equ SR_DEF,      0x19E
-.equ SR_SET,      0x19F
+@ SR_LEN 0x19D / SR_DEF 0x19E / SR_SET 0x19F are defined in mixui.S (used by seqtools.S first).
 .equ GLOBAL_BAG,  0x24028D18            @ App+0x8C90
 .equ APP_SETP,    0x0809FA51            @ App_SetParam(app, ref, id, value, 0)
 .equ REC_PLAY,    0x0804C8B5            @ (engine, 1, 0, 1): transport + record, with lead-in
@@ -52,6 +50,7 @@
 .global seqrec_started
 .global sr_eligible
 .global sr_fixed_len
+.global sr_user_set
 
 @ Jump to an absolute Thumb address without touching any register.
 .macro jmp addr
@@ -388,16 +387,39 @@ seqrec_setparam:
     bne     9f
     ldr     r0, [sp]
     ldr     r1, [sp, #4]
+    ldr     r2, [sp, #12]
+    bl      sr_marked
+9:
+    pop     {r0, r1, r2, r3, r4, pc}
+
+@ sr_user_set(app, ref, value): the user picked a Rec Len (Seq screen knob): store it, mark
+@ the sequence, set the length.
+.thumb_func
+sr_user_set:
+    push    {r0, r1, r2, lr}
+    mov     r3, r2
+    movw    r2, #SR_LEN
+    bl      sr_setp
+    pop     {r0, r1, r2, lr}
+    b       sr_marked
+
+@ sr_marked(app, ref, value): Rec Len was set by the user: mark it, apply a fixed length.
+.thumb_func
+sr_marked:
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    mov     r5, r1
+    mov     r6, r2
     movw    r2, #SR_SET
     movs    r3, #1
     bl      sr_setp
-    ldr     r2, [sp, #12]
-    cbz     r2, 9f                  @ Custom: length unchanged
-    ldr     r0, [sp]
-    ldr     r1, [sp, #4]
+    cbz     r6, 9f                  @ Custom: length unchanged
+    mov     r0, r4
+    mov     r1, r5
+    mov     r2, r6
     bl      sr_fixed_len
 9:
-    pop     {r0, r1, r2, r3, r4, pc}
+    pop     {r4, r5, r6, pc}
 
 @ r0 = app, r1 = ref: an untouched sequence takes the global Rec Len again.
 .thumb_func

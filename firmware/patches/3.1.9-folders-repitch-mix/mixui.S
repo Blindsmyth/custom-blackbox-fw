@@ -39,6 +39,9 @@
 .equ MX_REDRAW,   32                @ 1: labels/values changed, ask for both redraw passes
 .equ MX_WAIT,     36                @ 1: MIX was pressed to enter Mix, ignore it until released
 .equ MX_HOLD_MS,  400
+.equ SR_LEN,      0x19D             @ seqrec.S params, here so seqtools.S can use them
+.equ SR_DEF,      0x19E
+.equ SR_SET,      0x19F
 .equ MX_BLIP_MS,  300
 
 .equ APP,         0x24020088
