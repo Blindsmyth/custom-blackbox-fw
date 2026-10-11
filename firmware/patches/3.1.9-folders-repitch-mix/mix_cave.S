@@ -35,3 +35,8 @@
 .ltorg
 
 .include "seqrec.S"
+
+.align 2
+.ltorg
+
+.include "looper.S"

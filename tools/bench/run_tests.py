@@ -1544,7 +1544,8 @@ def t_seqrec_record(bench, res):
     b = w.b
     res.check(b.call(bench.sym["sr_eligible"], APP_OBJ) == 1, "empty stopped Custom sequence is eligible")
     b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
-    res.check(("recplay", 1, 1) in w.calls, f"REC with the transport stopped starts it recording {w.calls}")
+    res.check(b.u32(MX_STATE + 80) == 1 and not any(c[0] == "recplay" for c in w.calls),
+              f"REC with the transport stopped arms the looper {w.calls}")
     msg = MIX_EV + 0x80
     b.mu.mem_write(msg, b"\0" * 0x20)
     b.w32(msg + 0xC, 1)
@@ -1568,12 +1569,107 @@ def t_seqrec_record(bench, res):
     for kw, why in ((dict(rec_len=4), "1 bar"), (dict(events=3), "not empty"), (dict(playing=1), "transport playing")):
         w = _SeqWorld(bench, **kw)
         w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
-        res.check(not any(c[0] == "recplay" for c in w.calls), f"REC does not start the transport when {why}")
+        res.check(not any(c[0] == "recplay" for c in w.calls) and w.b.u32(MX_STATE + 80) == 0,
+                  f"REC neither arms nor starts the transport when {why}")
     w = _SeqWorld(bench, rec_len=4)
     w.b.mu.mem_write(msg, b"\0" * 0x20)
     w.b.w32(msg + 0xC, 1)
     w.b.call(bench.sym["seqrec_recstate"], APP_OBJ, msg)
     res.check(not w.sets and w.b.u32(MX_STATE + 48) == 0, "a 1-bar sequence records as stock")
+
+
+def t_looper(bench, res):
+    """Looper take: REC arms, the first note starts, REC again sets tempo and starts playback."""
+    b = bench.b
+    qtab = struct.unpack("<16f", b.image[0x080ECC70 - bd.BASE: 0x080ECC70 - bd.BASE + 64])
+    q16 = qtab.index(0.25)
+    w = _knob_world(bench, 16, rec_len=0, dbl=2)               # Loop BPM 80-160
+    w.l0[0x46] = q16
+    w.l0[0xB7] = 1
+    b = w.b
+    leds, ops, ring = [], [], []
+    b.stub(0x080436F8, lambda board: leds.append(board.arg(2)) and None)
+    b.stub(0x08051738, lambda board: ops.append(("msg", board.u8(board.arg(1)), board.u32(board.arg(1) + 8))) and None)
+    b.stub(0x08097C1C, lambda board: ops.append(("bpm", board.u32(board.arg(1) + 0xC))) and None)
+    b.stub(0x08098288, lambda board: ops.append(("launch", board.u16(board.arg(1) + 4))) and None)
+
+    def pop(board):
+        if not ring:
+            return 0
+        typ, note, origin = ring.pop(0)
+        e = bytearray(0x30)
+        e[0] = typ
+        struct.pack_into("<H", e, 2, origin)
+        struct.pack_into("<I", e, 0x10, note)
+        e[0x18] = 1
+        board.mu.mem_write(board.arg(1), bytes(e))
+        return 1
+    b.stub(0x0804C754, pop)
+    buf = MIX_EV + 0x100
+
+    def feed(stamp, *entries):
+        b.w32(SE_OBJ, stamp)
+        ring.extend(entries)
+        while True:
+            r = b.call(bench.sym["looper_pop"], 0, buf)
+            if not r:
+                break
+
+    b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    res.check(b.u32(MX_STATE + 80) == 1 and leds[-1:] == [1], f"REC arms, LED on {leds}")
+    for tick, want in ((0, 0), (256, 1), (512, 0)):
+        b.w32(UWTICK, tick)
+        feed(0)
+        res.check(leds[-1] == want, f"armed LED blinks: uwTick {tick} -> {leds[-1]}")
+    feed(500, (6, 60, 0x101))
+    res.check(b.u32(MX_STATE + 80) == 1 and b.u32(MX_STATE + 88) == 0, "a note-off doesn't start the take")
+    t0 = 1000
+    feed(t0, (5, 60 | 100 << 16, 0x101))
+    res.check(b.u32(MX_STATE + 80) == 2 and b.u32(MX_STATE + 84) == t0 and leds[-1] == 1, "first note-on starts the take, LED on")
+    feed(t0 + 24000, (6, 60, 0x101))                  # 0.5 s
+    feed(t0 + 96960, (5, 64 | 90 << 16, 0x101))       # 2.02 s, held to the end
+    feed(t0 + 100000, (7, 1, 0))                      # sequence playback: ignored
+    res.check(b.u32(MX_STATE + 88) == 3, f"three notes buffered ({b.u32(MX_STATE + 88)})")
+    b.w32(SE_OBJ, t0 + 384000)                        # 8 s take
+    w.sets.clear()
+    b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    got = [(e[1], e[2], e[4], e[0]) for e in w.events]
+    res.check(got == [(0, 960, 60 | 100 << 16, 0x1010001), (3840, 15360 - 3878, 64 | 90 << 16, 0x1010001)],
+              f"notes written quantised to 1/16 at 4 bars (120 BPM in 80-160) {got}")
+    res.check((0x86, 64) in w.sets and w.ops[0] == "snap" and ("push", 1) in w.ops, f"64 steps, undo, push {w.sets} {w.ops}")
+    res.check(ops == [("msg", 0x20, 120000), ("bpm", 120000), ("launch", 0x123), ("msg", 0x73, 0), ("msg", 0x74, 0)],
+              f"tempo 120.000, sequence launched, transport started without lead-in {ops}")
+    res.check(b.u32(MX_STATE + 80) == 0 and leds[-1] == 0, "looper idle, LED off")
+
+    w = _knob_world(bench, 16, rec_len=0, dbl=2)
+    w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    res.check(w.b.u32(MX_STATE + 80) == 0, "REC again before any note disarms")
+    w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    w.b.mu.mem_write(SE_OBJ + 0x38, b"\x01")
+    ring.clear()
+    w.b.call(bench.sym["looper_pop"], 0, buf)
+    res.check(w.b.u32(MX_STATE + 80) == 0, "the transport starting disarms")
+    w = _knob_world(bench, 16, rec_len=0, dbl=0)               # 60-120
+    w.l0[0xB7] = 1
+    ops.clear()
+    w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    w.b.w32(SE_OBJ, 5000)
+    ring.append((5, 60 | 100 << 16, 0x101))
+    w.b.call(bench.sym["looper_pop"], 0, buf)
+    w.b.w32(SE_OBJ, 5000 + 72000)                     # 1.5 s: 1 bar = 160 BPM, too fast for 60-120
+    w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    res.check(ops[:2] == [("msg", 0x20, 160000), ("bpm", 160000)] and (0x86, 16) in w.sets,
+              f"short take, range 60-120: 1 bar at 160 BPM is the closest {ops[:2]} {w.sets}")
+    w = _knob_world(bench, 16, rec_len=0, dbl=2)
+    ops.clear()
+    w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    w.b.w32(SE_OBJ, 5000)
+    ring.append((5, 0, 0x101))
+    w.b.call(bench.sym["looper_pop"], 0, buf)
+    w.b.w32(SE_OBJ, 5000 + 6000)                      # 0.125 s
+    w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    res.check(not ops and not w.events and w.b.u32(MX_STATE + 80) == 0, "a take under 0.25 s is dropped")
 
 
 def t_mix_button(bench, res):
@@ -1687,6 +1783,7 @@ def main():
             ("PADS/SEQS held + pad selects only", t_held_select),
             ("Seq length knob and label", t_seq_length),
             ("Rec Len follows Step Count / Step Len", t_seqrec_sync),
+            ("looper take", t_looper),
             ("untouched EQ gets the default bands", t_eq_untouched_defaults),
             ("SEQS held shows the layer panel", t_seq_panel),
             ("PADS held shows the edit panel", t_pads_panel),

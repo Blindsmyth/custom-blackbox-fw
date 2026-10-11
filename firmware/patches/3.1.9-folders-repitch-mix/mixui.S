@@ -135,6 +135,9 @@ mx_state:
     str     r1, [r0, #68]           @ seqtools MX_SQ_ACC
     str     r1, [r0, #72]           @ seqtools MX_SQ_KEY
     str     r1, [r0, #76]           @ seqtools MX_SQ_HOME
+    str     r1, [r0, #80]           @ looper LP_STATE
+    str     r1, [r0, #84]           @ looper LP_T0
+    str     r1, [r0, #88]           @ looper LP_N
 1:
     pop     {r2}
     bx      lr

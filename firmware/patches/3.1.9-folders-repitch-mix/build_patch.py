@@ -46,6 +46,7 @@ SITES = base.SITES + [
     (0x080A7F20, "sr_labels_hook", True, "e6f7aaf9"),   # settings row build: Param_Labels
     (0x080A1C92, "seqrec_clear_all", True, "f6f7d3fb"),  # clear all layers
     (0x080A2F3C, "seqrec_rec_press", True, "fef7c2fb"),  # REC press
+    (0x080A2936, "looper_pop", True, "a9f70dff"),       # App_Update note-ring pop (looper)
     (0x080A282E, "seqrec_recstate", True, "f8f717fa"),  # recording on/off
     (0x080A2696, "seqrec_started", True, "faf7d3fd"),   # sequence started
 ]
@@ -88,7 +89,7 @@ BYTES = [
 WORD_TABLES = ["fxr_bar_rect", "fxr_labels", "fader_vt", "rest_values", "layer_main",
                "layer_held", "ticks_per_beat", "sr_short_labels", "sr_regs", "sr_len_labels",
                "sr_set_labels", "sr_len_ticks", "sr_960", "sr_bpm_labels",
-               "sr_dbl_labels", "sr_len_ticks_q"]
+               "sr_dbl_labels", "sr_len_ticks_q", "lp_k"]
 
 
 def check_alignment():

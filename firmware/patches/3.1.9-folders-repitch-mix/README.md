@@ -48,11 +48,17 @@ Records MIDI into a sequence the way Ableton records into a new clip.
 - **Rec Len** (the field above UNDO on the Seq screen, set with the top-right knob; also on the Seq settings page after MIDI Out): Custom, 1/8, 1/4, 1/2, 1 bar, 2, 4, 8, 16, 32 bars, and the sequence's own length when it's none of these ("15/16"). 1/4 is a quarter note (a quarter of a bar), as in the pad record menu.
   - A fixed value sets the sequence's length. If that length isn't a whole number of steps at the current step length and the layer is empty, the step length switches to 1/16 first.
   - **Custom** changes what REC does, below.
-- **Custom recording** works when the selected sequence is set to Custom, its current layer is empty, and it isn't playing:
-  1. **REC** starts recording. If the transport is stopped, REC starts it, with the Lead In from Tools → Rec. The sequence starts playing on its next **Quant Size** boundary (Seq settings, usually 1 bar) and records with no length limit.
+- **Looper take (transport stopped).** Like a Boss loop pedal. It works when the selected sequence is set to Custom, its current layer is empty, and it isn't playing:
+  1. **REC** arms: the REC LED blinks. Nothing runs yet.
+  2. **Play.** The first note (pad or MIDI) starts the take and the LED stays on. Play freely, no click.
+  3. **REC again** ends the take. The Blackbox picks 1, 2, 4, 8 or 16 bars so the tempo lands in **Tools → Rec → Loop BPM** (60–120, 70–140, 80–160, 90–180, 100–200; default 80–160), sets that tempo, writes your notes quantised (whole steps in step mode, otherwise the Quant Size grid), and starts the transport with the sequence playing from bar 1. One UNDO removes the take.
+  - REC before the first note cancels; pressing PLAY while armed cancels too. Takes under 0.25 s are ignored.
+  - Example: 8 s of playing with 80–160 → 4 bars at 120 BPM. A take that is too short for the range uses 1 bar at its natural tempo (capped 40–250 BPM).
+- **Custom recording (transport running)** works on the same kind of sequence:
+  1. **REC** starts recording. The sequence starts playing on its next **Quant Size** boundary (Seq settings, usually 1 bar) and records with no length limit.
   2. **REC again** stops recording, and the loop closes on the next Quant Size boundary. The sequence keeps playing that length. STOP closes it the same way.
   3. A Custom recording can grow to 512 steps (32 bars at 1/16). Past that it loops and overdubs.
-- **Tools → Rec → Loop BPM** (60–120 … 100–200, default 80–160): tempo range for looper takes (next update).
+- **Tools → Rec → Loop BPM** (60–120 … 100–200, default 80–160): tempo range for looper takes.
 - **Tools → Rec → Seq Default** (Custom, 1/8 … 32 bars; default 1 bar) is the Rec Len a sequence gets when it is created, loaded without a Rec Len of its own, or cleared.
   - **CLR always resets** the sequence to Seq Default (Rec Len and length), whether you changed it or not and whether it had notes or not.
 - **Step Count** now goes up to 512 (was 256).
@@ -86,7 +92,8 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 15. Enter Mix with the MIX button: Vol / Decay / Cutoff / Pitch with matching labels. Press and hold MIX again: Pan / Attack / A / B; let go: back. Labels always match the bars.
 16. EQ page: the A Delay / B Reverb / EQ row is along the bottom with EQ lit, the EQ view sits above it, and dots still drag. A and B open that return; FX goes to DJ FX.
 17. Seq settings page: set Step Count to 15: Rec Len shows 15/16; Step Len 1/32: Rec Len shows 15/32; Step Count 16 with Step Len 1/16: Rec Len shows 1 bar. Rec Len after MIDI Out. Tools → Rec: Seq Default, Loop BPM, Dbl Copy after Lead In.
-18. Empty sequence, Rec Len Custom, transport stopped: press REC. You get the lead-in, then the sequence starts at bar 1 and records. Play for 2½ bars, press REC: the loop closes at bar 3 and plays 3 bars back.
+18. Looper: empty sequence, Rec Len Custom, transport stopped: press REC. The REC LED blinks. Play a few notes (pads or MIDI) for about 8 seconds, press REC. The LED was steady during the take; now the tempo changes (about 120 with Loop BPM 80–160), the transport starts at once with no lead-in, and the take plays back as a 4-bar loop with notes on the grid. UNDO removes it. Try Loop BPM 60–120 with the same take: 2 bars at about 60 BPM. Arm and press REC again before playing: it cancels.
+18b. Transport running, empty Custom sequence: press REC, play 2½ bars, press REC: the loop closes at bar 3 and plays 3 bars back (as before).
 19. Turn Rec Len to 2 bar: the sequence is 2 bars long. Save, reload: Rec Len is kept.
 20. Tools → Rec → Seq Default = 2 bar. New preset: its sequences are 2 bars. Turn one to 8 bar, CLR: back to 2 bar. CLR an empty sequence set to 4 bar: 2 bar. Seq Default = Custom: CLR gives an empty Custom sequence (shows Cust).
 
@@ -103,6 +110,6 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 - widget vtable words: Mix tick/onChildEvent/onEvent, Pads and Seq onChildEvent/onEvent, EQ graph touchDown, FX Return onChildEvent/onEvent;
 - four EQ default band-type bytes.
 
-Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording).
+Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording), `looper.S` (looper takes; wraps the note-ring pop `bl` at `0x080A2936`).
 
 The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with draw, touchDown, touchMove and touchUp wrapped for the centre detent and the blip, so faders on other screens are untouched.

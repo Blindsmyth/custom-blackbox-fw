@@ -22,6 +22,8 @@ Planned features for the `mix-overhaul` line (3.1.Q and later). Addresses are st
 - The Seq screen's field above UNDO is Rec Len (top-right knob), replacing double/halve. Untouched EQs from older presets get the default bands.
 - Custom (free-length) sequence recording: Rec Len per sequence, Seq Default in Tools → Rec (renamed from Seq Rec Len; CLR always resets to it), REC launches on the next Quant Size boundary and closes the loop on the next one.
 - The EQ page shares the FX selector row.
+- Seq length knob at Step Len speed: Custom, 1/8 … 32 bars, polymetric ×2/÷2 that returns to the user's step, Dbl Copy, 15/16-style labels; Rec Len follows Step Count / Step Len; Seq Default (any Rec Len) and CLR always resets to it.
+- **Looper takes (Boss style):** transport stopped + empty Custom sequence: REC arms (LED blinks), first note starts, REC again picks 1–16 bars for the Tools → Rec → Loop BPM range, sets the tempo, writes the notes quantised and starts playback at once. Open: stamps are taken when the UI pops the ring (block + UI-loop jitter); block-accurate stamps would need the engine stub at `0x0805C936` / `0x0805CA8C` (entry +0x20).
 - Fix: FX → Return crashed on the device: the bottom-bar rect sat at a 2-byte-aligned address and stock setRect reads it with LDM, which hard-faults on the M7 (Unicorn executes it). build_patch.py now checks word-table alignment.
 
 ## Next, in order
@@ -72,15 +74,6 @@ Encoders no longer select pads or sequences, and no longer switch pages on the P
 - Risks: jitter, and the 64-deep pad queue (`FUN_0804F504`). L.
 
 ## Later
-
-### Loop-based sequence recording (Boss-looper style)
-
-The next step after Custom recording (done in 3.1.Q):
-- REC arms: the REC LED blinks and the sequence waits for MIDI.
-- The first note starts the recording into a buffer.
-- REC again ends it. The tempo is derived from the recorded length, as audio loopers do.
-- The sequence pad is filled with the notes, quantised by its settings.
-- Building blocks from Custom recording: the REC hooks (`seqrec.S`), sequence length via `0x86`, note capture in `FUN_080A02CE`. New pieces: the armed state with the LED blink (`FUN_080436F8` LED index 8), and setting tempo `0x84` from the length.
 
 ### Song mode: Play Count "Loop"
 

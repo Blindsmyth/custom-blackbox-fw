@@ -16,7 +16,8 @@
 @ 0x19D/0x19F to that set.
 @
 @ Custom recording (UI task). Eligible = Rec Len Custom, active layer empty, sequence stopped.
-@ - REC with the transport stopped: start it recording (stock REC+PLAY, with the lead-in).
+@ - REC with the transport stopped: looper-style take (looper.S): arm, first note, REC again
+@   sets the tempo from the take and starts playback.
 @ - Recording on (App_Update 0x66 -> FUN_0809AC60): stock launches the sequence on its next
 @   Quant Size (0x46) boundary. We set 0x86 to 512 so nothing wraps and note the start.
 @   The real start tick comes from the sequence-started message (0x4E -> FUN_0809D240).
@@ -616,7 +617,8 @@ seqrec_clear_all:
 .ltorg
 
 @ bl site 0x080A2F3C: REC press in App_HandleInput (was FUN_080A16C4(app, 0)). With the
-@ transport stopped and an eligible sequence, start transport + recording (lead-in).
+@ transport stopped, REC drives the looper (arm / cancel / finish, looper.S); with it
+@ running, stock REC toggles recording and Custom closes on the Quant Size grid.
 .thumb_func
 seqrec_rec_press:
     push    {r4, lr}
@@ -626,14 +628,8 @@ seqrec_rec_press:
     ldr     r1, [r1]                @ sequencer engine
     ldrb    r1, [r1, #0x38]         @ playing
     cbnz    r1, 9f
-    mov     r0, r4
-    bl      sr_eligible
-    cbz     r0, 9f
-    ldr     r0, =ENGINE
-    movs    r1, #1
-    movs    r2, #0
-    movs    r3, #1
-    call    REC_PLAY
+    mov     r0, r4                  @ stopped: looper-style take (looper.S)
+    bl      looper_rec
 9:
     pop     {r4, pc}
 
