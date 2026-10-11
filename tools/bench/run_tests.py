@@ -1118,6 +1118,9 @@ def t_seq_length(bench, res):
     res.check(lens(w)[-2:] == [(0x85, 12), (0x85, 10)] and w.labels[-1] == "15/16", f"x2 goes back to the user's 1/16 first {w.sets} {w.labels}")
     turn(w, 400)
     res.check(lens(w)[-1] == (0x86, 30), f"then doubles the count: 30/16 {w.sets}")
+    w = _knob_world(bench, 15, step_idx=14, rec_len=10, events=[(1, 0, 240, 1, 60, 0)])
+    turn(w, -400)
+    res.check(w.sets == [(SR_LEN, 0), (SR_SET, 1)], f"15/64 down: nothing shorter, so Custom {w.sets}")
     w = _knob_world(bench, 8, rec_len=10, events=[(1, 0, 240, 1, 60, 0)])
     turn(w, 400)
     res.check(w.sets == [(0x86, 16), (SR_LEN, 4), (SR_SET, 1)], f"8/16 counts as the 1/2 preset: x2 -> 1 bar {w.sets}")
@@ -1566,7 +1569,7 @@ def t_seqrec_record(bench, res):
     res.check(w.sets == [(0x86, 48)], f"REC again: loop closes at the next bar (3 bars = 48 steps) {w.sets}")
     res.check(w.calls and w.calls[0][0] == "ac60" and w.calls[0][2] == [(0x86, 48)], "length set before stock finalises notes")
     res.check(b.u32(MX_STATE + 48) == 0, "custom recording done")
-    for kw, why in ((dict(rec_len=4), "1 bar"), (dict(events=3), "not empty"), (dict(playing=1), "transport playing")):
+    for kw, why in ((dict(events=3), "not empty"), (dict(playing=1), "transport playing")):
         w = _SeqWorld(bench, **kw)
         w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
         res.check(not any(c[0] == "recplay" for c in w.calls) and w.b.u32(MX_STATE + 80) == 0,
@@ -1589,7 +1592,13 @@ def t_looper(bench, res):
     b = w.b
     leds, ops, ring = [], [], []
     b.stub(0x080436F8, lambda board: leds.append(board.arg(2)) and None)
-    b.stub(0x08051738, lambda board: ops.append(("msg", board.u8(board.arg(1)), board.u32(board.arg(1) + 8))) and None)
+    def post(board):
+        m = board.arg(1)
+        if board.u8(m) == 0x39:
+            ops.append(("param", board.u32(m + 8), board.u32(m + 12), board.u32(m + 16)))
+        else:
+            ops.append(("msg", board.u8(m), board.u32(m + 8)))
+    b.stub(0x08051738, post)
     b.stub(0x08097C1C, lambda board: ops.append(("bpm", board.u32(board.arg(1) + 0xC))) and None)
     b.stub(0x08098288, lambda board: ops.append(("launch", board.u16(board.arg(1) + 4))) and None)
 
@@ -1617,6 +1626,8 @@ def t_looper(bench, res):
 
     b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
     res.check(b.u32(MX_STATE + 80) == 1 and leds[-1:] == [1], f"REC arms, LED on {leds}")
+    res.check(ops == [("param", 0x010203, 0x6E, 1)], f"arming makes the sequence the engine's record target {ops}")
+    ops.clear()
     for tick, want in ((0, 0), (256, 1), (512, 0)):
         b.w32(UWTICK, tick)
         feed(0)
@@ -1637,7 +1648,8 @@ def t_looper(bench, res):
     res.check(got == [(0, 960, 60 | 100 << 16, 0x1010001), (3840, 15360 - 3878, 64 | 90 << 16, 0x1010001)],
               f"notes written quantised to 1/16 at 4 bars (120 BPM in 80-160) {got}")
     res.check((0x86, 64) in w.sets and w.ops[0] == "snap" and ("push", 1) in w.ops, f"64 steps, undo, push {w.sets} {w.ops}")
-    res.check(ops == [("msg", 0x20, 120000), ("bpm", 120000), ("launch", 0x123), ("msg", 0x73, 0), ("msg", 0x74, 0)],
+    res.check(ops == [("param", 0x010203, 0x6E, 0), ("msg", 0x20, 120000), ("bpm", 120000), ("launch", 0x123),
+                      ("msg", 0x73, 0), ("msg", 0x74, 0)],
               f"tempo 120.000, sequence launched, transport started without lead-in {ops}")
     res.check(b.u32(MX_STATE + 80) == 0 and leds[-1] == 0, "looper idle, LED off")
 
@@ -1659,8 +1671,9 @@ def t_looper(bench, res):
     w.b.call(bench.sym["looper_pop"], 0, buf)
     w.b.w32(SE_OBJ, 5000 + 72000)                     # 1.5 s: 1 bar = 160 BPM, too fast for 60-120
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
-    res.check(ops[:2] == [("msg", 0x20, 160000), ("bpm", 160000)] and (0x86, 16) in w.sets,
-              f"short take, range 60-120: 1 bar at 160 BPM is the closest {ops[:2]} {w.sets}")
+    ops2 = [o for o in ops if o[0] != "param"]
+    res.check(ops2[:2] == [("msg", 0x20, 160000), ("bpm", 160000)] and (0x86, 16) in w.sets,
+              f"short take, range 60-120: 1 bar at 160 BPM is the closest {ops2[:2]} {w.sets}")
     w = _knob_world(bench, 16, rec_len=0, dbl=2)
     ops.clear()
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
@@ -1669,7 +1682,11 @@ def t_looper(bench, res):
     w.b.call(bench.sym["looper_pop"], 0, buf)
     w.b.w32(SE_OBJ, 5000 + 6000)                      # 0.125 s
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
-    res.check(not ops and not w.events and w.b.u32(MX_STATE + 80) == 0, "a take under 0.25 s is dropped")
+    res.check(all(o[0] == "param" for o in ops) and not w.events and w.b.u32(MX_STATE + 80) == 0
+              and ops[-1] == ("param", 0x010203, 0x6E, 0), f"a take under 0.25 s is dropped, target cleared {ops}")
+    w = _knob_world(bench, 16, rec_len=4, dbl=2)               # empty, Rec Len 1 bar
+    w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    res.check(w.b.u32(MX_STATE + 80) == 1, "any empty stopped sequence arms, whatever its Rec Len")
 
 
 def t_mix_button(bench, res):

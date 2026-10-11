@@ -1,7 +1,12 @@
 @ Looper-style sequence recording (Boss RC style). docs/firmware/README.md "Sequencer".
 @
-@ With the transport stopped and the selected sequence eligible for Custom recording (Rec Len
-@ Custom, current layer empty, not playing), REC arms instead of starting a bar-synced take:
+@ With the transport stopped and the selected sequence's current layer empty and not playing
+@ (any Rec Len), REC arms:
+@ - The engine only copies played notes into the note ring for a sequence whose player has
+@   +0x51 set (player param 0x6E, "record target"; FUN_0805C810 also needs +0x5F, set once
+@   DispMode 0xB7 arrives). The engine sets it itself only when recording starts with the
+@   transport running (0x08050724), so arming sends msg 0x39 {engine key, 0x6E, 1} for the
+@   selected sequence and finishing / cancelling sends 0x6E = 0.
 @ - Armed: the REC LED blinks. The first note-on (pad or MIDI) starts the take; REC again
 @   before that disarms. PLAY (transport running) disarms too.
 @ - Taking: the LED is on. Every note-on/off is buffered with the 48 kHz sample counter
@@ -84,7 +89,55 @@ lp_disarm:
     str     r1, [r0, #LP_STATE]
     movs    r0, #0
     bl      lp_led
+    movs    r0, #0
+    bl      lp_target
     pop     {r3, pc}
+
+@ lp_target(on): player param 0x6E of the selected sequence (App+0x1C) = on. Message 0x39:
+@ +8 engine key (kind << 16 | row << 8 | col), +0xC id, +0x10 value.
+.thumb_func
+lp_target:
+    push    {r4, lr}
+    sub     sp, #24
+    mov     r4, r0
+    movs    r0, #0
+    str     r0, [sp]
+    str     r0, [sp, #4]
+    str     r0, [sp, #20]
+    movs    r0, #0x39
+    strb    r0, [sp]
+    ldr     r0, =APP + 0x1C
+    ldrh    r0, [r0]                @ UI key: col | row << 4 | kind << 8
+    and     r1, r0, #0xF
+    ubfx    r2, r0, #4, #4
+    orr     r1, r1, r2, lsl #8
+    ubfx    r2, r0, #8, #5
+    orr     r1, r1, r2, lsl #16
+    str     r1, [sp, #8]
+    movs    r0, #0x6E
+    str     r0, [sp, #12]
+    str     r4, [sp, #16]
+    bl      lp_se
+    mov     r1, sp
+    call    ENG_POST
+    add     sp, #24
+    pop     {r4, pc}
+
+@ r0 = app. 1 if the selected sequence's current layer is empty and it isn't playing.
+.thumb_func
+lp_eligible:
+    push    {r4, lr}
+    add.w   r1, r0, #0x18
+    bl      sr_layers
+    ldr     r4, [r0, #0x1C]         @ events
+    mov     r0, r1
+    movs    r1, #0xBE               @ play flag
+    call    P_GET
+    orrs    r0, r4
+    ite     eq
+    moveq   r0, #1
+    movne   r0, #0
+    pop     {r4, pc}
 
 @ r0 = app. REC with the transport stopped: arm / cancel / finish. Returns r0 = 1 if handled.
 .thumb_func
@@ -99,7 +152,7 @@ looper_rec:
     cmp     r1, #2
     beq     2f
     mov     r0, r4                  @ idle: arm if eligible
-    bl      sr_eligible
+    bl      lp_eligible
     cbz     r0, 9f
     movs    r0, #1
     str     r0, [r5, #LP_STATE]
@@ -107,6 +160,8 @@ looper_rec:
     str     r0, [r5, #LP_N]
     movs    r0, #1
     bl      lp_led
+    movs    r0, #1                  @ let the engine stream this sequence's notes
+    bl      lp_target
     b       8f
 1:
     bl      lp_disarm               @ armed, no note yet: REC again cancels
@@ -243,7 +298,7 @@ lp_finish:
     cmp     r5, r0
     blo.w   99f
     mov     r0, r4
-    bl      sr_eligible
+    bl      lp_eligible
     cmp     r0, #0
     beq.w   99f
 

@@ -9,6 +9,7 @@
 @     (as stock Double: scratch copy, re-add at +old length, push the layer, undo snapshot);
 @   * halving never deletes notes. The list is Custom, 1/8 .. 32 bars: an empty Custom
 @     sequence steps up to 1/8, 1/8 steps down to Custom (length unchanged);
+@   * a polymetric length halves down to the shortest step, then the next step is Custom;
 @   * a /2 that shortened the step remembers the original step (MX_SQ_HOME); x2 lengthens
 @     the step back to it before doubling the count (15/16 -> 15/32 -> 15/16 -> 30/16).
 @ - The unlabelled button above UNDO (Seq+0x3F70) shows the length: a preset name ("2 bar"),
@@ -328,6 +329,18 @@ sq_step:
     bl      sq_double
     b       7f
 6:
+    tst     r7, #1                  @ /2 possible: an even count, or a shorter step left
+    bne     61f
+    cmp     r7, #2
+    bhs     62f
+61:
+    adr     r0, sq_half_idx
+    ldrb    r0, [r0, r8]
+    cmp     r0, #0xFF
+    bne     62f
+    movs    r3, #0                  @ the bottom: Custom, length unchanged
+    b       3b
+62:
     bl      sq_halve
 7:
     ldr     r0, =APP                @ Rec Len follows (a preset again, or own length)

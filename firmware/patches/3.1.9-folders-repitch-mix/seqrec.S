@@ -16,8 +16,8 @@
 @ 0x19D/0x19F to that set.
 @
 @ Custom recording (UI task). Eligible = Rec Len Custom, active layer empty, sequence stopped.
-@ - REC with the transport stopped: looper-style take (looper.S): arm, first note, REC again
-@   sets the tempo from the take and starts playback.
+@ - REC with the transport stopped: looper-style take (looper.S) on any empty stopped
+@   sequence: arm, first note, REC again sets the tempo from the take and starts playback.
 @ - Recording on (App_Update 0x66 -> FUN_0809AC60): stock launches the sequence on its next
 @   Quant Size (0x46) boundary. We set 0x86 to 512 so nothing wraps and note the start.
 @   The real start tick comes from the sequence-started message (0x4E -> FUN_0809D240).
