@@ -34,6 +34,7 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
   - Going back up after that returns to your step length first: 15/64 → 15/32 → 15/16, then 30/16. Selecting another sequence forgets it.
   - **Dbl Copy** (Tools → Rec, default On): doubling copies the notes into the new half, like stock Double (one UNDO step). Off: it only lengthens.
   - Shortening never deletes notes; they come back when you lengthen again.
+  - **Rec Len follows Step Count / Step Len.** Edit either on the settings page and Rec Len switches to the matching length (32 steps of 1/16 = 2 bar), or, for any other length, to an extra last entry that shows the length itself ("15/16", "15/32"). Custom stays the free-length recording mode.
   - The field above UNDO / CLR / OFF shows the length: the Rec Len name ("2 bar", "1/8"), otherwise steps/denominator ("15/16", "63/16"), "Nst" for triplet or bar-length steps or when that doesn't fit ("100st"), and "Cust" for an empty Custom sequence.
 - **EQ:**
   - Touch a band's dot and drag it straight away; no INFO press to pick the band.
@@ -44,7 +45,7 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 
 Records MIDI into a sequence the way Ableton records into a new clip.
 
-- **Rec Len** (the field above UNDO on the Seq screen, set with the top-right knob; also on the Seq settings page after MIDI Out): Custom, 1/8, 1/4, 1/2, 1 bar, 2, 4, 8, 16, 32 bars. 1/4 is a quarter note (a quarter of a bar), as in the pad record menu.
+- **Rec Len** (the field above UNDO on the Seq screen, set with the top-right knob; also on the Seq settings page after MIDI Out): Custom, 1/8, 1/4, 1/2, 1 bar, 2, 4, 8, 16, 32 bars, and the sequence's own length when it's none of these ("15/16"). 1/4 is a quarter note (a quarter of a bar), as in the pad record menu.
   - A fixed value sets the sequence's length. If that length isn't a whole number of steps at the current step length and the layer is empty, the step length switches to 1/16 first.
   - **Custom** changes what REC does, below.
 - **Custom recording** works when the selected sequence is set to Custom, its current layer is empty, and it isn't playing:
@@ -84,7 +85,7 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 14. FX: DJ FX → FX again → Return page with A Delay / B Reverb / EQ / (empty) along the bottom; A and B switch the return, EQ opens the EQ page, FX goes back to DJ FX.
 15. Enter Mix with the MIX button: Vol / Decay / Cutoff / Pitch with matching labels. Press and hold MIX again: Pan / Attack / A / B; let go: back. Labels always match the bars.
 16. EQ page: the A Delay / B Reverb / EQ row is along the bottom with EQ lit, the EQ view sits above it, and dots still drag. A and B open that return; FX goes to DJ FX.
-17. Seq settings page: Rec Len after MIDI Out. Tools → Rec: Seq Default, Loop BPM, Dbl Copy after Lead In.
+17. Seq settings page: set Step Count to 15: Rec Len shows 15/16; Step Len 1/32: Rec Len shows 15/32; Step Count 16 with Step Len 1/16: Rec Len shows 1 bar. Rec Len after MIDI Out. Tools → Rec: Seq Default, Loop BPM, Dbl Copy after Lead In.
 18. Empty sequence, Rec Len Custom, transport stopped: press REC. You get the lead-in, then the sequence starts at bar 1 and records. Play for 2½ bars, press REC: the loop closes at bar 3 and plays 3 bars back.
 19. Turn Rec Len to 2 bar: the sequence is 2 bars long. Save, reload: Rec Len is kept.
 20. Tools → Rec → Seq Default = 2 bar. New preset: its sequences are 2 bars. Turn one to 8 bar, CLR: back to 2 bar. CLR an empty sequence set to 4 bar: 2 bar. Seq Default = Custom: CLR gives an empty Custom sequence (shows Cust).

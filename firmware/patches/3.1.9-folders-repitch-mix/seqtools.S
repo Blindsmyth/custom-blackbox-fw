@@ -326,9 +326,14 @@ sq_step:
     cmp     r5, #0                  @ polymetric: x2 / /2
     blt     6f
     bl      sq_double
-    b       9f
+    b       7f
 6:
     bl      sq_halve
+7:
+    ldr     r0, =APP                @ Rec Len follows (a preset again, or own length)
+    mov     r1, r4
+    movs    r2, #0
+    bl      sr_sync
 9:
     add     sp, #12
     pop     {r4, r5, r6, r7, r8, r9, r10, r11, pc}

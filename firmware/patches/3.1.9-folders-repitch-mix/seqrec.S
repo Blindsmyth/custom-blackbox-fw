@@ -1,7 +1,10 @@
 @ Custom (free-length) sequence recording, Ableton-clip style. docs/map-319.md "Sequence recording".
 @
 @ Params (registered by chaining the 0x2D enum registration at 0x0808C420):
-@   0x19D "Rec Len:"     per sequence, layer 0: Custom, 1/8, 1/4, 1/2, 1 bar ... 32 bars.
+@   0x19D "Rec Len:"     per sequence, layer 0: Custom, 1/8, 1/4, 1/2, 1 bar ... 32 bars, and
+@                        10 = the sequence's own length, labelled from RAM ("15/16"). Editing
+@                        Step Count / Step Len syncs it (sr_sync): a preset length -> that
+@                        preset, anything else -> 10. Custom stays free-length recording.
 @                        A fixed value sets the sequence length (0x86, and 0x85 = 1/16 when
 @                        the length isn't a whole number of steps and the layer is empty).
 @   0x19E "Seq Default:" global (Tools -> Rec): any Rec Len value, default 1 bar. New, loaded
@@ -38,6 +41,9 @@
 .equ SR_START,    56                    @ start tick (low word, signed)
 .equ SR_QUANT,    60                    @ quant ticks
 .equ SR_STARTSET, 64                    @ 1 once the sequence-started message gave the start
+.equ SR_TXT,      0x38005700            @ SRAM4, 16 bytes: label of Rec Len 10
+.equ SR_UNEVEN,   10                    @ Rec Len value: a length that is no preset
+.equ LABELS_GET,  0x0808E279            @ Param_Labels(id)
 
 .global seqrec_register
 .global seqrec_global_tpl
@@ -53,6 +59,8 @@
 .global sr_eligible
 .global sr_fixed_len
 .global sr_user_set
+.global sr_labels_hook
+.global sr_sync
 
 @ Jump to an absolute Thumb address without touching any register.
 .macro jmp addr
@@ -74,6 +82,9 @@ seqrec_register:
     str     r4, [sp]
     str     r5, [sp, #4]
     call    PARAM_ENUM
+    ldr     r0, =SR_TXT             @ Rec Len 10's label, filled when a page shows it
+    ldr     r1, =0x002D2D2D         @ "---"
+    str     r1, [r0]
     adr     r6, sr_regs
 1:
     ldr     r1, [r6]
@@ -94,14 +105,15 @@ seqrec_register:
 
 .align 2
 sr_regs:
-    .word   SR_LEN, s_sr_len, sr_len_labels, 10, x_sr_len
+    .word   SR_LEN, s_sr_len, sr_len_labels, 11, x_sr_len
     .word   SR_DEF, s_sr_def, sr_len_labels, 10, x_sr_def
     .word   SR_SET, s_sr_set, sr_set_labels, 2, x_sr_set
     .word   SR_BPM, s_sr_bpm, sr_bpm_labels, 5, x_sr_bpm
     .word   SR_DBL, s_sr_dbl, sr_dbl_labels, 2, x_sr_dbl
     .word   0
-sr_len_labels:
+sr_len_labels:                          @ Seq Default uses the first ten
     .word   s_custom, s_1_8, s_1_4, s_1_2, s_1bar, s_2bars, s_4bars, s_8bars, s_16bars, s_32bars
+    .word   SR_TXT                      @ 10: the sequence's own length ("15/16"), RAM
 sr_set_labels:
     .word   s_no, s_yes
 sr_bpm_labels:
@@ -389,21 +401,136 @@ seqrec_setparam:
     ldr     r3, [sp, #20]
     call    APP_SETP
     add     sp, #8
-    ldr     r2, [sp, #8]
-    movw    r3, #SR_LEN
-    cmp     r2, r3
-    bne     9f
     ldr     r1, [sp, #4]
     ldrh    r1, [r1, #4]
     ubfx    r1, r1, #8, #5
     cmp     r1, #1                  @ a sequence
     bne     9f
+    ldr     r2, [sp, #8]
+    cmp     r2, #0x85               @ Step Len / Step Count: Rec Len follows the length
+    beq     5f
+    cmp     r2, #0x86
+    beq     5f
+    movw    r3, #SR_LEN
+    cmp     r2, r3
+    bne     9f
     ldr     r0, [sp]
     ldr     r1, [sp, #4]
     ldr     r2, [sp, #12]
     bl      sr_marked
+    b       9f
+5:
+    ldr     r0, [sp]
+    ldr     r1, [sp, #4]
+    movs    r2, #1
+    bl      sr_sync
 9:
     pop     {r0, r1, r2, r3, r4, pc}
+
+@ sr_sync(app, ref, post): Rec Len follows the length after a Step Count / Step Len edit or
+@ a polymetric knob step: a preset length -> that preset, any other -> 10 (own length). An
+@ empty Custom sequence with a preset length stays Custom. Refreshes the label of 10 and,
+@ with post, the settings page (0x66 rebuilds its rows, which re-copy their labels).
+.thumb_func
+sr_sync:
+    push    {r4, r5, r6, r7, r8, lr}
+    sub     sp, #24
+    mov     r4, r1
+    mov     r8, r2
+    mov     r0, r4
+    bl      sq_len
+    mov     r5, r0                  @ active layer
+    mul     r0, r1, r3
+    bl      sq_preset_of
+    mov     r6, r0                  @ preset or 0
+    ldr     r0, =APP
+    mov     r1, r4
+    movw    r2, #SR_LEN
+    bl      sr_getp
+    mov     r7, r0                  @ current Rec Len
+    cbnz    r7, 1f
+    ldr     r0, [r5, #0x1C]
+    cbnz    r0, 1f
+    cbnz    r6, 8f                  @ empty Custom at a preset length: still Custom
+1:
+    movs    r3, r6
+    it      eq
+    moveq   r3, #SR_UNEVEN
+    cmp     r3, r7
+    beq     8f
+    ldr     r0, =APP
+    mov     r1, r4
+    movw    r2, #SR_LEN
+    bl      sr_setp
+8:
+    mov     r0, r4
+    bl      sr_len_text
+    cmp     r8, #0
+    beq     9f
+    movs    r0, #0x66
+    strh    r0, [sp]
+    ldr     r0, =EV_TAG
+    str     r0, [sp, #4]
+    ldrh    r0, [r4, #4]
+    strh    r0, [sp, #8]
+    movs    r0, #1
+    str     r0, [sp, #12]
+    movs    r0, #0
+    str     r0, [sp, #16]
+    str     r0, [sp, #20]
+    ldr     r0, =APP + 0x30
+    mov     r1, sp
+    call    UI_POST
+9:
+    add     sp, #24
+    pop     {r4, r5, r6, r7, r8, pc}
+
+@ sr_len_text(ref): SR_TXT = the sequence's length as count/denominator ("15/16"), or
+@ "Nst" for triplet / bar steps and when longer than six characters.
+.thumb_func
+sr_len_text:
+    push    {r4, lr}
+    sub     sp, #16
+    bl      sq_len
+    mov     r4, r1                  @ count
+    adr     r0, sq_den
+    ldrb    r0, [r0, r2]
+    cbz     r0, 1f
+    str     r0, [sp]
+    ldr     r0, =SR_TXT
+    movs    r1, #16
+    adr     r2, fmt_frac_len
+    mov     r3, r4
+    call    SNPRINTF
+    cmp     r0, #6
+    ble     9f
+1:
+    ldr     r0, =SR_TXT
+    movs    r1, #16
+    adr     r2, fmt_steps
+    mov     r3, r4
+    call    SNPRINTF
+9:
+    add     sp, #16
+    pop     {r4, pc}
+
+@ bl site 0x080A7F20 (settings row build): Param_Labels(id). For Rec Len, fill the label
+@ of value 10 for the selected sequence (App+0x18) first.
+.thumb_func
+sr_labels_hook:
+    push    {r0, lr}
+    movw    r1, #SR_LEN
+    cmp     r0, r1
+    bne     1f
+    ldr     r0, =APP + 0x18
+    ldrh    r1, [r0, #4]
+    ubfx    r1, r1, #8, #5
+    cmp     r1, #1                  @ only when a sequence is selected
+    bne     1f
+    bl      sr_len_text
+1:
+    pop     {r0, lr}
+    jmp     LABELS_GET
 
 @ sr_user_set(app, ref, value): the user picked a Rec Len (Seq screen knob): store it, mark
 @ the sequence, set the length.
@@ -427,6 +554,8 @@ sr_marked:
     movs    r3, #1
     bl      sr_setp
     cbz     r6, 9f                  @ Custom: length unchanged
+    cmp     r6, #SR_UNEVEN
+    bhs     9f                      @ own length: unchanged
     mov     r0, r4
     mov     r1, r5
     mov     r2, r6

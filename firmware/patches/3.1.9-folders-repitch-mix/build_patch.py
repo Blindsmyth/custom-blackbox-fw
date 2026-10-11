@@ -43,6 +43,7 @@ SITES = base.SITES + [
     (0x08099672, "seqrec_get_layer", False, "092be8d8"),  # App_GetParam layer-0 ids
     (0x080A1BE6, "seqrec_setparam", True, "fdf733ff"),  # App_HandleUiEvent 0x6E -> App_SetParam
     (0x080A1C8A, "seqrec_clear", True, "fdf7c9fd"),     # CLR
+    (0x080A7F20, "sr_labels_hook", True, "e6f7aaf9"),   # settings row build: Param_Labels
     (0x080A1C92, "seqrec_clear_all", True, "f6f7d3fb"),  # clear all layers
     (0x080A2F3C, "seqrec_rec_press", True, "fef7c2fb"),  # REC press
     (0x080A282E, "seqrec_recstate", True, "f8f717fa"),  # recording on/off

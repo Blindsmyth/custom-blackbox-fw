@@ -1100,25 +1100,30 @@ def t_seq_length(bench, res):
     turn(w, 400)
     res.check(w.sets == [(SR_LEN, 1), (SR_SET, 1)], f"empty Custom up: 1/8 {w.sets}")
 
+    lens = lambda w: [x for x in w.sets if x[0] in (0x85, 0x86)]
     w = _knob_world(bench, 15, rec_len=0, events=[(1, 0, 240, 1, 60, 0)])   # recorded 15/16
     turn(w, 0)
     res.check(w.labels == ["15/16"], f"15 x 1/16 shows 15/16 {w.labels}")
     turn(w, 400)
-    res.check(w.sets == [(0x86, 30)] and w.labels[-1] == "30/16", f"x2: 30/16 {w.sets} {w.labels}")
+    res.check(w.sets == [(0x86, 30), (SR_LEN, 10)] and w.labels[-1] == "30/16" and bench.b.cstr(SR_TXT) == "30/16",
+              f"x2: 30/16, Rec Len = own length {w.sets} {w.labels}")
     turn(w, -400)
-    res.check(w.sets[-1] == (0x86, 15), f"/2: 15/16 {w.sets}")
+    res.check(lens(w)[-1] == (0x86, 15), f"/2: 15/16 {w.sets}")
     turn(w, -400)
-    res.check(w.sets[-1] == (0x85, 12) and w.labels[-1] == "15/32", f"/2 odd: 15/32 {w.sets} {w.labels}")
+    res.check(lens(w)[-1] == (0x85, 12) and w.labels[-1] == "15/32", f"/2 odd: 15/32 {w.sets} {w.labels}")
     turn(w, -400)
-    res.check(w.sets[-1] == (0x85, 14) and w.labels[-1] == "15/64", f"/2 again: 15/64 {w.sets}")
+    res.check(lens(w)[-1] == (0x85, 14) and w.labels[-1] == "15/64", f"/2 again: 15/64 {w.sets}")
     turn(w, 400)
     turn(w, 400)
-    res.check(w.sets[-2:] == [(0x85, 12), (0x85, 10)] and w.labels[-1] == "15/16", f"x2 goes back to the user's 1/16 first {w.sets} {w.labels}")
+    res.check(lens(w)[-2:] == [(0x85, 12), (0x85, 10)] and w.labels[-1] == "15/16", f"x2 goes back to the user's 1/16 first {w.sets} {w.labels}")
     turn(w, 400)
-    res.check(w.sets[-1] == (0x86, 30), f"then doubles the count: 30/16 {w.sets}")
-    w = _knob_world(bench, 300, rec_len=0, events=[(1, 0, 240, 1, 60, 0)])
+    res.check(lens(w)[-1] == (0x86, 30), f"then doubles the count: 30/16 {w.sets}")
+    w = _knob_world(bench, 8, rec_len=10, events=[(1, 0, 240, 1, 60, 0)])
     turn(w, 400)
-    res.check(w.sets == [(0x85, 8)], f"x2 past 512 steps: 2x longer step {w.sets}")
+    res.check(w.sets == [(0x86, 16), (SR_LEN, 4), (SR_SET, 1)], f"8/16 counts as the 1/2 preset: x2 -> 1 bar {w.sets}")
+    w = _knob_world(bench, 300, rec_len=10, events=[(1, 0, 240, 1, 60, 0)])
+    turn(w, 400)
+    res.check(lens(w) == [(0x85, 8)], f"x2 past 512 steps: 2x longer step {w.sets}")
 
     for n, si, rl, ev, want in ((63, 10, 0, 1, "63/16"), (48, 10, 0, 1, "48/16"), (100, 10, 0, 1, "100st"),
                                 (7, 5, 0, 1, "7st"), (12, 5, 0, 1, "4 bar"), (15, 10, 0, 0, "Cust"),
@@ -1366,6 +1371,7 @@ def t_gui_fx_flow(bench, res):
 # ---- Custom sequence recording (seqrec.S)
 
 SR_LEN, SR_DEF, SR_SET = 0x19D, 0x19E, 0x19F
+SR_TXT = 0x38005700
 APP_SETP, GETP = 0x0809FA50, 0x08099504
 SEQ_OBJ_FN, P_GET_FN = 0x08097CE8, 0x08093E9C
 L0_OBJ, LA_OBJ = 0x30030000, 0x30031000
@@ -1435,7 +1441,7 @@ def t_seqrec_params(bench, res):
     if b.call(0x0808E305, 0x3E) == 0:
         b.call(0x0808C159)
     title = lambda i: b.cstr(b.call(0x0808E221, i))
-    res.check(title(SR_LEN) == "Rec Len:" and b.call(0x0808E2A5, SR_LEN) == 10, f"Rec Len registered ({title(SR_LEN)!r})")
+    res.check(title(SR_LEN) == "Rec Len:" and b.call(0x0808E2A5, SR_LEN) == 11, f"Rec Len registered ({title(SR_LEN)!r})")
     res.check(title(SR_DEF) == "Seq Default:" and b.call(0x0808E2A5, SR_DEF) == 10, f"Seq Default registered ({title(SR_DEF)!r})")
     res.check(title(SR_SET) == "Rec Len Set:", f"Rec Len Set registered ({title(SR_SET)!r})")
     res.check(title(0x2D) != "" and title(0x19B) != "", "the chained stock registration still ran")
@@ -1492,6 +1498,34 @@ def t_seqrec_setparam(bench, res):
     w = _SeqWorld(bench)
     w.b.call(bench.sym["seqrec_setparam"], APP_OBJ, _ref(w.b, 0x023), SR_LEN, 5, 0)
     res.check(w.sets == [(SR_LEN, 5)], f"a non-sequence key only passes through {w.sets}")
+
+
+def t_seqrec_sync(bench, res):
+    """Editing Step Count / Step Len on the settings page: Rec Len follows the length."""
+    ev = [(1, 0, 240, 1, 60, 0)]
+    for n, si, rl, events, ident, val, want, txt in (
+            (16, 10, 4, ev, 0x86, 15, [(0x86, 15), (SR_LEN, 10)], "15/16"),
+            (15, 10, 10, ev, 0x86, 32, [(0x86, 32), (SR_LEN, 5)], "32/16"),
+            (15, 10, 10, ev, 0x85, 12, [(0x85, 12)], "15/32"),
+            (16, 10, 0, (), 0x86, 15, [(0x86, 15), (SR_LEN, 10)], "15/16"),
+            (15, 10, 0, (), 0x86, 16, [(0x86, 16)], "16/16"),
+            (16, 10, 4, ev, 0x86, 300, [(0x86, 300), (SR_LEN, 10)], "300/16"),
+            (16, 10, 4, ev, 0x85, 11, [(0x85, 11), (SR_LEN, 10)], "16st")):
+        w = _knob_world(bench, n, step_idx=si, rec_len=rl, events=events)
+        w.b.call(bench.sym["seqrec_setparam"], APP_OBJ, _ref(w.b, 0x123), ident, val, 0)
+        res.check(w.sets == want and w.b.cstr(SR_TXT) == txt and ("post", 0x66) in w.ops,
+                  f"{ident:#x} = {val} on {n} steps, Rec Len {rl}: {w.sets} {w.b.cstr(SR_TXT)!r} {w.ops}")
+    w = _knob_world(bench, 15, rec_len=10, events=ev)
+    w.b.call(bench.sym["seqrec_setparam"], APP_OBJ, _ref(w.b, 0x123), SR_LEN, 10, 0)
+    res.check(w.sets == [(SR_LEN, 10), (SR_SET, 1)], f"picking the own length keeps the length {w.sets}")
+    w = _knob_world(bench, 63, rec_len=10, events=ev)
+    w.b.stub(0x0808E278, lambda board: 0x1234)
+    r = w.b.call(bench.sym["sr_labels_hook"], SR_LEN)
+    res.check(r == 0x1234 and w.b.cstr(SR_TXT) == "63/16", f"settings row build fills the label first ({w.b.cstr(SR_TXT)!r})")
+    w.b.unstub(0x0808E278)
+    w.b.call(0x0808C159)
+    labels = w.b.call(0x0808E279, SR_LEN)
+    res.check(w.b.u32(labels + 40) == SR_TXT, "Rec Len value 10 is labelled from RAM")
 
 
 def t_seqrec_clear(bench, res):
@@ -1652,6 +1686,7 @@ def main():
             ("encoders stop navigating", t_nav_knobs),
             ("PADS/SEQS held + pad selects only", t_held_select),
             ("Seq length knob and label", t_seq_length),
+            ("Rec Len follows Step Count / Step Len", t_seqrec_sync),
             ("untouched EQ gets the default bands", t_eq_untouched_defaults),
             ("SEQS held shows the layer panel", t_seq_panel),
             ("PADS held shows the edit panel", t_pads_panel),

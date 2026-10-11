@@ -23,6 +23,7 @@ Confidence marks: **S** read from code, **L** one step inferred, **?** open ques
 
 - STM32H743, Cortex-M7, double-precision FPU (Unicorn can't execute `.f64` VFP ops; the bench stubs those functions). **S**
 - Memory map, patch budget and SRAM4 layout: [../memory.md](../memory.md) (timestretch branch) and `.cursor/rules/memory-layout.mdc`. **S**
+- **SRAM4 in 3.1.Q:** `0x38000000` folder state (`0x4930`), `0x38005000` Warp flags, `0x38005200` MX_STATE (`'MIXU'`, +0..+76), `0x38005400` EQ page buttons (4 × 0xA0, to `0x38005680`), `0x38005700` Rec Len own-length label (16 bytes), `0x38005800` looper note buffer. **S**
 - Tasks:
   - **defaultTask** `0x08043DEC`: the UI loop. Input → App vtable+8 → draw `FUN_0808B2D0`. **S**
   - **pcmStreamer**: FatFs and preset load/save; the only task that may touch the card. **S**
@@ -90,6 +91,7 @@ Details: [../map-319.md#mix-and-mute](../map-319.md#mix-and-mute) and [#encoders
 - **Persistence:** preset XML and `settings.tml` write every bag row as `name=value` (`FUN_0808FA28`); load runs the template, then sets the attributes present. **S** for settings; **L** for sequence bags.
 - **Encoder → list stepping:** `FUN_080B0B74` keeps a struct at slider+0x270 (int64 accumulator, divisor 400 for lists, index, count, wrap) and steps one entry per 400 accumulated units. **S**
 - **3.1.Q params:** `0x19D` Rec Len, `0x19E` Seq Default, `0x19F` Rec Len Set (hidden), `0x1A0` Loop BPM, `0x1A1` Dbl Copy. Registry has 500 slots, so ids up to `0x1F3` are free to add. **S**
+- **Settings rows (INFO page class, vtable `0x080F0004`):** a row builder calls `Param_Labels` at `0x080A7F20`, then slider set-labels `FUN_080B0998(slider, labels, count)` (slider+0x158 labels, +0x154 count) and set-value `FUN_080B08F4(slider, value, force)`, which copies `labels[value]` into the slider text (+0x9C, `FUN_080C3B98`) only when the value changed or force is set. The page onEvent `0x080A6D28` handles `0x66` for its own key (page+0x29C == event+8) by re-setting every row (`FUN_080A54A0` → `FUN_080A7FE6`, force 1), so a label pointing into RAM picks up new text on each refresh. 3.1.Q uses this for Rec Len value 10 (`SR_TXT` SRAM4 `0x38005700`). **S** (refresh path read from code; device check pending)
 - **Page lists:** `InfoPage_Build` `0x08098D40` walks ushort id lists (pad pages 0x48 bytes per page; sequence page 0 at `0x080EEF28`; layers `0x080EEE98`; Tools `0x080EED18` + page × 0x48). **S**
 
 ## Sequencer
