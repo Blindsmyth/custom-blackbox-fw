@@ -12,10 +12,9 @@
 @                   Decay 0x3E  | Pitch 0x5C                  Attack 0x3C | Send B 0xDA
 @   Corner faders: top-left +0x2C48, top-right +0x2DA0, bottom-left +0x2CF4,
 @   bottom-right +0x2E4C. A fader's own touch handler posts 0x6E {pad +0x38, id, value}.
-@ - MIX on Mix is a smart toggle: a short press latches the second layer (another short
-@   press goes back), holding it shows the other layer only while held. Selecting is
-@   momentary: only while MIX is held, and the view then shows the plain mixer (no mute
-@   colours) so select mode is visible.
+@ - MIX on Mix is momentary: while held, the second layer shows, pad taps select, and the
+@   view shows the plain mixer (no mute colours) so select mode is visible. (MX_LATCH
+@   stays 0; a short-press latch was tried and dropped as confusing.)
 @ - Knobs drive the four stock value-engine sliders, bound to the same corner's param, so
 @   step, acceleration and App_SetParam stay stock. Logical encoder order is column-major:
 @   0 top-left, 1 bottom-left, 2 top-right, 3 bottom-right.
@@ -440,8 +439,8 @@ mix_tick:
 4:
     movs    r1, #0
 3:
-    ldr     r2, [r0, #MX_MIXDOWN]   @ smart toggle: a short press latches the other layer,
-    cmp     r1, r2                  @ a hold shows it only while held
+    ldr     r2, [r0, #MX_MIXDOWN]   @ MIX is momentary: the second layer only while held
+    cmp     r1, r2
     beq     6f
     str     r1, [r0, #MX_MIXDOWN]
     push    {r0, r1}                @ MIX held = select: the plain mixer view, no mute colours
@@ -456,13 +455,6 @@ mix_tick:
     str     r3, [r0, #MX_MIXT0]     @ pressed
     b       6f
 7:
-    ldr     r2, [r0, #MX_MIXT0]     @ released
-    subs    r3, r3, r2
-    cmp     r3, #MX_HOLD_MS
-    bhs     6f
-    ldr     r2, [r0, #MX_LATCH]
-    eor     r2, r2, #1
-    str     r2, [r0, #MX_LATCH]
 6:
     ldr     r2, [r0, #MX_LATCH]
     eors    r1, r2                  @ layer shown
@@ -728,8 +720,7 @@ fader_vt:
 @ ---- App_HandleInput call sites (replace bl App_SetScreen; r0 = app, r1 = screen)
 
 @ MIX button (0x080A32DE). On Mix (screen byte App+0x8CA4 = 0x2E/0x2F) the screen stays:
-@ mix_tick turns the press into the smart toggle (short = latch the MIX layer, hold =
-@ momentary). From any other screen MIX opens Mix on the main layer; that press is not a
+@ mix_tick shows the second layer while MIX is held. From any other screen MIX opens Mix on the main layer; that press is not a
 @ hold. (Stock picks 0x2E or 0x2F from the view's mute mode, which is now always on.)
 .thumb_func
 mix_btn_screen:

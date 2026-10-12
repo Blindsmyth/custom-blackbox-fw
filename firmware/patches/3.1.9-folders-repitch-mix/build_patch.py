@@ -49,6 +49,7 @@ SITES = base.SITES + [
     (0x080A7F20, "sr_labels_hook", True, "e6f7aaf9"),   # settings row build: Param_Labels
     (0x080A1C92, "seqrec_clear_all", True, "f6f7d3fb"),  # clear all layers
     (0x080A2F3C, "seqrec_rec_press", True, "fef7c2fb"),  # REC press
+    (0x080AB594, "hdr_tick", True, "00f0faf8"),       # header bar tick (direct call): "Sel"
     (0x080A2936, "looper_pop", True, "a9f70dff"),       # App_Update note-ring pop (looper)
     (0x080A282E, "seqrec_recstate", True, "f8f717fa"),  # recording on/off
     (0x080A2696, "seqrec_started", True, "faf7d3fd"),   # sequence started
@@ -58,7 +59,6 @@ SITES = base.SITES + [
 VTABLE = [
     (0x080F0F10, "mix_tick", 0x080B6601),
     (0x080F0F20, "mix_touch_down", 0x080B5F45),        # pads: select / mute / solo
-    (0x080F077C, "hdr_tick", 0x080AB78D),              # header bar: "Sel" while selecting
     (0x080F0F24, "mix_touch_move", 0x080B5EBD),
     (0x080F0F40, "mix_child_event", 0x080B5A4D),
     (0x080F0F44, "mix_on_event", 0x080B5C71),

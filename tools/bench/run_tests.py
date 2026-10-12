@@ -1772,35 +1772,22 @@ def t_mix_button(bench, res):
     res.check(calls == [0x2E], f"MIX elsewhere opens Mix {calls}")
 
 
-def t_mix_smart_toggle(bench, res):
-    """MIX on Mix: short press latches the second layer, a hold is momentary."""
+def t_mix_momentary(bench, res):
+    """MIX on Mix is momentary: second layer, select and the plain mixer view only while held."""
     b = _mix_setup(bench)
     ids = lambda: {n: _fader(b, n)["id"] for n in MIX_FADERS}
     _mix_tick(bench)
-    for down, t, want, why in ((0, 1000, MIX_HELD, "press shows the MIX layer"),
-                               (1, 1150, MIX_HELD, "short press: stays latched"),
-                               (0, 3000, MIX_MAIN, "press again: main layer"),
-                               (1, 3100, MIX_MAIN, "short press: main layer latched"),
-                               (0, 5000, MIX_HELD, "hold: MIX layer"),
-                               (1, 5900, MIX_MAIN, "long hold released: back to main"),
-                               (0, 7000, MIX_HELD, "latch again"),
-                               (1, 7100, MIX_HELD, "latched"),
-                               (0, 8000, MIX_MAIN, "hold while latched: main layer"),
-                               (1, 9000, MIX_HELD, "released: back to the latched MIX layer")):
+    for down, t, want, view, why in ((0, 1000, MIX_HELD, 0, "held: MIX layer, plain view"),
+                                     (1, 1150, MIX_MAIN, 1, "short press released: main layer"),
+                                     (0, 3000, MIX_HELD, 0, "held again"),
+                                     (1, 4000, MIX_MAIN, 1, "long hold released: main layer")):
         b.w32(UWTICK, t)
         b.mu.mem_write(BTN_MIX, bytes([down]))
         _mix_tick(bench)
-        res.check(ids() == want, f"{why} {ids()}")
-    res.check(b.u32(MX_STATE + 4) == 1 and b.u32(MX_STATE + 112) == 0 and b.u8(MIX_OBJ + 0x1E40) == 1,
-              "latched MIX layer: taps mute (select is hold-only), mute colours")
-    b.w32(UWTICK, 9500)
-    b.mu.mem_write(BTN_MIX, b"\x00")
-    _mix_tick(bench)
-    res.check(b.u8(MIX_OBJ + 0x1E40) == 0 and b.u32(MX_STATE + 112) == 1, "MIX held: plain mixer view (select mode)")
-    b.w32(UWTICK, 10500)
-    b.mu.mem_write(BTN_MIX, b"\x01")
-    _mix_tick(bench)
-    res.check(b.u8(MIX_OBJ + 0x1E40) == 1, "released: mute colours back")
+        res.check(ids() == want and b.u8(MIX_OBJ + 0x1E40) == view and b.u32(MX_STATE + 112) == (1 - down),
+                  f"{why} {ids()} mode={b.u8(MIX_OBJ + 0x1E40)}")
+    img = bench.b.image
+    res.check(img[0x080AB594 - bd.BASE: 0x080AB598 - bd.BASE] != bytes.fromhex("00f0faf8"), "header tick call site hooked")
 
 
 def t_header_sel(bench, res):
@@ -1900,7 +1887,7 @@ def main():
         cases += [
             ("Mix hooks and letter", t_mix_hooks),
             ("Mix pads: select / mute / solo", t_mix_pads),
-            ("MIX smart toggle", t_mix_smart_toggle),
+            ("MIX momentary", t_mix_momentary),
             ("header Sel while selecting", t_header_sel),
             ("Mix knobs drive Cutoff/Decay/Sends", t_mix_knobs),
             ("Mix faders and MIX-hold layout", t_mix_layout),

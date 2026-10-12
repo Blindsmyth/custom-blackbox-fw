@@ -352,7 +352,8 @@ mix_mute_fill:
     add     sp, #16
     pop     {r4, r5, r6, r7, r8, pc}
 
-@ ---- header bar (vtable 0x080F077C word 0, stock FUN_080AB78C): "Sel" while selecting
+@ ---- header bar: bl site 0x080AB594 (its owner calls FUN_080AB78C directly, not via the
+@ vtable 0x080F077C): "Sel" while selecting
 
 .equ HDR_TICK,    0x080AB78D
 .equ H_SEL,       0xE4                  @ label, stock rect x 80 w 200, never written by stock
