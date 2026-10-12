@@ -3,7 +3,7 @@
 @ The Mix view always runs in the stock mute mode (+0x1E40 = 1; set-mode 0x080B5E44 also
 @ switches each cell's display, cell+0x18A), so pads draw green (playing) / red (muted) and
 @ our four faders stay on top. Touches on the view (vtable +0x10 / +0x14):
-@ - Second layer shown (MIX held or latched): tap selects the pad (posts 0x63 up, as stock).
+@ - MIX held: tap selects the pad (posts 0x63 up, as stock); the view shows plain mixer cells.
 @ - Mute (INFO cycles Mute -> Solo -> Mute): stock mute touch, drag paints mutes.
 @ - Solo: tap toggles the pad in the solo set; while the set is non-empty every other pad
 @   is muted through the stock mute path (msg 0x44 {pad, unmuted} up the widget chain +
@@ -39,6 +39,7 @@
 .global mix_touch_move
 .global mix_info
 .global mix_mute_fill
+.global hdr_tick
 
 @ bl site 0x0808BC40 (GUI shows Mix or Mute): the view always shows mute colours.
 .thumb_func
@@ -204,7 +205,7 @@ mix_touch_down:
     mov     r6, r2
     bl      mx_state
     mov     r7, r0
-    ldr     r0, [r7, #MX_LAYER]
+    ldr     r0, [r7, #MX_MIXDOWN]
     cmp     r0, #1
     beq     1f                      @ MIX held: select
     ldr     r0, [r7, #MX_PMODE]
@@ -262,7 +263,7 @@ mix_touch_down:
 mix_touch_move:
     push    {r0, r1, r2, lr}
     bl      mx_state
-    ldr     r1, [r0, #MX_LAYER]
+    ldr     r1, [r0, #MX_MIXDOWN]
     cmp     r1, #1
     beq     8f
     ldr     r1, [r0, #MX_PMODE]
@@ -350,6 +351,79 @@ mix_mute_fill:
 9:
     add     sp, #16
     pop     {r4, r5, r6, r7, r8, pc}
+
+@ ---- header bar (vtable 0x080F077C word 0, stock FUN_080AB78C): "Sel" while selecting
+
+.equ HDR_TICK,    0x080AB78D
+.equ H_SEL,       0xE4                  @ label, stock rect x 80 w 200, never written by stock
+.equ H_SEQ,       0x13C                 @ "Seq x" label, stock x 140 w 140
+.equ H_SEL_X,     132
+.equ H_SEL_W,     36
+.equ H_SEQ_X,     170
+.equ H_SEQ_W,     84                    @ ends before the loop bar at x 256
+
+@ r0 = 1 while pads or sequences are being selected: PADS or SEQS held, or MIX held on Mix.
+.thumb_func
+sel_active:
+    ldr     r0, =BTN_PADS
+    ldrb    r0, [r0]
+    cbz     r0, 1f
+    ldr     r0, =BTN_SEQS
+    ldrb    r0, [r0]
+    cbz     r0, 1f
+    ldr     r0, =APP + 0x8CA4
+    ldrb    r0, [r0]
+    sub     r0, r0, #0x2E
+    cmp     r0, #1
+    bhi     2f
+    push    {r1, lr}
+    bl      mx_state
+    ldr     r0, [r0, #MX_MIXDOWN]
+    pop     {r1, pc}
+1:
+    movs    r0, #1
+    bx      lr
+2:
+    movs    r0, #0
+    bx      lr
+
+.thumb_func
+hdr_tick:
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    mov     r5, r1
+    ldr     r0, [r4, #(H_SEQ + 4)]
+    cmp     r0, #H_SEQ_X
+    beq     1f
+    movs    r0, #H_SEQ_X            @ make room: Sel between the counter and Seq x
+    str     r0, [r4, #(H_SEQ + 4)]
+    movs    r0, #H_SEQ_W
+    str     r0, [r4, #(H_SEQ + 0xC)]
+    movs    r0, #H_SEL_X
+    str     r0, [r4, #(H_SEL + 4)]
+    movs    r0, #H_SEL_W
+    str     r0, [r4, #(H_SEL + 0xC)]
+1:
+    bl      sel_active
+    mov     r6, r0
+    bl      mx_state
+    ldr     r1, [r0, #MX_SELSHOWN]
+    cmp     r1, r6
+    beq     2f
+    str     r6, [r0, #MX_SELSHOWN]
+    add     r0, r4, #H_SEL
+    adr     r1, s_sel
+    cmp     r6, #0
+    it      eq
+    addeq   r1, #3                  @ "" (the terminator)
+    call    SET_TEXT
+2:
+    mov     r0, r4
+    mov     r1, r5
+    call    HDR_TICK
+    pop     {r4, r5, r6, pc}
+
+s_sel: .asciz "Sel"
 
 .align 2
 .ltorg

@@ -13,7 +13,9 @@
 @   Corner faders: top-left +0x2C48, top-right +0x2DA0, bottom-left +0x2CF4,
 @   bottom-right +0x2E4C. A fader's own touch handler posts 0x6E {pad +0x38, id, value}.
 @ - MIX on Mix is a smart toggle: a short press latches the second layer (another short
-@   press goes back), holding it shows the other layer only while held.
+@   press goes back), holding it shows the other layer only while held. Selecting is
+@   momentary: only while MIX is held, and the view then shows the plain mixer (no mute
+@   colours) so select mode is visible.
 @ - Knobs drive the four stock value-engine sliders, bound to the same corner's param, so
 @   step, acceleration and App_SetParam stay stock. Logical encoder order is column-major:
 @   0 top-left, 1 bottom-left, 2 top-right, 3 bottom-right.
@@ -41,6 +43,8 @@
 .equ MX_LATCH,    108               @ 1: the MIX layer is latched (short press)
 .equ MX_MIXDOWN,  112               @ MIX level seen by the last tick (1 = held)
 .equ MX_MIXT0,    116               @ uwTick of that press
+.equ MX_SELSHOWN, 120               @ header shows "Sel"
+.equ MM_SET_MODE, 0x080B5E45        @ mixer view set-mode (view, mute_mode)
 .equ SR_LEN,      0x19D             @ seqrec.S params, here so seqtools.S can use them
 .equ SR_DEF,      0x19E
 .equ SR_SET,      0x19F
@@ -146,6 +150,7 @@ mx_state:
     str     r1, [r0, #108]          @ MX_LATCH
     str     r1, [r0, #112]          @ MX_MIXDOWN
     str     r1, [r0, #116]          @ MX_MIXT0
+    str     r1, [r0, #120]          @ MX_SELSHOWN
 1:
     pop     {r2}
     bx      lr
@@ -439,6 +444,12 @@ mix_tick:
     cmp     r1, r2                  @ a hold shows it only while held
     beq     6f
     str     r1, [r0, #MX_MIXDOWN]
+    push    {r0, r1}                @ MIX held = select: the plain mixer view, no mute colours
+    mov     r0, r4
+    eor     r1, r1, #1
+    call    MM_SET_MODE
+    pop     {r0, r1}
+    movs    r6, #1
     ldr     r3, =UWTICK
     ldr     r3, [r3]
     cbz     r1, 7f

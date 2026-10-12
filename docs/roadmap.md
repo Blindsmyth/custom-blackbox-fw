@@ -81,6 +81,10 @@ INFO on Mix cycles pad modes (Mute, Solo so far). Next candidates:
 - **DJ FX routing:** a pad mode that routes / unroutes each pad's sound to the DJ touch-screen FX block (green = through the FX, grey = dry). To map first: how the DJ FX screen (`0x23`) processes audio (which bus, per-pad send or master insert), where its on/off state lives, and whether a per-pad flag exists or needs a new param.
 - A mode label on screen (the yellow outlines are the only Solo cue now).
 
+### Selection mode look
+
+"Sel" in the header and the plain mixer view on Mix are the first cues. Next: colour the pads / sequences while selecting (PADS, SEQS or MIX held), e.g. dark blue or purple cells, with the selected one brighter. To map first: the pad and sequence cell draw functions (Pads screen cells, Seq screen cells, mixer cell `0x080A43B8` draw) and the palette entries for a blue/purple pair.
+
 ### Ideas from j3threejay/blackbox-mod
 
 Mapped in [firmware/blackbox-mod.md](firmware/blackbox-mod.md); each could be ported into our cave (their cave overlaps ours, so not flashed together):

@@ -789,10 +789,10 @@ def t_mix_pads(bench, res):
     res.check(b.u8(MIX_OBJ + 0x1E40) == 1 and b.u32(MX_STATE + 96) == MIX_OBJ, "Mix always shows mute colours")
     pt = MIX_EV + 0x40
     down = lambda i: (hit.__setitem__(0, cells[i]), b.call(bench.sym["mix_touch_down"], MIX_OBJ, pt, 0))
-    b.w32(MX_STATE + 4, 1)                                     # MIX held
+    b.w32(MX_STATE + 112, 1)                                   # MIX held
     down(6)
     res.check(posts == [(0x63, 0x12, 0)] and not calls, f"MIX held: tap selects pad 0x12, no mute {posts} {calls}")
-    b.w32(MX_STATE + 4, 0)
+    b.w32(MX_STATE + 112, 0)
     posts.clear()
     down(6)
     res.check(calls == ["mute_down"] and not posts, f"Mute mode: stock mute touch {calls}")
@@ -1791,7 +1791,51 @@ def t_mix_smart_toggle(bench, res):
         b.mu.mem_write(BTN_MIX, bytes([down]))
         _mix_tick(bench)
         res.check(ids() == want, f"{why} {ids()}")
-    res.check(b.u32(MX_STATE + 4) == 1, "latched MIX layer: pad taps select")
+    res.check(b.u32(MX_STATE + 4) == 1 and b.u32(MX_STATE + 112) == 0 and b.u8(MIX_OBJ + 0x1E40) == 1,
+              "latched MIX layer: taps mute (select is hold-only), mute colours")
+    b.w32(UWTICK, 9500)
+    b.mu.mem_write(BTN_MIX, b"\x00")
+    _mix_tick(bench)
+    res.check(b.u8(MIX_OBJ + 0x1E40) == 0 and b.u32(MX_STATE + 112) == 1, "MIX held: plain mixer view (select mode)")
+    b.w32(UWTICK, 10500)
+    b.mu.mem_write(BTN_MIX, b"\x01")
+    _mix_tick(bench)
+    res.check(b.u8(MIX_OBJ + 0x1E40) == 1, "released: mute colours back")
+
+
+def t_header_sel(bench, res):
+    """Header bar: "Sel" between the counter and Seq x while PADS / SEQS / MIX (on Mix) is held."""
+    b = _mix_setup(bench, build=False)
+    hdr = 0x30018000
+    b.mu.mem_write(hdr, b"\0" * 0x200)
+    b.w32(hdr + 0x140, 140)
+    texts, ticks = [], []
+    b.stub(0x080C3B98, lambda board: texts.append((board.arg(0) - hdr, board.cstr(board.arg(1)))) and None)
+    b.stub(0x080AB78C, lambda board: ticks.append(1) and None)
+    tick = lambda: b.call(bench.sym["hdr_tick"], hdr, 0)
+    b.mu.mem_write(APP_OBJ + 0x8CA4, b"\x14")
+    for btn in (0x24009ABE, 0x24009AEE):
+        b.mu.mem_write(btn, b"\x01")
+    tick()
+    res.check(b.u32(hdr + 0x140) == 170 and b.u32(hdr + 0x148) == 84 and b.u32(hdr + 0xE8) == 132 and b.u32(hdr + 0xF0) == 36
+              and ticks == [1] and not texts, f"Seq x moved right, Sel slot placed, stock tick runs {texts}")
+    for btn, name in ((0x24009ABE, "PADS"), (0x24009AEE, "SEQS")):
+        texts.clear()
+        b.mu.mem_write(btn, b"\x00")
+        tick()
+        tick()
+        b.mu.mem_write(btn, b"\x01")
+        tick()
+        res.check(texts == [(0xE4, "Sel"), (0xE4, "")], f"{name} held: Sel, released: cleared {texts}")
+    texts.clear()
+    b.w32(MX_STATE + 112, 1)
+    tick()
+    res.check(not texts, "MIX held off Mix: no Sel")
+    b.mu.mem_write(APP_OBJ + 0x8CA4, b"\x2E")
+    tick()
+    b.w32(MX_STATE + 112, 0)
+    tick()
+    res.check(texts == [(0xE4, "Sel"), (0xE4, "")], f"MIX held on Mix: Sel {texts}")
 
 
 def main():
@@ -1857,6 +1901,7 @@ def main():
             ("Mix hooks and letter", t_mix_hooks),
             ("Mix pads: select / mute / solo", t_mix_pads),
             ("MIX smart toggle", t_mix_smart_toggle),
+            ("header Sel while selecting", t_header_sel),
             ("Mix knobs drive Cutoff/Decay/Sends", t_mix_knobs),
             ("Mix faders and MIX-hold layout", t_mix_layout),
             ("Mix fader touch sets the pad", t_mix_fader_touch),
