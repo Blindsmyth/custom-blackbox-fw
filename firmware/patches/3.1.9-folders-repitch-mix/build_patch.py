@@ -31,7 +31,10 @@ MAX_CAVE = 0x4000
 # (site, cave symbol, bl?, stock bytes): both replace `bl App_SetScreen` in App_HandleInput.
 SITES = base.SITES + [
     (0x080A32DE, "mix_btn_screen", True, "fbf705fc"),  # MIX button: Mix -> Mute toggle
-    (0x080A30DC, "info_to_mute", True, "fbf706fd"),    # INFO on Mix -> Mute
+    (0x080A30DC, "mix_info", True, "fbf706fd"),        # INFO on Mix: next pad mode (Mute/Solo)
+    (0x0808BC40, "mix_set_mode", True, "2af000f9"),    # GUI shows Mix/Mute: always mute colours
+    (0x080A43E0, "mix_mute_fill", True, "eaf71ffb"),   # cell mute-mode fill (on): Solo colours
+    (0x080A43F8, "mix_mute_fill", True, "eaf713fb"),   # cell mute-mode fill (off)
     (0x080A32BE, "fx_to_return", True, "fbf715fc"),    # FX button: DJ FX -> send page
     (0x0808BF20, "eq_page_ctor", True, "1ef0b6f9"),     # GUI ctor -> EQ page ctor
     (0x080AA8F8, "eq_graph_rect", True, "fff7bcfb"),    # EQ layout -> graph setRect
@@ -54,6 +57,8 @@ SITES = base.SITES + [
 # Mix/Mute widget vtable 0x080F0F10: (address, cave symbol, stock word)
 VTABLE = [
     (0x080F0F10, "mix_tick", 0x080B6601),
+    (0x080F0F20, "mix_touch_down", 0x080B5F45),        # pads: select / mute / solo
+    (0x080F0F24, "mix_touch_move", 0x080B5EBD),
     (0x080F0F40, "mix_child_event", 0x080B5A4D),
     (0x080F0F44, "mix_on_event", 0x080B5C71),
     (0x080F0E84, "pads_on_event", 0x080B4135),         # Pads onEvent

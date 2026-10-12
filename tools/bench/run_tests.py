@@ -754,6 +754,8 @@ def _fader(b, name):
 def t_mix_hooks(bench, res):
     img = bench.b.image
     for va, name, stock in ((0x080F0F10, "mix_tick", 0x080B6601),
+                            (0x080F0F20, "mix_touch_down", 0x080B5F45),
+                            (0x080F0F24, "mix_touch_move", 0x080B5EBD),
                             (0x080F0F40, "mix_child_event", 0x080B5A4D),
                             (0x080F0F44, "mix_on_event", 0x080B5C71)):
         word = struct.unpack_from("<I", img, va - bd.BASE)[0]
@@ -761,25 +763,76 @@ def t_mix_hooks(bench, res):
     res.check(img[VERSION_OFF] == ord("Q"), "menu letter is Q")
 
 
-def t_mix_pad_plays(bench, res):
-    b = _mix_setup(bench, build=False)
-    posts = []
-    b.stub(UI_POST_UP, lambda board: posts.append(struct.unpack("<H", board.mu.mem_read(board.arg(1), 2))[0]))
-    fn = bench.sym["mix_child_event"]
-    r = b.call(fn, MIX_OBJ, _mix_ev(b, 3, key=0x12))
-    res.check(r == 1 and not posts, f"pad press propagates to App_HandleUiEvent (r={r}, posts={posts})")
-    r = b.call(fn, MIX_OBJ, _mix_ev(b, 4, key=0x12))
-    res.check(r == 1 and not posts, f"pad release propagates (r={r})")
-    b.mu.mem_write(BTN_MIX, b"\x00")
-    r = b.call(fn, MIX_OBJ, _mix_ev(b, 3, key=0x12))
-    res.check(r == 0 and posts == [0x63], f"MIX held: press only selects (r={r}, posts={posts})")
-    r = b.call(fn, MIX_OBJ, _mix_ev(b, 4, key=0x12))
-    res.check(r == 0 and posts == [0x63], f"MIX held: release swallowed (r={r})")
-    b.mu.mem_write(BTN_MIX, b"\x01")
-    b.mu.mem_write(MIX_OBJ + 0x1E40, b"\x01")
+def t_mix_pads(bench, res):
+    """Mix pads: MIX held selects, Mute toggles (stock mute touch), Solo; INFO cycles the mode."""
+    b = _mix_setup(bench)
+    cells = [MIX_OBJ + 0x3AC + i * 0x1A0 for i in range(16)]
+    for i, c in enumerate(cells):
+        b.mu.mem_write(c + 0x38, struct.pack("<H", (i % 4) | (i // 4) << 4))
+        b.mu.mem_write(c + 0x189, b"\x01")
+    posts, calls, hit = [], [], [None]
+
+    def post(board):
+        m = board.arg(1)
+        posts.append((board.u16(m), board.u16(m + 8), board.u32(m + 12)))
+    b.stub(UI_POST_UP, post)
+
+    def hitf(board):
+        if hit[0] is None:
+            return 0
+        board.w32(board.arg(2), hit[0])
+        return 1
+    b.stub(0x080B5E78, hitf)
+    b.stub(0x080B5F44, lambda board: calls.append("mute_down") and None)
+    b.stub(0x080B5EBC, lambda board: calls.append("mute_move") and None)
+    b.call(bench.sym["mix_set_mode"], MIX_OBJ, 0)
+    res.check(b.u8(MIX_OBJ + 0x1E40) == 1 and b.u32(MX_STATE + 96) == MIX_OBJ, "Mix always shows mute colours")
+    pt = MIX_EV + 0x40
+    down = lambda i: (hit.__setitem__(0, cells[i]), b.call(bench.sym["mix_touch_down"], MIX_OBJ, pt, 0))
+    b.w32(MX_STATE + 4, 1)                                     # MIX held
+    down(6)
+    res.check(posts == [(0x63, 0x12, 0)] and not calls, f"MIX held: tap selects pad 0x12, no mute {posts} {calls}")
+    b.w32(MX_STATE + 4, 0)
     posts.clear()
-    r = b.call(fn, MIX_OBJ, _mix_ev(b, 3, key=0x12))
-    res.check(r == 0 and posts == [0x63], "Mute mode keeps the stock handler")
+    down(6)
+    res.check(calls == ["mute_down"] and not posts, f"Mute mode: stock mute touch {calls}")
+    b.call(bench.sym["mix_touch_move"], MIX_OBJ, pt, 0)
+    res.check(calls[-1] == "mute_move", "Mute mode: drag paints mutes")
+    b.mu.mem_write(cells[2] + 0x189, b"\x00")                # a hand mute on pad 2
+    b.call(bench.sym["mix_info"], APP_OBJ, 0x2F, 0, 0)
+    res.check(b.u32(MX_STATE + 92) == 1, "INFO: Solo")
+    calls.clear()
+    down(5)
+    muted = sorted(p[1] for p in posts if p[0] == 0x44 and p[2] == 0)
+    want = sorted(((i % 4) | (i // 4) << 4) for i in range(16) if i not in (2, 5))
+    res.check(muted == want and not calls and b.u32(MX_STATE + 100) == 1 << 5,
+              f"Solo pad 5: every other pad muted {muted}")
+    res.check(all(b.u8(cells[i] + 0x189) == (1 if i == 5 else 0) for i in range(16)), "cells show the solo")
+    posts.clear()
+    down(6)
+    res.check(posts == [(0x44, 0x12, 1)] and b.u32(MX_STATE + 100) == (1 << 5 | 1 << 6), f"add pad 6 to the solo {posts}")
+    b.call(bench.sym["mix_touch_move"], MIX_OBJ, pt, 0)
+    res.check(not calls, "Solo mode: no drag painting")
+    down(5)
+    posts.clear()
+    down(6)
+    res.check(b.u32(MX_STATE + 100) == 0 and all(b.u8(cells[i] + 0x189) == (0 if i == 2 else 1) for i in range(16)),
+              "empty solo set: the hand mute on pad 2 comes back, the rest play")
+    fills, outlines = [], []
+    b.stub(0x0808EA22, lambda board: fills.append(board.arg(1)) and None)
+    b.stub(0x0808E994, lambda board: outlines.append(board.arg(1)) and None)
+    down(9)
+    b.call(bench.sym["mix_mute_fill"], cells[9] + 4, 9, 0x30018000)
+    b.call(bench.sym["mix_mute_fill"], cells[3] + 4, 2, 0x30018000)
+    res.check(fills == [0x1C, 2] and outlines == [0x14] * 4, f"Solo colours: soloed yellow, all outlined {fills} {outlines}")
+    b.call(bench.sym["mix_info"], APP_OBJ, 0x2F, 0, 0)
+    res.check(b.u32(MX_STATE + 92) == 0, "INFO: back to Mute")
+    fills.clear(); outlines.clear()
+    b.call(bench.sym["mix_mute_fill"], cells[9] + 4, 9, 0x30018000)
+    res.check(fills == [9] and not outlines, f"Mute mode: stock colours {fills}")
+    calls.clear()
+    down(4)
+    res.check(calls == ["mute_down"] and b.u32(MX_STATE + 100) == 0, "a hand edit in Mute drops the solo set")
 
 
 def t_mix_knobs(bench, res):
@@ -1714,33 +1767,6 @@ def t_mix_button(bench, res):
     res.check(calls == [0x2E], f"MIX elsewhere opens Mix {calls}")
 
 
-def t_info_momentary(bench, res):
-    b = _mix_setup(bench)
-    calls = []
-    b.stub(SET_SCREEN, lambda board: calls.append(board.arg(1)))
-    _mix_tick(bench)
-    b.mu.mem_write(MIX_OBJ + 0x1E40, b"\x01")       # Mute mode
-    b.w32(UWTICK, 1000)
-    b.call(bench.sym["info_to_mute"], APP_OBJ, 0x2F, 0, 0)
-    res.check(calls == [0x2F], f"INFO on Mix opens Mute {calls}")
-    b.mu.mem_write(BTN_INFO, b"\x00")
-    b.w32(UWTICK, 1200)
-    _mix_tick(bench)
-    res.check(b.u32(MX_STATE + 8) == 1, "short hold is still a toggle")
-    b.w32(UWTICK, 1450)
-    _mix_tick(bench)
-    res.check(b.u32(MX_STATE + 8) == 2, "held past 400 ms becomes momentary")
-    b.mu.mem_write(BTN_INFO, b"\x01")
-    _mix_tick(bench)
-    res.check(calls == [0x2F, 0x2E], f"release after a long hold returns to Mix {calls}")
-    calls.clear()
-    b.w32(UWTICK, 5000)
-    b.call(bench.sym["info_to_mute"], APP_OBJ, 0x2F, 0, 0)
-    b.w32(UWTICK, 5100)
-    _mix_tick(bench)
-    res.check(calls == [0x2F] and b.u32(MX_STATE + 8) == 0, f"short press stays in Mute {calls}")
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
@@ -1802,7 +1828,7 @@ def main():
     if "mix_tick" in sym:
         cases += [
             ("Mix hooks and letter", t_mix_hooks),
-            ("Mix pads play unless MIX held", t_mix_pad_plays),
+            ("Mix pads: select / mute / solo", t_mix_pads),
             ("Mix knobs drive Cutoff/Decay/Sends", t_mix_knobs),
             ("Mix faders and MIX-hold layout", t_mix_layout),
             ("Mix fader touch sets the pad", t_mix_fader_touch),
@@ -1828,7 +1854,6 @@ def main():
             ("seq rec: Rec Len sets the length", t_seqrec_setparam),
             ("seq rec: CLR resets untouched", t_seqrec_clear),
             ("seq rec: Custom recording", t_seqrec_record),
-            ("INFO momentary Mute", t_info_momentary),
         ]
     for name, fn in cases:
         run_case(image, name, fn, res)

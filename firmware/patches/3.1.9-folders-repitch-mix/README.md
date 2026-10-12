@@ -4,7 +4,10 @@
 
 ## What the Mix screen does
 
-- **Pads play on Mix.** Tapping a pad triggers it exactly like on the Pads screen, so it also records with REC. Playing a pad selects it.
+- **Pads mute on Mix.** The pads show green (playing) / red (muted). Tap a pad to mute or unmute it; drag across pads to paint the same state. Pads no longer play on Mix.
+- **INFO cycles the pad mode:** Mute → Solo → Mute.
+  - **Solo:** every pad gets a yellow outline. Tap pads to add them to the solo set: soloed pads show yellow and everything else is muted. Tap them again to take them out; when the set is empty, the mutes you had before soloing come back.
+  - A mute edit in Mute mode while a solo is active ends the solo and keeps what you set by hand.
 - **Four side faders, two layers.** Each fader shows a param of the selected pad, and the knob in the same corner drives it (stock step and acceleration). You can also drag the faders.
 
   | | Main layer | | MIX held | |
@@ -13,13 +16,10 @@
   | Top | Vol | Cutoff (Filter) | Pan | Send A (FX1) |
   | Bottom | Decay | Pitch | Attack | Send B (FX2) |
 
-- **Hold MIX** to show the second layer. While it's held, tapping a pad selects it without playing it. The MIX press that opens the Mix screen doesn't count: press it again on Mix for the second layer.
+- **Hold MIX** to show the second layer. While it's held, tapping a pad selects it (the faders follow it) without muting it. The MIX press that opens the Mix screen doesn't count: press it again on Mix for the second layer.
 - **Blip from rest.** If a param sits at its rest position, a quick touch (under 0.3 s) sets the value under your finger and puts the rest value back on release. Touch longer and the new value stays. Rest positions: Vol at minimum, Cutoff centre, Pitch unshifted, Attack/Decay/Sends at 0. Pan never blips.
 - **Centre detent.** Cutoff, Pitch and Pan grow their bar from a white centre line. A drag that passes within a few pixels of the centre sticks at exactly 0.
 - **MIX** opens Mix from any screen. On Mix it no longer flips to Mute.
-- **INFO** on Mix opens Mute:
-  - A short press stays in Mute, and INFO again goes back to Mix (as before).
-  - Holding INFO for more than 0.4 s makes Mute momentary: releasing it returns to Mix.
 
 Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 
@@ -76,13 +76,13 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 
 ## Check on the device
 
-1. On Mix, tap pads: they play. With REC armed they record.
+1. On Mix, tap pads: they turn red (muted) and green again; you hear them drop out. Drag across several pads: they all take the first pad's new state. Pads don't play from Mix any more.
 2. Turn each knob, in both layers. The fader in the same corner moves and you hear the change. If a knob moves the wrong fader, the encoder order is off: swap the entries in `knob_slider` in `mixui.S` and rebuild.
 3. Drag each fader. The value changes for the selected pad.
-4. Hold MIX: Pan / Attack / Send A / Send B appear, and tapping a pad selects it silently. Let go: Vol / Decay / Cutoff / Pitch return.
+4. Hold MIX: Pan / Attack / Send A / Send B appear, and tapping a pad selects it (no mute change). Let go: Vol / Decay / Cutoff / Pitch return.
 5. Drag Cutoff, Pitch and Pan through the middle: the bar flips sides at the white line, and the value sticks at 0 near it.
 6. With Send A at 0, tap its fader quickly: a short send blip, then back to 0. Hold it longer: the send stays.
-7. INFO short press stays in Mute; press INFO again to return to Mix. Hold INFO: Mute while held, Mix on release.
+7. INFO: yellow outlines (Solo). Tap two pads: they turn yellow, everything else red and silent. Tap both again: the earlier mutes come back. INFO again: Mute mode (no outlines).
 8. Save the preset and reload it: the values persist.
 9. Folders and Repitch behave as in 3.1.X.
 10. Pads: no knob does anything. Seq: only the top-right knob (length). Pad INFO / settings lists: one knob still picks the row, the other changes it.
@@ -106,11 +106,12 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 ```
 
 `build_patch.py` reuses `../3.1.9-folders-repitch/build_patch.py` (sites, linker, verify). It assembles `mix_cave.S`, which includes the 3.1.X `cave.S` and then `mixui.S`. On top of 3.1.X it patches:
-- three `bl App_SetScreen` calls in `App_HandleInput` (MIX at `0x080A32DE`, INFO on Mix at `0x080A30DC`, FX from DJ FX at `0x080A32BE`);
+- two `bl App_SetScreen` calls in `App_HandleInput` (MIX at `0x080A32DE`, FX from DJ FX at `0x080A32BE`) and the INFO-on-Mix one (`0x080A30DC`), which now cycles the pad mode;
+- the Mix view's set-mode call (`0x0808BC40`), its two mute-mode cell fills (`0x080A43E0`, `0x080A43F8`) and touchDown / touchMove vtable words (`mixmute.S`);
 - the scroll-list encoder row select `FUN_080B9BA4` (b.w to a no-op);
 - widget vtable words: Mix tick/onChildEvent/onEvent, Pads and Seq onChildEvent/onEvent, EQ graph touchDown, FX Return onChildEvent/onEvent;
 - four EQ default band-type bytes.
 
-Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording), `looper.S` (looper takes; wraps the note-ring pop `bl` at `0x080A2936`).
+Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording), `mixmute.S` (Mix pads: mute / solo / select), `looper.S` (looper takes; wraps the note-ring pop `bl` at `0x080A2936`).
 
 The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with draw, touchDown, touchMove and touchUp wrapped for the centre detent and the blip, so faders on other screens are untouched.

@@ -40,3 +40,8 @@
 .ltorg
 
 .include "looper.S"
+
+.align 2
+.ltorg
+
+.include "mixmute.S"

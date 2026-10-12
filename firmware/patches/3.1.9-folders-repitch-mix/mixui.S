@@ -4,9 +4,7 @@
 @ point here (tick, onChildEvent, onEvent) and two App_HandleInput calls to App_SetScreen
 @ are redirected (MIX on Mix, INFO on Mix).
 @
-@ - Pads play and record on Mix: pad press/release (child events 3/4) keep propagating to
-@   App_HandleUiEvent like on the Pads screen. While MIX is held they go to the stock
-@   handler, which turns a press into 0x63 (select, no trigger).
+@ - Pads mute / solo on Mix and select while MIX is held (mixmute.S). They no longer play.
 @ - The four stock side faders (class 0x080C1F3C, built by the Mix constructor but never
 @   attached) become children and replace the empty frames. Two layers, same corners
 @   (the GUI's y axis runs bottom-up, so logical y=1 is the physical bottom row):
@@ -23,8 +21,7 @@
 @   value under the finger as usual; letting go within MX_BLIP_MS puts the rest value
 @   back. Longer touches keep the new value. Our faders get their own copy of the fader
 @   vtable (fader_vt) so faders on other screens are untouched.
-@ - INFO on Mix opens Mute. Released within MX_HOLD_MS it stays (toggle); held longer it
-@   goes back to Mix on release (momentary).
+@ - INFO on Mix cycles the pad mode (Mute, Solo; mixmute.S) instead of opening Mute.
 @
 @ UI task only (App_HandleInput, GUI tick/event/touch). RAM only. MIX and INFO send no
 @ release event, so hold state is the debounced level byte in the button table (0 = pressed).
@@ -98,7 +95,6 @@
 .global mix_child_event
 .global mix_on_event
 .global mix_btn_screen
-.global info_to_mute
 .global fader_vt
 .global fader_down
 .global fader_up
@@ -138,6 +134,10 @@ mx_state:
     str     r1, [r0, #80]           @ looper LP_STATE
     str     r1, [r0, #84]           @ looper LP_T0
     str     r1, [r0, #88]           @ looper LP_N
+    str     r1, [r0, #92]           @ mixmute MX_PMODE
+    str     r1, [r0, #96]           @ mixmute MX_VIEW
+    str     r1, [r0, #100]          @ mixmute MX_SMASK
+    str     r1, [r0, #104]          @ mixmute MX_SSAVED
 1:
     pop     {r2}
     bx      lr
@@ -146,20 +146,7 @@ mx_state:
 
 .thumb_func
 mix_child_event:
-    ldrh    r2, [r1]
-    subs    r2, #3
-    cmp     r2, #1
-    bhi     1f
-    add.w   r2, r0, #0x1000
-    ldrb.w  r2, [r2, #(M_MODE - 0x1000)]
-    cbnz    r2, 1f
-    ldr     r2, =BTN_MIX
-    ldrb    r2, [r2]
-    cbz     r2, 1f                  @ MIX held: stock select-only
-    movs    r0, #1                  @ keep propagating to App_HandleUiEvent
-    bx      lr
-1:
-    ldr     r12, =MIX_CHILD
+    ldr     r12, =MIX_CHILD         @ stock: pads no longer play on Mix
     bx      r12
 
 @ ---- vtable +0x34: knobs, and refresh the faders after stock
@@ -425,9 +412,6 @@ mix_tick:
     mov     r0, r4
     mov     r1, r5
     call    MIX_TICK
-    add.w   r0, r4, #0x1000
-    ldrb.w  r0, [r0, #(M_MODE - 0x1000)]
-    cbnz    r0, 2f
     bl      mx_state
     ldr     r1, =BTN_MIX
     ldrb    r1, [r1]
@@ -462,33 +446,6 @@ mix_tick:
     strb    r0, [r5]
     strb    r0, [r5, #1]
 2:
-    bl      mx_state
-    ldr     r1, [r0, #MX_INFO]
-    cbz     r1, 9f
-    ldr     r2, =BTN_INFO
-    ldrb    r2, [r2]
-    cbnz    r2, 5f                  @ released
-    cmp     r1, #1
-    bne     9f
-    ldr     r2, =UWTICK
-    ldr     r2, [r2]
-    ldr     r3, [r0, #MX_T0]
-    subs    r2, r2, r3
-    cmp     r2, #MX_HOLD_MS
-    blo     9f
-    movs    r1, #2
-    str     r1, [r0, #MX_INFO]
-    b       9f
-5:
-    movs    r2, #0
-    str     r2, [r0, #MX_INFO]
-    cmp     r1, #2
-    bne     9f
-    ldr     r0, =APP
-    movs    r1, #0x2E
-    movs    r2, #0
-    movs    r3, #0
-    call    SCREEN
 9:
     pop     {r4, r5, r6, pc}
 
@@ -744,20 +701,6 @@ mix_btn_screen:
     movs    r1, #1
     str     r1, [r0, #MX_WAIT]      @ this press opens Mix; it is not a hold
     pop     {r0, r1, r2, r3, r4, lr}
-    ldr     r12, =SCREEN
-    bx      r12
-
-@ INFO on Mix (0x080A30DC): open Mute and time the press for the momentary release.
-.thumb_func
-info_to_mute:
-    push    {r0, r1, r2, r3, lr}
-    bl      mx_state
-    movs    r1, #1
-    str     r1, [r0, #MX_INFO]
-    ldr     r1, =UWTICK
-    ldr     r1, [r1]
-    str     r1, [r0, #MX_T0]
-    pop     {r0, r1, r2, r3, lr}
     ldr     r12, =SCREEN
     bx      r12
 

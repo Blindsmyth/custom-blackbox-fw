@@ -5,7 +5,7 @@ Planned features for the `mix-overhaul` line (3.1.Q and later). Addresses are st
 ## Done in 3.1.Q
 
 - Mix screen:
-  - pads play;
+  - pads mute (green/red), MIX held selects, INFO cycles Mute / Solo (Solo after j3threejay/blackbox-mod);
   - two four-fader layers (MIX held for the second);
   - knobs on their corner;
   - quick-touch blip from rest;
@@ -74,6 +74,22 @@ Encoders no longer select pads or sequences, and no longer switch pages on the P
 - Risks: jitter, and the 64-deep pad queue (`FUN_0804F504`). L.
 
 ## Later
+
+### Mix: more pad modes
+
+INFO on Mix cycles pad modes (Mute, Solo so far). Next candidates:
+- **DJ FX routing:** a pad mode that routes / unroutes each pad's sound to the DJ touch-screen FX block (green = through the FX, grey = dry). To map first: how the DJ FX screen (`0x23`) processes audio (which bus, per-pad send or master insert), where its on/off state lives, and whether a per-pad flag exists or needs a new param.
+- A mode label on screen (the yellow outlines are the only Solo cue now).
+
+### Ideas from j3threejay/blackbox-mod
+
+Mapped in [firmware/blackbox-mod.md](firmware/blackbox-mod.md); each could be ported into our cave (their cave overlaps ours, so not flashed together):
+- Slicer knobs: bottom = slice Start / End, top-right = Zoom.
+- Keys-screen chords on the top-right knob (records as plain notes).
+- Note conditions A:B in the piano roll PLAY list.
+- Pad-1 ducker as modulation sources (the engine's ten unused mod sources).
+- Sequencer fix: a note added just ahead of the playhead plays this pass.
+- DSP: 24 dB SVF filter, Fidelity / machine modes, saturation, compressor models, Room reverb, Munchi delay.
 
 ### Song mode: Play Count "Loop"
 
