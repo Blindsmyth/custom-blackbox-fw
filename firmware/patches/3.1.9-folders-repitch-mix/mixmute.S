@@ -358,7 +358,9 @@ mix_mute_fill:
 .equ HDR_TICK,    0x080AB78D
 .equ H_SEL,       0xE4                  @ label, stock rect x 80 w 200, never written by stock
 .equ H_SEQ,       0x13C                 @ "Seq x" label, stock x 140 w 140
-.equ H_SEL_X,     92                    @ centred between the counter (ends ~x 50) and Seq (x 170)
+.equ H_SEL_X,     90                    @ centred between the counter text (ends ~x 46) and Seq (x 170)
+.equ H_CNT,       0x34                  @ counter label, stock x 10 w 100: its repaint wiped Sel
+.equ H_CNT_W,     70                    @ x 10..80 still fits "128:4" (12 px per character)
 .equ H_SEL_W,     36
 .equ H_SEQ_X,     170
 .equ H_SEQ_W,     84                    @ ends before the loop bar at x 256
@@ -404,6 +406,8 @@ hdr_tick:
     str     r0, [r4, #(H_SEL + 4)]
     movs    r0, #H_SEL_W
     str     r0, [r4, #(H_SEL + 0xC)]
+    movs    r0, #H_CNT_W
+    str     r0, [r4, #(H_CNT + 0xC)]
 1:
     bl      sel_active
     mov     r6, r0

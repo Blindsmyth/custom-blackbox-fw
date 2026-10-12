@@ -1804,7 +1804,7 @@ def t_header_sel(bench, res):
     for btn in (0x24009ABE, 0x24009AEE):
         b.mu.mem_write(btn, b"\x01")
     tick()
-    res.check(b.u32(hdr + 0x140) == 170 and b.u32(hdr + 0x148) == 84 and b.u32(hdr + 0xE8) == 92 and b.u32(hdr + 0xF0) == 36
+    res.check(b.u32(hdr + 0x140) == 170 and b.u32(hdr + 0x148) == 84 and b.u32(hdr + 0xE8) == 90 and b.u32(hdr + 0xF0) == 36 and b.u32(hdr + 0x40) == 70
               and ticks == [1] and not texts, f"Seq x moved right, Sel slot placed, stock tick runs {texts}")
     for btn, name in ((0x24009ABE, "PADS"), (0x24009AEE, "SEQS")):
         texts.clear()
