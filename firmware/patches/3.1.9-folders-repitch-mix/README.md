@@ -47,6 +47,27 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
   - New EQs start as Low Shelf, Param, Param, High Shelf. So does an EQ from an older preset that nobody touched (all bands None, gains 0, frequencies 200/400/600/800) when you open it. An EQ you've edited stays as it is.
 - **FX button:** toggles between DJ FX and the FX Return page. The Return page and the EQ page share a button row along the bottom, like the pad page's Main / Pos / LFO / Conf: **A Delay | B Reverb | EQ |** (empty). The page you're on is lit. On the EQ page the EQ view is 40 px shorter to make room. The send page is no longer in the cycle (sends live on Mix).
 
+## Tools → Master
+
+Stock has one master compressor with a limiter after it. Its settings are hardcoded, and the only control was Tools → Main → Compressor (on/off). Tools now has a fifth section, **Master**:
+
+| Row | Range | Default (= stock) | What it sets |
+| --- | --- | --- | --- |
+| Compressor | Off / On | as before | Turns the compressor **and** the limiter on (stock behaviour). Moved here from Tools → Main. |
+| C Thresh | −48.0 … 0.0 dB | −4.0 | Threshold. The detector is a 128-sample RMS of the master. |
+| C Ratio | 1 … 100 (:1) | 4 | Ratio, hard knee. 1 = no compression. |
+| C Attack | 0 … 10000 ms | 10 ms | How long the gain takes to fall. |
+| C Release | 0 … 10000 ms | 250 ms | How long it takes to come back. |
+| C Gain | −36.0 … +36.0 dB | −4.0 | Input gain into the compressor (stock: a fixed −4 dB). Raising it drives the compressor and the limiter harder. |
+| L Attack | 0 … 10000 ms | 4 ms | Limiter gain fall time. |
+| L Release | 0 … 10000 ms | 750 ms | Limiter recovery time. |
+
+- **Untouched sounds like stock.** The defaults are the stock values.
+- **Global, like Compressor.** The values are saved in `settings.tml` as soon as you change them, and stay the same across presets.
+- **Limiter limits.** The ceiling stays at 0 dBFS (a literal in stock code). The limiter works per audio block (2.7 ms) without lookahead; the output's hard clip catches short overs.
+- **Times of 0 ms** become one sample.
+- **Out1–3.** Pads routed there bypass the compressor, as in stock.
+
 ## Custom sequence recording
 
 Records MIDI into a sequence the way Ableton records into a new clip.
@@ -103,6 +124,8 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 18b. Transport running, empty Custom sequence: press REC, play 2½ bars, press REC: the loop closes at bar 3 and plays 3 bars back (as before).
 19. Turn Rec Len to 2 bar: the sequence is 2 bars long. Save, reload: Rec Len is kept.
 20. Tools → Rec → Seq Default = 2 bar. New preset: its sequences are 2 bars. Turn one to 8 bar, CLR: back to 2 bar. CLR an empty sequence set to 4 bar: 2 bar. Seq Default = Custom: CLR gives an empty Custom sequence (shows Cust).
+21. Tools shows five tabs: Main, Rec, MIDI, Clock, **Master**. Main no longer has Compressor. Master lists Compressor, C Thresh −4.0, C Ratio 4, C Attack 10 ms, C Release 250 ms, C Gain −4.0, L Attack 4 ms, L Release 750 ms.
+22. Compressor On with those defaults sounds as before. Lower C Thresh (e.g. −20.0) with a loud loop: clearly more compression; C Ratio 1: none. Raise C Gain: louder and squashed into the limiter. Power cycle: the values are kept, in every preset.
 
 ## Rebuild and test
 
@@ -116,8 +139,15 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 - the Mix view's set-mode call (`0x0808BC40`), its two mute-mode cell fills (`0x080A43E0`, `0x080A43F8`) and touchDown / touchMove vtable words (`mixmute.S`);
 - the scroll-list encoder row select `FUN_080B9BA4` (b.w to a no-op);
 - widget vtable words: Mix tick/onChildEvent/onEvent, Pads and Seq onChildEvent/onEvent, EQ graph touchDown, FX Return onChildEvent/onEvent;
-- four EQ default band-type bytes.
+- four EQ default band-type bytes;
+- Tools → Master (`master.S`):
+  - `bl`s at `0x08053CA0` (compressor call → `master_comp`), `0x0808DD3E` (registration, after 0x13B) and `0x08094886` (global template, after 0xB4);
+  - two Tools page bounds (`0x080996D2`, `0x08098D5A`, `cmp r6,#3` → `#4`);
+  - the Tools → Main list (drop 0xB4) and the empty page-4 list `0x080EEE38`;
+  - tab name 4 (`WORDS`: a data pointer to "Master").
 
-Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording), `mixmute.S` (Mix pads: mute / solo / select), `looper.S` (looper takes; wraps the note-ring pop `bl` at `0x080A2936`).
+`master_comp` reads the seven values from the global bag, clamps them, and writes them into the compressor object (dB as floats, times as ms × 48 samples). Then it runs the stock compressor. Five of the params are stock ids that 3.1.9 registers but never uses: `cthreshdb`, `cratio`, `cattack`, `crelease`, `cgaindb`. Two are new: `lattack` 0x1A8 and `lrelease` 0x1A9. `build_patch.py` stops if two entries patch the same byte.
+
+Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording), `mixmute.S` (Mix pads: mute / solo / select), `looper.S` (looper takes; wraps the note-ring pop `bl` at `0x080A2936`), `master.S` (Tools → Master).
 
 The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with draw, touchDown, touchMove and touchUp wrapped for the centre detent and the blip, so faders on other screens are untouched.

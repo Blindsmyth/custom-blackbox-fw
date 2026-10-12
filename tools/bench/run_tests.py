@@ -1825,6 +1825,229 @@ def t_header_sel(bench, res):
     res.check(texts == [(0xE4, "Sel"), (0xE4, "")], f"MIX held on Mix: Sel {texts}")
 
 
+# ---- Tools -> Master (master.S)
+
+M_GLOBAL_BAG = 0x24028D18
+REGISTER_ALL = 0x0808C159
+P_TITLE, P_FMT, P_MIN, P_MAX = 0x0808E221, 0x0808E24D, 0x0808E2D1, 0x0808E305
+BAG_ADD = 0x08093EF6
+PAGE_MODEL = 0x080996B0
+COMP_PROC = 0x0804EDDC
+COMP_CTOR = 0x0804F010
+MASTER_IDS = [0xB4, 0x131, 0x132, 0x12F, 0x130, 0x13A, 0x1A8, 0x1A9]
+DEFAULTS = [(0x131, -4000), (0x132, 4), (0x12F, 10), (0x130, 250), (0x13A, -4000),
+            (0x1A8, 4), (0x1A9, 750)]
+# offset -> (kind, stock ctor value)
+FIELDS = {0x428: ("f", -4.0), 0x42C: ("f", 4.0), 0x430: ("f", -4.0),
+          0x448: ("i", 480), 0x44C: ("i", 12000), 0x468: ("i", 192), 0x46C: ("i", 36000)}
+BAG_ENTRIES = 0x30040000
+COMP = 0x30010000
+MIXER = 0x30018000
+MODEL = 0x2001C900
+REF = 0x2001C880
+
+
+def _registry(b):
+    if b.call(P_MAX, 0x3E) == 0:
+        b.call(REGISTER_ALL)
+
+
+def _set_bag(b, entries):
+    blob = b"".join(struct.pack("<HHi", i, 0, v) for i, v in entries)
+    b.mu.mem_write(BAG_ENTRIES, blob)
+    b.w32(M_GLOBAL_BAG + 4, BAG_ENTRIES)
+    b.mu.mem_write(M_GLOBAL_BAG + 0xA, struct.pack("<H", len(entries)))
+
+
+def _fields(b):
+    out = {}
+    for off, (kind, _) in FIELDS.items():
+        raw = bytes(b.mu.mem_read(COMP + off, 4))
+        out[off] = struct.unpack("<f" if kind == "f" else "<i", raw)[0]
+    return out
+
+
+def _run_comp(bench, b):
+    seen = []
+    b.stub(COMP_PROC, lambda board: seen.append((board.arg(0), board.arg(1))) or 1)
+    b.mu.mem_write(0xE000ED88, struct.pack("<I", 0xF << 20))      # FPU on
+    b.call(bench.sym["master_comp"], COMP, MIXER)
+    return seen
+
+
+def t_master_image(bench, res):
+    img = bench.b.image
+    main = _u16s(img, 0x080EED18, 10)
+    res.check(main == [0xBA, 0xBB, 0xBC, 0xBD, 0x7F, 0xCD, 0xF6, 0xF7, 0x19B, 0],
+              f"Tools -> Main without Compressor {[hex(x) for x in main]}")
+    page4 = _u16s(img, 0x080EEE38, 9)
+    res.check(page4 == MASTER_IDS + [0], f"Tools -> Master lists the eight ids {[hex(x) for x in page4]}")
+    res.check(_u16s(img, 0x080EED60, 1) == [0x9D], "Tools -> Rec list untouched")
+    name = struct.unpack_from("<I", img, 0x080EEE90 - bd.BASE)[0]
+    res.check(name == bench.sym["s_master"], "tab name 4 points at \"Master\"")
+    res.check(struct.unpack_from("<I", img, 0x080EEE94 - bd.BASE)[0] == 0x080CB060,
+              "tab name 5 stays empty (5 tabs)")
+    res.check(img[0x080996D2 - bd.BASE:0x080996D4 - bd.BASE].hex() == "042e"
+              and img[0x08098D5A - bd.BASE:0x08098D5C - bd.BASE].hex() == "042e",
+              "Tools page index up to 4 (page model and row builder)")
+
+
+def t_master_registry(bench, res):
+    b = bench.b
+    _registry(b)
+    title = lambda i: b.cstr(b.call(P_TITLE, i))
+    want = {0x131: "C Thresh:", 0x132: "C Ratio:", 0x12F: "C Attack:", 0x130: "C Release:",
+            0x13A: "C Gain:", 0x1A8: "L Attack:", 0x1A9: "L Release:"}
+    for i, t in want.items():
+        res.check(title(i) == t, f"{i:#x} registered as {title(i)!r}")
+    res.check(b.call(P_FMT, 0x1A8) == 0xF and b.call(P_FMT, 0x1A9) == 0xE,
+              "L Attack / L Release use the C Attack / C Release formats (ms)")
+    res.check(b.call(P_MIN, 0x1A8) == 0 and b.call(P_MAX, 0x1A8) == 10000
+              and b.call(P_MAX, 0x1A9) == 10000, "L Attack / L Release range 0..10000 ms")
+    res.check(title(0x13B) != "" and title(0x189) != "", "the chained stock 0x13B and later registrations ran")
+    res.check(title(0x19C) != "" and title(0x1A1) == "Dbl Copy:", "3.1.Q registrations still ran")
+
+
+def t_master_template(bench, res):
+    b = bench.b
+    adds = []
+    b.stub(BAG_ADD, lambda board: adds.append((board.arg(1), board.arg(2) - (1 << 32) if board.arg(2) >> 31 else board.arg(2))))
+    b.call(bench.sym["master_tpl"], 0x30060000, 0xB4, 1)
+    res.check(adds == [(0xB4, 1)] + DEFAULTS, f"global template adds Compressor then the defaults {adds}")
+
+
+def t_master_page(bench, res):
+    b = bench.b
+    _set_bag(b, [(0xB4, 1)] + DEFAULTS)
+    b.mu.mem_write(REF, b"\0" * 8)
+    b.mu.mem_write(REF + 4, struct.pack("<H", 0x40))
+
+    def model(page):
+        b.mu.mem_write(MODEL, b"\0" * 0x80)
+        ok = b.call(PAGE_MODEL, APP_OBJ, REF, MODEL, page)
+        m = bytes(b.mu.mem_read(MODEL, 0x80))
+        ids = [x for x in struct.unpack_from("<8H", m, 2) if x]
+        names = [m[0x4D + 8 * i:0x4D + 8 * i + 8].split(b"\0")[0].decode() for i in range(6)]
+        count = struct.unpack_from("<I", m, 0x44)[0]
+        return ok, ids, names, count, m
+    ok, ids, names, count, m = model(4)
+    res.check(ok == 1 and ids == MASTER_IDS, f"page 4 model holds the Master ids {[hex(i) for i in ids]}")
+    res.check(names[:5] == ["Main", "Rec", names[2], names[3], "Master"] and count == 5,
+              f"five tabs {names} count {count}")
+    vals = list(struct.unpack_from("<8i", m, 0x14))
+    res.check(vals == [1] + [v for _, v in DEFAULTS], f"page 4 values from the global bag {vals}")
+    ok, ids, *_ = model(0)
+    res.check(ok == 1 and 0xB4 not in ids and ids[:4] == [0xBA, 0xBB, 0xBC, 0xBD], f"page 0 (Main) {[hex(i) for i in ids]}")
+    ok, *_ = model(5)
+    res.check(ok == 0, "no page 5")
+
+
+def t_master_comp(bench, res):
+    b = bench.b
+    b.mu.mem_write(COMP, b"\0" * 0x700)
+    _set_bag(b, [(0x131, -12500), (0x132, 8), (0x12F, 25), (0x130, 400), (0x13A, 3000),
+                 (0x1A8, 2), (0x1A9, 1000)])
+    seen = _run_comp(bench, b)
+    f = _fields(b)
+    res.check(seen == [(COMP, MIXER)], f"stock compressor runs with the same args {seen}")
+    want = {0x428: -12.5, 0x42C: 8.0, 0x430: 3.0, 0x448: 25 * 48, 0x44C: 400 * 48, 0x468: 96, 0x46C: 48000}
+    res.check(all(abs(f[k] - v) < 1e-5 for k, v in want.items()), f"fields set {f}")
+    # out of range and zero times are clamped; missing ids leave their field alone
+    b.mu.mem_write(COMP, b"\0" * 0x700)
+    b.mu.mem_write(COMP + 0x46C, struct.pack("<i", 777))
+    _set_bag(b, [(0x131, -90000), (0x132, 0), (0x12F, 0), (0x130, 99999), (0x13A, 50000), (0x1A8, -5)])
+    _run_comp(bench, b)
+    f = _fields(b)
+    want = {0x428: -48.0, 0x42C: 1.0, 0x430: 36.0, 0x448: 1, 0x44C: 480000, 0x468: 1, 0x46C: 777}
+    res.check(all(abs(f[k] - v) < 1e-5 for k, v in want.items()), f"clamped, missing kept {f}")
+    _set_bag(b, [])
+    seen = _run_comp(bench, b)
+    res.check(seen == [(COMP, MIXER)], "an empty bag still runs stock")
+
+
+def t_master_defaults_are_stock(bench, res):
+    b = bench.b
+    b.mu.mem_write(COMP, b"\0" * 0x700)
+    b.call(COMP_CTOR, COMP)
+    stock = _fields(b)
+    res.check(all(stock[k] == v for k, (_, v) in FIELDS.items()), f"stock ctor values {stock}")
+    _set_bag(b, [(0xB4, 1)] + DEFAULTS)
+    _run_comp(bench, b)
+    res.check(_fields(b) == stock, f"Master defaults reproduce the stock settings exactly {_fields(b)}")
+
+
+def t_master_gui(bench, res):
+    """Real GUI + App: Tools opens, tab 4 (Master) switches to screen 0x29 and lists the rows."""
+    from unicorn import UC_HOOK_CODE
+    b = bench.b
+    mu = b.mu
+    mu.mem_write(0xE000ED88, struct.pack("<I", 0xF << 20))
+    b.unstub(SET_SCREEN)
+    b.stub(0x080A2258, lambda board: 0)
+    tick = [0]
+
+    def gettick(board):
+        tick[0] += 5
+        board.w32(UWTICK, tick[0])
+        return tick[0]
+    b.stub(0x0807794C, gettick)
+    for fn in GUI_DP_STUBS + GUI_DRAW_STUBS:
+        b.stub(fn, lambda board: 0)
+    texts = []
+    mu.hook_add(UC_HOOK_CODE, lambda mu_, a, sz, d: texts.append(b.cstr(b.arg(1), 32)),
+                begin=0x080C3B98, end=0x080C3B98)
+    rows = []
+    mu.hook_add(UC_HOOK_CODE, lambda mu_, a, sz, d: rows.append((b.arg(1) & 0xFFFF, b.arg(2))),
+                begin=0x080A5038, end=0x080A5038)
+    labels = []
+    mu.hook_add(UC_HOOK_CODE, lambda mu_, a, sz, d: labels.append(b.cstr(b.arg(1), 16)),
+                begin=0x080A3DEC, end=0x080A3DEC)
+    gui = 0xC2000000
+    mu.mem_write(gui, b"\0" * 0x100000)
+    b.call(0x0808BE4C, gui)
+    b.w32(0x24002E6C, gui)
+    # the global bag as at boot: template, so the rows have values
+    _set_bag(b, [(0xB4, 1)] + DEFAULTS)
+
+    def pump():
+        for _ in range(3):
+            b.call(0x0808B654, gui)
+            b.call(0x0808B2D0, gui, limit=50_000_000)
+
+    def where():
+        return b.u8(APP_OBJ + 0x8CA4), b.u32(gui + 0x280 + 0x34)
+    mu.mem_write(APP_OBJ + 0x8CA4, b"\x02")
+    mu.mem_write(APP_OBJ + 0x8CC3, b"\x00")
+    b.call(SET_SCREEN, APP_OBJ, 0x25, 0, 0)
+    pump()
+    scr, page = where()
+    res.check(scr == 0x25 and b.u32(page) == 0x080F18A4,
+              f"Tools opens on Main (screen {scr:#x}, page +{page - gui:#x} vtable {b.u32(page):#x})")
+    labels.clear()
+    texts.clear()
+    rows.clear()
+    ev = 0x2001C600
+    mu.mem_write(ev, b"\0" * 0x40)
+    mu.mem_write(ev, struct.pack("<H", 1))
+    b.w32(ev + 0xC, 0x12F + 4)
+    b.call(0x080C5360, page, ev)                # Tools onChildEvent: tab 4 pressed
+    pump()
+    scr, page2 = where()
+    m = bytes(mu.mem_read(page2 + 0xA560, 0x80))
+    ids = [x for x in struct.unpack_from("<8H", m, 2) if x]
+    res.check(b.u8(page2 + 0xA5E0) == 4, f"Tools page index 4 ({b.u8(page2 + 0xA5E0)}, screen {scr:#x})")
+    res.check(ids == MASTER_IDS, f"Master page model {[hex(i) for i in ids]}")
+    res.check("Master" in labels and "Main" in labels, f"tab labels {labels}")
+    vals = dict(DEFAULTS + [(0xB4, 1)])
+    want = [(i, vals[i] & 0xFFFFFFFF) for i in MASTER_IDS]
+    res.check(rows[-8:] == want, f"Master list rows (id, value) {[(hex(i), v) for i, v in rows[-8:]]}")
+    # the stock path for a Tools tab: App_SetScreen 0x29
+    b.call(SET_SCREEN, APP_OBJ, 0x29, 0, 0)
+    pump()
+    scr, page3 = where()
+    res.check(scr == 0x29 and b.u8(page3 + 0xA5E0) == 4, f"screen 0x29 shows Master ({scr:#x})")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
@@ -1914,6 +2137,13 @@ def main():
             ("seq rec: Rec Len sets the length", t_seqrec_setparam),
             ("seq rec: CLR resets untouched", t_seqrec_clear),
             ("seq rec: Custom recording", t_seqrec_record),
+            ("Master image patches", t_master_image),
+            ("Master params registered", t_master_registry),
+            ("Master global template", t_master_template),
+            ("Tools page model: five tabs, Master page", t_master_page),
+            ("master_comp writes the compressor", t_master_comp),
+            ("Master defaults are the stock settings", t_master_defaults_are_stock),
+            ("real GUI: Tools -> Master tab", t_master_gui),
         ]
     for name, fn in cases:
         run_case(image, name, fn, res)

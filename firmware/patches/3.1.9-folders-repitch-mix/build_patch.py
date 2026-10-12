@@ -53,6 +53,10 @@ SITES = base.SITES + [
     (0x080A2936, "looper_pop", True, "a9f70dff"),       # App_Update note-ring pop (looper)
     (0x080A282E, "seqrec_recstate", True, "f8f717fa"),  # recording on/off
     (0x080A2696, "seqrec_started", True, "faf7d3fd"),   # sequence started
+    # Tools -> Master (master.S)
+    (0x08053CA0, "master_comp", True, "fbf79cf8"),     # master render: bl FUN_0804EDDC (compressor)
+    (0x0808DD3E, "master_register", True, "fef7f5f9"),  # Param_RegisterAll: Param_RegisterInt(0x13B)
+    (0x08094886, "master_tpl", True, "fff736fb"),      # global bag template: add(0xB4)
 ]
 
 # Mix/Mute widget vtable 0x080F0F10: (address, cave symbol, stock word)
@@ -87,6 +91,19 @@ BYTES = [
     (0x0809474E, "0322", "0022"),
     (0x0809478E, "0322", "0022"),
     (0x080947CE, "0422", "0022"),
+    # Tools -> Master (master.S): a fifth Tools page
+    (0x080996D2, "042e", "032e"),                       # page model, Tools: cmp r6,#3 -> #4
+    (0x08098D5A, "042e", "032e"),                       # Tools row builder: cmp r6,#3 -> #4
+    (0x080EED28, "9b010000", "b4009b01"),               # Tools -> Main: drop Compressor (0xB4)
+    # Tools -> Master (page 4, empty in stock): Compressor, Thresh, Ratio, Attack, Release,
+    # Gain, L Attack, L Release
+    (0x080EEE38, "b40031013201" "2f0130013a01" "a801a9010000",
+     "000000000000" "000000000000" "000000000000"),
+]
+
+# (address, cave symbol, stock word): data pointers into the cave, no Thumb bit.
+WORDS = [
+    (0x080EEE90, "s_master", 0x080CB060),              # Tools tab names[4]: "" -> "Master"
 ]
 
 
@@ -95,7 +112,22 @@ BYTES = [
 WORD_TABLES = ["fxr_bar_rect", "fxr_labels", "fader_vt", "rest_values", "layer_main",
                "layer_held", "ticks_per_beat", "sr_short_labels", "sr_regs", "sr_len_labels",
                "sr_set_labels", "sr_len_ticks", "sr_960", "sr_bpm_labels",
-               "sr_dbl_labels", "sr_len_ticks_q", "lp_k"]
+               "sr_dbl_labels", "sr_len_ticks_q", "lp_k", "m_regs", "m_defaults", "m_fields"]
+
+
+def check_collisions():
+    """Every patched byte belongs to exactly one SITES / VTABLE / WORDS / BYTES / base entry."""
+    owner = {}
+    spans = ([(va, 4, f"site {sym}") for va, sym, *_ in SITES]
+             + [(va, 4, f"word {sym}") for va, sym, _ in VTABLE + WORDS]
+             + [(va, len(new) // 2, f"bytes {va:#x}") for va, new, _ in BYTES]
+             + [(va, 2, f"table {va:#x}") for va, *_ in base.TABLES]
+             + [(base.SKIP_SCREEN[0], 2, "skip screen")])
+    for va, n, what in spans:
+        for a in range(va, va + n):
+            if a in owner:
+                raise SystemExit(f"collision at {a:#x}: {what} and {owner[a]}")
+            owner[a] = what
 
 
 def check_alignment():
@@ -108,6 +140,7 @@ def check_alignment():
 
 
 def main():
+    check_collisions()
     subprocess.check_call(["clang", "-target", "armv7em-none-eabi", "-mthumb",
                            "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16", "-I", str(BASE_DIR),
                            "-c", "-o", str(OBJ), str(CAVE_S)], cwd=str(HERE))
@@ -139,12 +172,13 @@ def main():
         if image[off:off + 2].hex() != orig:
             raise SystemExit(f"{va:#x}: stock bytes {image[off:off + 2].hex()} != {orig}")
         image[off:off + 2] = bytes.fromhex(new)
-    for va, symbol, orig in VTABLE:
-        off = va - base.BASE
-        if struct.unpack_from("<I", image, off)[0] != orig:
-            raise SystemExit(f"{va:#x}: vtable word is not {orig:#x}")
-        struct.pack_into("<I", image, off, symbols[symbol] | 1)
-        print(f"  u32  {va:#010x} -> {symbol}")
+    for table, thumb in ((VTABLE, 1), (WORDS, 0)):
+        for va, symbol, orig in table:
+            off = va - base.BASE
+            if struct.unpack_from("<I", image, off)[0] != orig:
+                raise SystemExit(f"{va:#x}: word is not {orig:#x}")
+            struct.pack_into("<I", image, off, symbols[symbol] | thumb)
+            print(f"  u32  {va:#010x} -> {symbol}")
 
     for va, new, orig in BYTES:
         off = va - base.BASE
@@ -173,13 +207,14 @@ def verify(image, stock, symbols):
         insn = next(md.disasm(bytes(image[va - B: va - B + 4]), va))
         if insn.mnemonic not in ("bl", "b.w", "b") or int(insn.op_str.lstrip("#"), 16) != symbols[symbol]:
             raise SystemExit(f"{va:#x} decoded as {insn.mnemonic} {insn.op_str}")
-    for va, symbol, _ in VTABLE:
-        if struct.unpack_from("<I", image, va - B)[0] != symbols[symbol] | 1:
-            raise SystemExit(f"{va:#x}: vtable word not {symbol}")
+    for table, thumb in ((VTABLE, 1), (WORDS, 0)):
+        for va, symbol, _ in table:
+            if struct.unpack_from("<I", image, va - B)[0] != symbols[symbol] | thumb:
+                raise SystemExit(f"{va:#x}: word not {symbol}")
     allowed = {base.VERSION_OFF}
     for va, *_ in SITES:
         allowed.update(range(va - B, va - B + 4))
-    for va, *_ in VTABLE:
+    for va, *_ in VTABLE + WORDS:
         allowed.update(range(va - B, va - B + 4))
     for va, new, _ in BYTES:
         if image[va - B: va - B + len(new) // 2].hex() != new:

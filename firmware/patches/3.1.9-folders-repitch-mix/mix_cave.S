@@ -45,3 +45,8 @@
 .ltorg
 
 .include "mixmute.S"
+
+.align 2
+.ltorg
+
+.include "master.S"

@@ -23,8 +23,13 @@ Planned features for the `mix-overhaul` line (3.1.Q and later). Addresses are st
 - Custom (free-length) sequence recording: Rec Len per sequence, Seq Default in Tools → Rec (renamed from Seq Rec Len; CLR always resets to it), REC launches on the next Quant Size boundary and closes the loop on the next one.
 - The EQ page shares the FX selector row.
 - Seq length knob at Step Len speed: Custom, 1/8 … 32 bars, polymetric ×2/÷2 that returns to the user's step, Dbl Copy, 15/16-style labels; Rec Len follows Step Count / Step Len; Seq Default (any Rec Len) and CLR always resets to it.
+- Tools → Master: master compressor and limiter settings (threshold, ratio, attack, release, input gain, limiter attack/release).
 - **Looper takes (Boss style):** transport stopped + any empty sequence: REC arms (LED blinks), first note starts, REC again picks 1–16 bars for the Tools → Rec → Loop BPM range, sets the tempo, writes the notes quantised and starts playback at once. Open: stamps are taken when the UI pops the ring (block + UI-loop jitter); block-accurate stamps would need the engine stub at `0x0805C936` / `0x0805CA8C` (entry +0x20).
 - Fix: FX → Return crashed on the device: the bottom-bar rect sat at a 2-byte-aligned address and stock setRect reads it with LDM, which hard-faults on the M7 (Unicorn executes it). build_patch.py now checks word-table alignment.
+
+## Open issues
+
+- **Tools layout pass** ([#1](https://github.com/Blindsmyth/custom-blackbox-fw/issues/1)): spacing / alignment of the Tools section now that it has five tabs (Master) and Compressor moved off Main.
 
 ## Next, in order
 

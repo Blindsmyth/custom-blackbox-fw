@@ -179,7 +179,14 @@
  "mm_apply": "0x080f48e4",
  "mm_toggle": "0x080f4942",
  "sel_active": "0x080f4b00",
- "s_sel": "0x080f4b80",
+ "s_sel": "0x080f4b84",
+ "m_regs": "0x080f4cb4",
+ "m_defaults": "0x080f4ce8",
+ "m_fields": "0x080f4d24",
+ "s_l_atk": "0x080f4d9e",
+ "x_l_atk": "0x080f4db4",
+ "s_l_rel": "0x080f4da8",
+ "x_l_rel": "0x080f4dbc",
  "hook_register": "0x080f27ec",
  "hook_template": "0x080f2842",
  "hook_clip_def": "0x080f285c",
@@ -237,5 +244,10 @@
  "mix_touch_move": "0x080f4a32",
  "mix_info": "0x080f4a4e",
  "mix_mute_fill": "0x080f4a70",
- "hdr_tick": "0x080f4b2a"
+ "hdr_tick": "0x080f4b2a",
+ "master_register": "0x080f4bc0",
+ "master_tpl": "0x080f4c0a",
+ "master_comp": "0x080f4c54",
+ "master_find": "0x080f4c2a",
+ "s_master": "0x080f4d98"
 }
