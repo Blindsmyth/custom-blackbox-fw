@@ -874,9 +874,10 @@ def t_mix_layout(bench, res):
     res.check(fl[1] & 1, "layer change also asks for the partial pass (fader labels repaint there)")
     res.check(_slider_ids(b) == MIX_HELD, f"knobs follow the MIX layer {_slider_ids(b)}")
     res.check(not any(_fader(b, n)["hidden"] for n in MIX_FADERS), "all four faders shown in both layers")
+    b.w32(UWTICK, b.u32(UWTICK) + 1000)            # a hold, not a short press
     b.mu.mem_write(BTN_MIX, b"\x01")
     _mix_tick(bench)
-    res.check({n: _fader(b, n)["id"] for n in MIX_FADERS} == MIX_MAIN, "MIX released: main layer back")
+    res.check({n: _fader(b, n)["id"] for n in MIX_FADERS} == MIX_MAIN, "MIX released after a hold: main layer back")
     b.call(bench.sym["mix_on_event"], MIX_OBJ, _mix_ev(b, 0x63, key=0x23))
     pads = {n: _fader(b, n)["pad"] for n in MIX_FADERS}
     res.check(set(pads.values()) == {0x23}, f"faders follow the selected pad {pads}")
@@ -1761,10 +1762,36 @@ def t_mix_button(bench, res):
     b = _mix_setup(bench, build=False)
     calls = []
     b.stub(SET_SCREEN, lambda board: calls.append(board.arg(1)))
+    for scr in (0x2E, 0x2F):
+        b.mu.mem_write(APP_OBJ + 0x8CA4, bytes([scr]))
+        for want in (0x2E, 0x2F):
+            b.call(bench.sym["mix_btn_screen"], APP_OBJ, want, 0, 0)
+    res.check(calls == [], f"MIX on Mix stays on Mix, whatever stock picks {calls}")
+    b.mu.mem_write(APP_OBJ + 0x8CA4, b"\x14")
     b.call(bench.sym["mix_btn_screen"], APP_OBJ, 0x2F, 0, 0)
-    res.check(calls == [], "MIX on Mix stays on Mix")
-    b.call(bench.sym["mix_btn_screen"], APP_OBJ, 0x2E, 0, 0)
     res.check(calls == [0x2E], f"MIX elsewhere opens Mix {calls}")
+
+
+def t_mix_smart_toggle(bench, res):
+    """MIX on Mix: short press latches the second layer, a hold is momentary."""
+    b = _mix_setup(bench)
+    ids = lambda: {n: _fader(b, n)["id"] for n in MIX_FADERS}
+    _mix_tick(bench)
+    for down, t, want, why in ((0, 1000, MIX_HELD, "press shows the MIX layer"),
+                               (1, 1150, MIX_HELD, "short press: stays latched"),
+                               (0, 3000, MIX_MAIN, "press again: main layer"),
+                               (1, 3100, MIX_MAIN, "short press: main layer latched"),
+                               (0, 5000, MIX_HELD, "hold: MIX layer"),
+                               (1, 5900, MIX_MAIN, "long hold released: back to main"),
+                               (0, 7000, MIX_HELD, "latch again"),
+                               (1, 7100, MIX_HELD, "latched"),
+                               (0, 8000, MIX_MAIN, "hold while latched: main layer"),
+                               (1, 9000, MIX_HELD, "released: back to the latched MIX layer")):
+        b.w32(UWTICK, t)
+        b.mu.mem_write(BTN_MIX, bytes([down]))
+        _mix_tick(bench)
+        res.check(ids() == want, f"{why} {ids()}")
+    res.check(b.u32(MX_STATE + 4) == 1, "latched MIX layer: pad taps select")
 
 
 def main():
@@ -1829,6 +1856,7 @@ def main():
         cases += [
             ("Mix hooks and letter", t_mix_hooks),
             ("Mix pads: select / mute / solo", t_mix_pads),
+            ("MIX smart toggle", t_mix_smart_toggle),
             ("Mix knobs drive Cutoff/Decay/Sends", t_mix_knobs),
             ("Mix faders and MIX-hold layout", t_mix_layout),
             ("Mix fader touch sets the pad", t_mix_fader_touch),

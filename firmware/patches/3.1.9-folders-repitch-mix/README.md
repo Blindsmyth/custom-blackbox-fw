@@ -16,10 +16,14 @@
   | Top | Vol | Cutoff (Filter) | Pan | Send A (FX1) |
   | Bottom | Decay | Pitch | Attack | Send B (FX2) |
 
-- **Hold MIX** to show the second layer. While it's held, tapping a pad selects it (the faders follow it) without muting it. The MIX press that opens the Mix screen doesn't count: press it again on Mix for the second layer.
+- **MIX on Mix is a smart toggle** for the second layer:
+  - A short press latches it (Pan / Attack / Send A / Send B stay up); another short press goes back.
+  - Holding MIX shows the other layer only while held.
+  - While the second layer is shown (held or latched), tapping a pad selects it (the faders follow it) without muting it.
+  - The MIX press that opens the Mix screen doesn't count; Mix always opens on the main layer.
 - **Blip from rest.** If a param sits at its rest position, a quick touch (under 0.3 s) sets the value under your finger and puts the rest value back on release. Touch longer and the new value stays. Rest positions: Vol at minimum, Cutoff centre, Pitch unshifted, Attack/Decay/Sends at 0. Pan never blips.
 - **Centre detent.** Cutoff, Pitch and Pan grow their bar from a white centre line. A drag that passes within a few pixels of the centre sticks at exactly 0.
-- **MIX** opens Mix from any screen. On Mix it no longer flips to Mute.
+- **MIX** opens Mix from any screen. On Mix it toggles the second layer (above).
 
 Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 
@@ -79,7 +83,7 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 1. On Mix, tap pads: they turn red (muted) and green again; you hear them drop out. Drag across several pads: they all take the first pad's new state. Pads don't play from Mix any more.
 2. Turn each knob, in both layers. The fader in the same corner moves and you hear the change. If a knob moves the wrong fader, the encoder order is off: swap the entries in `knob_slider` in `mixui.S` and rebuild.
 3. Drag each fader. The value changes for the selected pad.
-4. Hold MIX: Pan / Attack / Send A / Send B appear, and tapping a pad selects it (no mute change). Let go: Vol / Decay / Cutoff / Pitch return.
+4. Hold MIX: Pan / Attack / Send A / Send B appear, and tapping a pad selects it (no mute change). Let go: Vol / Decay / Cutoff / Pitch return. Short-press MIX: the second layer stays; tap pads to select them; short-press again: main layer.
 5. Drag Cutoff, Pitch and Pan through the middle: the bar flips sides at the white line, and the value sticks at 0 near it.
 6. With Send A at 0, tap its fader quickly: a short send blip, then back to 0. Hold it longer: the send stays.
 7. INFO: yellow outlines (Solo). Tap two pads: they turn yellow, everything else red and silent. Tap both again: the earlier mutes come back. INFO again: Mute mode (no outlines).
@@ -90,7 +94,7 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 12. Seq: turn the top-right knob: 1/8 → … → 32bar at Step Len speed (not skipping). A 1-bar pattern turned to 2 bar plays twice (Dbl Copy On); with Tools → Rec → Dbl Copy Off the second bar is empty. Turn below 1/8: Custom. Set Step Count 15: the field shows 15/16; down gives 15/32, 15/64; up gives 15/32, 15/16, 30/16.
 13. EQ: drag each dot directly. A new preset's EQ, and an untouched EQ from an older preset, show Low Shelf / Param / Param / High Shelf.
 14. FX: DJ FX → FX again → Return page with A Delay / B Reverb / EQ / (empty) along the bottom; A and B switch the return, EQ opens the EQ page, FX goes back to DJ FX.
-15. Enter Mix with the MIX button: Vol / Decay / Cutoff / Pitch with matching labels. Press and hold MIX again: Pan / Attack / A / B; let go: back. Labels always match the bars.
+15. Enter Mix with the MIX button: Vol / Decay / Cutoff / Pitch with matching labels. Press and hold MIX again: Pan / Attack / A / B; let go: back. Short-press: Pan / Attack / A / B stay; short-press: back. Labels always match the bars.
 16. EQ page: the A Delay / B Reverb / EQ row is along the bottom with EQ lit, the EQ view sits above it, and dots still drag. A and B open that return; FX goes to DJ FX.
 17. Seq settings page: set Step Count to 15: Rec Len shows 15/16; Step Len 1/32: Rec Len shows 15/32; Step Count 16 with Step Len 1/16: Rec Len shows 1 bar. Rec Len after MIDI Out. Tools → Rec: Seq Default, Loop BPM, Dbl Copy after Lead In.
 18. Looper: load a sound on pad 1, select an empty sequence, transport stopped: press REC. Also on a saved preset that already has sounds, and with MIDI notes. The REC LED blinks. Play a few notes (pads or MIDI) for about 8 seconds, press REC. The LED was steady during the take; now the tempo changes (about 120 with Loop BPM 80–160), the transport starts at once with no lead-in, and the take plays back as a 4-bar loop with notes on the grid. UNDO removes it. Try Loop BPM 60–120 with the same take: 2 bars at about 60 BPM. Arm and press REC again before playing: it cancels.

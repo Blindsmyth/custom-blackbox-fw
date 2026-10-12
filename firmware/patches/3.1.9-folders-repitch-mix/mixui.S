@@ -12,6 +12,8 @@
 @                   Decay 0x3E  | Pitch 0x5C                  Attack 0x3C | Send B 0xDA
 @   Corner faders: top-left +0x2C48, top-right +0x2DA0, bottom-left +0x2CF4,
 @   bottom-right +0x2E4C. A fader's own touch handler posts 0x6E {pad +0x38, id, value}.
+@ - MIX on Mix is a smart toggle: a short press latches the second layer (another short
+@   press goes back), holding it shows the other layer only while held.
 @ - Knobs drive the four stock value-engine sliders, bound to the same corner's param, so
 @   step, acceleration and App_SetParam stay stock. Logical encoder order is column-major:
 @   0 top-left, 1 bottom-left, 2 top-right, 3 bottom-right.
@@ -36,6 +38,9 @@
 .equ MX_REDRAW,   32                @ 1: labels/values changed, ask for both redraw passes
 .equ MX_WAIT,     36                @ 1: MIX was pressed to enter Mix, ignore it until released
 .equ MX_HOLD_MS,  400
+.equ MX_LATCH,    108               @ 1: the MIX layer is latched (short press)
+.equ MX_MIXDOWN,  112               @ MIX level seen by the last tick (1 = held)
+.equ MX_MIXT0,    116               @ uwTick of that press
 .equ SR_LEN,      0x19D             @ seqrec.S params, here so seqtools.S can use them
 .equ SR_DEF,      0x19E
 .equ SR_SET,      0x19F
@@ -138,6 +143,9 @@ mx_state:
     str     r1, [r0, #96]           @ mixmute MX_VIEW
     str     r1, [r0, #100]          @ mixmute MX_SMASK
     str     r1, [r0, #104]          @ mixmute MX_SSAVED
+    str     r1, [r0, #108]          @ MX_LATCH
+    str     r1, [r0, #112]          @ MX_MIXDOWN
+    str     r1, [r0, #116]          @ MX_MIXT0
 1:
     pop     {r2}
     bx      lr
@@ -427,6 +435,26 @@ mix_tick:
 4:
     movs    r1, #0
 3:
+    ldr     r2, [r0, #MX_MIXDOWN]   @ smart toggle: a short press latches the other layer,
+    cmp     r1, r2                  @ a hold shows it only while held
+    beq     6f
+    str     r1, [r0, #MX_MIXDOWN]
+    ldr     r3, =UWTICK
+    ldr     r3, [r3]
+    cbz     r1, 7f
+    str     r3, [r0, #MX_MIXT0]     @ pressed
+    b       6f
+7:
+    ldr     r2, [r0, #MX_MIXT0]     @ released
+    subs    r3, r3, r2
+    cmp     r3, #MX_HOLD_MS
+    bhs     6f
+    ldr     r2, [r0, #MX_LATCH]
+    eor     r2, r2, #1
+    str     r2, [r0, #MX_LATCH]
+6:
+    ldr     r2, [r0, #MX_LATCH]
+    eors    r1, r2                  @ layer shown
     ldr     r2, [r0, #MX_LAYER]
     cmp     r1, r2
     beq     1f
@@ -688,21 +716,31 @@ fader_vt:
 
 @ ---- App_HandleInput call sites (replace bl App_SetScreen; r0 = app, r1 = screen)
 
-@ MIX button (0x080A32DE): stock picks 0x2F when already on Mix. Stay on Mix instead;
-@ holding MIX there is the second layer + select-without-play.
+@ MIX button (0x080A32DE). On Mix (screen byte App+0x8CA4 = 0x2E/0x2F) the screen stays:
+@ mix_tick turns the press into the smart toggle (short = latch the MIX layer, hold =
+@ momentary). From any other screen MIX opens Mix on the main layer; that press is not a
+@ hold. (Stock picks 0x2E or 0x2F from the view's mute mode, which is now always on.)
 .thumb_func
 mix_btn_screen:
-    cmp     r1, #0x2F
-    bne     1f
-    bx      lr
-1:
+    ldr     r12, =APP + 0x8CA4
+    ldrb.w  r12, [r12]
+    cmp     r12, #0x2E
+    beq     8f
+    cmp     r12, #0x2F
+    beq     8f
     push    {r0, r1, r2, r3, r4, lr}
     bl      mx_state
     movs    r1, #1
     str     r1, [r0, #MX_WAIT]      @ this press opens Mix; it is not a hold
+    movs    r1, #0
+    str     r1, [r0, #MX_LATCH]
+    str     r1, [r0, #MX_MIXDOWN]
     pop     {r0, r1, r2, r3, r4, lr}
+    movs    r1, #0x2E
     ldr     r12, =SCREEN
     bx      r12
+8:
+    bx      lr
 
 .align 2
 s_vol: .asciz "Vo"

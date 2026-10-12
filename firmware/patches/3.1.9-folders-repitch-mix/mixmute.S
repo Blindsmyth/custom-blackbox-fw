@@ -3,7 +3,7 @@
 @ The Mix view always runs in the stock mute mode (+0x1E40 = 1; set-mode 0x080B5E44 also
 @ switches each cell's display, cell+0x18A), so pads draw green (playing) / red (muted) and
 @ our four faders stay on top. Touches on the view (vtable +0x10 / +0x14):
-@ - MIX held: tap selects the pad (posts 0x63 up, as stock select-only).
+@ - Second layer shown (MIX held or latched): tap selects the pad (posts 0x63 up, as stock).
 @ - Mute (INFO cycles Mute -> Solo -> Mute): stock mute touch, drag paints mutes.
 @ - Solo: tap toggles the pad in the solo set; while the set is non-empty every other pad
 @   is muted through the stock mute path (msg 0x44 {pad, unmuted} up the widget chain +
