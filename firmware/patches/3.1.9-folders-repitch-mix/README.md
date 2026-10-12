@@ -49,7 +49,7 @@ Records MIDI into a sequence the way Ableton records into a new clip.
 - **Rec Len** (the field above UNDO on the Seq screen, set with the top-right knob; also on the Seq settings page after MIDI Out): Custom, 1/8, 1/4, 1/2, 1 bar, 2, 4, 8, 16, 32 bars, and the sequence's own length when it's none of these ("15/16"). 1/4 is a quarter note (a quarter of a bar), as in the pad record menu.
   - A fixed value sets the sequence's length. If that length isn't a whole number of steps at the current step length and the layer is empty, the step length switches to 1/16 first.
   - **Custom** changes what REC does, below.
-- **Looper take (transport stopped).** Like a Boss loop pedal. It works on any selected sequence whose current layer is empty and that isn't playing (any Rec Len):
+- **Looper take (transport stopped).** Like a Boss loop pedal. It works on any selected sequence whose current layer is empty (any Rec Len, also when it's queued to start with PLAY):
   1. **REC** arms: the REC LED blinks. Nothing runs yet.
   2. **Play.** The first note (pad or MIDI) starts the take and the LED stays on. Play freely, no click.
   3. **REC again** ends the take. The Blackbox picks 1, 2, 4, 8 or 16 bars so the tempo lands in **Tools → Rec → Loop BPM** (60–120, 70–140, 80–160, 90–180, 100–200; default 80–160), sets that tempo, writes your notes quantised (whole steps in step mode, otherwise the Quant Size grid), and starts the transport with the sequence playing from bar 1. One UNDO removes the take.

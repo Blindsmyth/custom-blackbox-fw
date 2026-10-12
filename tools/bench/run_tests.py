@@ -1697,6 +1697,11 @@ def t_looper(bench, res):
     w.b.stub(0x08051738, post)
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
     res.check(w.b.u32(MX_STATE + 80) == 1, "any empty stopped sequence arms, whatever its Rec Len")
+    w = _knob_world(bench, 16, rec_len=0, dbl=2)
+    w.b.stub(0x08051738, post)
+    w.l0[0xBE] = 1                                             # queued to start with PLAY
+    w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
+    res.check(w.b.u32(MX_STATE + 80) == 1, "an empty sequence queued for PLAY arms too")
 
 
 def t_mix_button(bench, res):

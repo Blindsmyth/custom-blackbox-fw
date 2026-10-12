@@ -1,7 +1,7 @@
 @ Looper-style sequence recording (Boss RC style). docs/firmware/README.md "Sequencer".
 @
-@ With the transport stopped and the selected sequence's current layer empty and not playing
-@ (any Rec Len), REC arms:
+@ With the transport stopped and the selected sequence's current layer empty (any Rec Len,
+@ queued for PLAY or not), REC arms:
 @ - The engine only copies played notes into the note ring for a sequence whose player has
 @   +0x51 set (player param 0x6E, "record target"; FUN_0805C810 also needs +0x5F, set once
 @   DispMode 0xB7 arrives). The engine sets it itself only when recording starts with the
@@ -159,17 +159,16 @@ lp_target:
     add     sp, #8
     pop     {r4, r5, r6, pc}
 
-@ r0 = app. 1 if the selected sequence's current layer is empty and it isn't playing.
+@ r0 = app. 1 if the selected sequence's current layer is empty. Its play flag (0xBE) doesn't
+@ matter: with the transport stopped it only means "starts with PLAY" (stock REC would then
+@ wait record-ready for PLAY), and finishing the take launches it anyway.
 .thumb_func
 lp_eligible:
     push    {r4, lr}
     add.w   r1, r0, #0x18
     bl      sr_layers
-    ldr     r4, [r0, #0x1C]         @ events
-    mov     r0, r1
-    movs    r1, #0xBE               @ play flag
-    call    P_GET
-    orrs    r0, r4
+    ldr     r0, [r0, #0x1C]         @ events
+    cmp     r0, #0
     ite     eq
     moveq   r0, #1
     movne   r0, #0
