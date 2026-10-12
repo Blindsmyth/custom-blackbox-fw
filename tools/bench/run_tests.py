@@ -1428,6 +1428,7 @@ class _SeqWorld:
         b.stub(0x0809AC60, ac60)
         b.stub(0x0804C8B4, lambda board: self.calls.append(("recplay", board.arg(1), board.arg(3))) and None)
         b.stub(0x080A16C4, lambda board: None)
+        b.stub(0x08051738, lambda board: None)   # engine command ring: nothing drains it here
         for fn in (0x0809F820, 0x0809843C, 0x0809D240):
             b.stub(fn, (lambda f: lambda board: self.calls.append((hex(f),)) and None)(fn))
         b.mu.mem_write(APP_OBJ + 0x18, struct.pack("<IH", 0x080EAF38, 0x123))
@@ -1626,7 +1627,11 @@ def t_looper(bench, res):
 
     b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
     res.check(b.u32(MX_STATE + 80) == 1 and leds[-1:] == [1], f"REC arms, LED on {leds}")
-    res.check(ops == [("param", 0x010203, 0x6E, 1)], f"arming makes the sequence the engine's record target {ops}")
+    allkeys = {0x10000 | r << 8 | c for r in range(4) for c in range(4)}
+    targets = lambda v: {o[1] for o in ops if o[0] == "param" and o[2] == 0x6E and o[3] == v}
+    res.check(ops[0] == ("param", 0x400, 0xAF, 0x010203), f"arming re-sends the engine's selected sequence {ops[:1]}")
+    res.check(targets(1) == allkeys and ("param", 0x010203, 0xB7, 1) in ops,
+              f"all 16 sequence players become record targets, DispMode re-sent {len(ops)}")
     ops.clear()
     for tick, want in ((0, 0), (256, 1), (512, 0)):
         b.w32(UWTICK, tick)
@@ -1648,12 +1653,14 @@ def t_looper(bench, res):
     res.check(got == [(0, 960, 60 | 100 << 16, 0x1010001), (3840, 15360 - 3878, 64 | 90 << 16, 0x1010001)],
               f"notes written quantised to 1/16 at 4 bars (120 BPM in 80-160) {got}")
     res.check((0x86, 64) in w.sets and w.ops[0] == "snap" and ("push", 1) in w.ops, f"64 steps, undo, push {w.sets} {w.ops}")
-    res.check(ops == [("param", 0x010203, 0x6E, 0), ("msg", 0x20, 120000), ("bpm", 120000), ("launch", 0x123),
-                      ("msg", 0x73, 0), ("msg", 0x74, 0)],
+    res.check(targets(0) == allkeys, "finishing clears the record targets")
+    ops[:] = [o for o in ops if o[0] != "param"]
+    res.check(ops == [("msg", 0x20, 120000), ("bpm", 120000), ("launch", 0x123), ("msg", 0x73, 0), ("msg", 0x74, 0)],
               f"tempo 120.000, sequence launched, transport started without lead-in {ops}")
     res.check(b.u32(MX_STATE + 80) == 0 and leds[-1] == 0, "looper idle, LED off")
 
     w = _knob_world(bench, 16, rec_len=0, dbl=2)
+    w.b.stub(0x08051738, post)
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
     res.check(w.b.u32(MX_STATE + 80) == 0, "REC again before any note disarms")
@@ -1663,6 +1670,7 @@ def t_looper(bench, res):
     w.b.call(bench.sym["looper_pop"], 0, buf)
     res.check(w.b.u32(MX_STATE + 80) == 0, "the transport starting disarms")
     w = _knob_world(bench, 16, rec_len=0, dbl=0)               # 60-120
+    w.b.stub(0x08051738, post)
     w.l0[0xB7] = 1
     ops.clear()
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
@@ -1675,6 +1683,7 @@ def t_looper(bench, res):
     res.check(ops2[:2] == [("msg", 0x20, 160000), ("bpm", 160000)] and (0x86, 16) in w.sets,
               f"short take, range 60-120: 1 bar at 160 BPM is the closest {ops2[:2]} {w.sets}")
     w = _knob_world(bench, 16, rec_len=0, dbl=2)
+    w.b.stub(0x08051738, post)
     ops.clear()
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
     w.b.w32(SE_OBJ, 5000)
@@ -1683,8 +1692,9 @@ def t_looper(bench, res):
     w.b.w32(SE_OBJ, 5000 + 6000)                      # 0.125 s
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
     res.check(all(o[0] == "param" for o in ops) and not w.events and w.b.u32(MX_STATE + 80) == 0
-              and ops[-1] == ("param", 0x010203, 0x6E, 0), f"a take under 0.25 s is dropped, target cleared {ops}")
+              and targets(0) == allkeys, f"a take under 0.25 s is dropped, targets cleared")
     w = _knob_world(bench, 16, rec_len=4, dbl=2)               # empty, Rec Len 1 bar
+    w.b.stub(0x08051738, post)
     w.b.call(bench.sym["seqrec_rec_press"], APP_OBJ, 0)
     res.check(w.b.u32(MX_STATE + 80) == 1, "any empty stopped sequence arms, whatever its Rec Len")
 

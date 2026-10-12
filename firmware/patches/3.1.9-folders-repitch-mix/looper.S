@@ -5,8 +5,11 @@
 @ - The engine only copies played notes into the note ring for a sequence whose player has
 @   +0x51 set (player param 0x6E, "record target"; FUN_0805C810 also needs +0x5F, set once
 @   DispMode 0xB7 arrives). The engine sets it itself only when recording starts with the
-@   transport running (0x08050724), so arming sends msg 0x39 {engine key, 0x6E, 1} for the
-@   selected sequence and finishing / cancelling sends 0x6E = 0.
+@   transport running (0x08050724), so arming sends msg 0x39 {engine key, 0x6E, 1} to all 16
+@   sequence players (a loaded preset may route pad notes to a player other than the UI's
+@   selection) plus their DispMode, and finishing / cancelling sends 0x6E = 0 to all.
+@ - Pad notes go to the engine's selected sequence (SE+0x29C, global param 0xAF, msg 0x8E at
+@   0x0804FF5A) or to MIDI-channel matches (0x0804F8A8). Arming re-sends 0xAF first.
 @ - Armed: the REC LED blinks. The first note-on (pad or MIDI) starts the take; REC again
 @   before that disarms. PLAY (transport running) disarms too.
 @ - Taking: the LED is on. Every note-on/off is buffered with the 48 kHz sample counter
@@ -93,35 +96,68 @@ lp_disarm:
     bl      lp_target
     pop     {r3, pc}
 
-@ lp_target(on): player param 0x6E of the selected sequence (App+0x1C) = on. Message 0x39:
-@ +8 engine key (kind << 16 | row << 8 | col), +0xC id, +0x10 value.
+@ lp_engparam(engine key, id, value): msg 0x39 to a sequence player (as FUN_0804C59C).
 .thumb_func
-lp_target:
+lp_engparam:
     push    {r4, lr}
     sub     sp, #24
-    mov     r4, r0
-    movs    r0, #0
-    str     r0, [sp]
-    str     r0, [sp, #4]
-    str     r0, [sp, #20]
-    movs    r0, #0x39
-    strb    r0, [sp]
-    ldr     r0, =APP + 0x1C
-    ldrh    r0, [r0]                @ UI key: col | row << 4 | kind << 8
-    and     r1, r0, #0xF
-    ubfx    r2, r0, #4, #4
-    orr     r1, r1, r2, lsl #8
-    ubfx    r2, r0, #8, #5
-    orr     r1, r1, r2, lsl #16
-    str     r1, [sp, #8]
-    movs    r0, #0x6E
-    str     r0, [sp, #12]
-    str     r4, [sp, #16]
+    movs    r3, #0
+    str     r3, [sp]
+    str     r3, [sp, #4]
+    str     r3, [sp, #20]
+    movs    r3, #0x39
+    strb    r3, [sp]
+    str     r0, [sp, #8]
+    str     r1, [sp, #12]
+    str     r2, [sp, #16]
     bl      lp_se
     mov     r1, sp
     call    ENG_POST
     add     sp, #24
     pop     {r4, pc}
+
+@ lp_target(on): all 16 sequence players are record targets (param 0x6E = on), so notes
+@ reach the ring whichever player the preset routes them to. Arming also re-sends each
+@ sequence's DispMode (0xB7), which sets player+0x5F (also required by the ring push).
+.thumb_func
+lp_target:
+    push    {r4, r5, r6, lr}
+    sub     sp, #8
+    mov     r4, r0
+    movs    r5, #0                  @ row << 4 | col
+1:
+    and     r0, r5, #3
+    lsrs    r1, r5, #2
+    orr     r6, r0, r1, lsl #8
+    orr     r6, r6, #0x10000        @ engine key: kind 1, row, col
+    mov     r0, r6
+    movs    r1, #0x6E
+    mov     r2, r4
+    bl      lp_engparam
+    cbz     r4, 2f
+    ldr     r0, =REF_TAG            @ DispMode of that sequence (layer 0)
+    str     r0, [sp]
+    and     r0, r5, #3
+    lsrs    r1, r5, #2
+    orr     r0, r0, r1, lsl #4
+    orr     r0, r0, #0x100
+    strh    r0, [sp, #4]
+    ldr     r0, =APP
+    mov     r1, sp
+    movs    r2, #0
+    call    SEQ_OBJ
+    movs    r1, #0xB7
+    call    P_GET
+    mov     r2, r0
+    mov     r0, r6
+    movs    r1, #0xB7
+    bl      lp_engparam
+2:
+    adds    r5, #1
+    cmp     r5, #16
+    blo     1b
+    add     sp, #8
+    pop     {r4, r5, r6, pc}
 
 @ r0 = app. 1 if the selected sequence's current layer is empty and it isn't playing.
 .thumb_func
@@ -160,7 +196,17 @@ looper_rec:
     str     r0, [r5, #LP_N]
     movs    r0, #1
     bl      lp_led
-    movs    r0, #1                  @ let the engine stream this sequence's notes
+    ldr     r0, =APP + 0x1C         @ the engine's selected sequence = ours (global 0xAF, as
+    ldrh    r0, [r0]                @ FUN_08098328): pad notes go to SE+0x29C's player, and a
+    and     r2, r0, #0xF            @ loaded preset may not have sent it yet
+    ubfx    r1, r0, #4, #4
+    orr     r2, r2, r1, lsl #8
+    ubfx    r1, r0, #8, #5
+    orr     r2, r2, r1, lsl #16
+    mov.w   r0, #0x400
+    movs    r1, #0xAF
+    bl      lp_engparam
+    movs    r0, #1                  @ let the engine stream the notes
     bl      lp_target
     b       8f
 1:
