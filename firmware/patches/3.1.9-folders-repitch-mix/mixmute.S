@@ -358,7 +358,7 @@ mix_mute_fill:
 .equ HDR_TICK,    0x080AB78D
 .equ H_SEL,       0xE4                  @ label, stock rect x 80 w 200, never written by stock
 .equ H_SEQ,       0x13C                 @ "Seq x" label, stock x 140 w 140
-.equ H_SEL_X,     132
+.equ H_SEL_X,     92                    @ centred between the counter (ends ~x 50) and Seq (x 170)
 .equ H_SEL_W,     36
 .equ H_SEQ_X,     170
 .equ H_SEQ_W,     84                    @ ends before the loop bar at x 256
