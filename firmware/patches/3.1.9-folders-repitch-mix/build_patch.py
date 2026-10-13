@@ -92,6 +92,7 @@ BYTES = [
     (0x080EED68, "a001", "0000"),                       # Tools -> Rec: Loop BPM
     (0x080EED6A, "a101", "0000"),                       # Tools -> Rec: Dbl Copy
     (0x080EF910, "a201", "0000"),                       # Slicer Conf: Env Trig after Pad Note
+    (0x080EF208, "a201", "0000"),                       # Slicer Conf (type-0x4C list copy): Env Trig
     (0x0808CB3E, "09210091", "cdf800b0"),               # mod source count 8 -> 9 (movs r1,#9; str r1,[sp])
     (0x080B67CC, "092b", "082b"),                       # knob page loop: cmp r3,#8 -> #9
     (0x080B7994, "0920", "0820"),                       # mod screen loop: movne r0,#8 -> #9

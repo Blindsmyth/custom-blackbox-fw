@@ -1770,6 +1770,8 @@ def t_env_source(bench, res):
     res.check(title(0x1A2) == "Env Trig:" and b.call(0x0808E2A5, 0x1A2) == 2, f"Env Trig registered ({title(0x1A2)!r})")
     res.check(u16(0x080EF90E) == 0xF5 and u16(0x080EF910) == 0x1A2 and u16(0x080EF912) == 0,
               "Slicer Conf: Env Trig after Pad Note")
+    res.check(u16(0x080EF206) == 0xF5 and u16(0x080EF208) == 0x1A2 and u16(0x080EF20A) == 0,
+              "Slicer Conf (type-0x4C list): Env Trig after Pad Note")
     names, codes = bench.sym["env_src_names"], bench.sym["env_src_codes"]
     res.check(all(u32(a) == names for a in (0x0808CCC0, 0x080B6964))
               and all(u32(a) == codes for a in (0x0809A69C, 0x080B696C, 0x080B7B00)), "source list readers repointed")
