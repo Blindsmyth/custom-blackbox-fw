@@ -194,7 +194,7 @@
  "x_l_rel": "0x080f4e2c",
  "env_slice_after": "0x080f4edc",
  "env_targets": "0x080f4f7c",
- "s_env": "0x080f4fe8",
+ "s_env": "0x080f4fec",
  "hook_register": "0x080f27ec",
  "hook_template": "0x080f2842",
  "hook_clip_def": "0x080f286a",
@@ -263,6 +263,6 @@
  "env_route": "0x080f4f28",
  "env_slice": "0x080f4ea6",
  "envtrig_read": "0x080f4e74",
- "env_src_names": "0x080f4fb0",
- "env_src_codes": "0x080f4fd4"
+ "env_src_names": "0x080f4fb4",
+ "env_src_codes": "0x080f4fd8"
 }

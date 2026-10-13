@@ -49,9 +49,9 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 
 ## Clip / Slicer: ENV source and Env Trig
 
-- **ENV modulation source.** A pad's mod slots (Source list after CC) can now pick **ENV**: the pad's own amp ADSR (Attack / Decay / Sustain / Release). Route it like LFO, e.g. ENV → Cutoff with the slot's Amount for a filter envelope. Each voice follows its own envelope (Clip and Slicer pads have two voices). ENV works on the same targets as VEL (Cutoff, Pan, Attack, Decay, pitch and a few more).
+- **ENV modulation source.** A pad's mod slots (Source list after CC) can now pick **ENV**: the pad's own amp ADSR (Attack / Decay / Sustain / Release). Route it like LFO, e.g. ENV → Cutoff with the slot's Amount for a filter envelope. Each voice follows its own envelope (Clip and Slicer pads have two voices). ENV works on the same targets as LFO (Pitch, Cutoff, Pan, Attack, Decay and a few more).
   - Clip and Slicer pads only for now. On Sample / Multisample pads ENV does nothing yet.
-- **Env Trig: Note / Slice** (Slicer pads, Conf page, after Pad Note):
+- **Env Trig: Note / Slice** (Clip and Slicer pads, INFO → Conf, the row after Pad Note; scroll down one row):
   - **Note** (default): stock, the envelope starts when the note starts.
   - **Slice:** every time playback crosses into the next slice while the note is held, the envelope (and so ENV) starts again, gliding from where it was so there's no click.
 - Both are saved with the preset. Stock firmware ignores them.
@@ -136,7 +136,7 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 21. Tools shows five tabs: Main, Rec, MIDI, Clock, **Master**. Main no longer has Compressor. Master lists Compressor, C Thresh −4.0, C Ratio 4, C Attack 10 ms, C Release 250 ms, C Gain −4.0, L Attack 4 ms, L Release 750 ms.
 22. Compressor On with those defaults sounds as before. Lower C Thresh (e.g. −20.0) with a loud loop: clearly more compression; C Ratio 1: none. Raise C Gain: louder and squashed into the limiter. Power cycle: the values are kept, in every preset.
 
-21. Slicer pad, Conf → Env Trig: Slice. Long Attack, short Decay, low Sustain; hold a note that plays through several slices: each slice swells in again. Env Trig: Note: one swell only.
+21. Clip or Slicer pad, INFO → Conf → Env Trig (after Pad Note): Slice. Long Attack, short Decay, low Sustain; hold a note that plays through several slices: each slice swells in again. Env Trig: Note: one swell only.
 22. Clip or Slicer pad, mod slot Source ENV → Cutoff, Amount up, Filter low: each note opens and closes the filter with the ADSR (and each slice with Env Trig Slice). Save, reload: kept.
 
 ## Rebuild and test
@@ -149,7 +149,6 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 `build_patch.py` reuses `../3.1.9-folders-repitch/build_patch.py` (sites, linker, verify). It assembles `mix_cave.S`, which includes the 3.1.X `cave.S` and then `mixui.S`. On top of 3.1.X it patches:
 - two `bl App_SetScreen` calls in `App_HandleInput` (MIX at `0x080A32DE`, FX from DJ FX at `0x080A32BE`) and the INFO-on-Mix one (`0x080A30DC`), which now cycles the pad mode;
 - the Mix view's set-mode call (`0x0808BC40`), its two mute-mode cell fills (`0x080A43E0`, `0x080A43F8`) and touchDown / touchMove vtable words (`mixmute.S`);
-- the scroll-list encoder row select `FUN_080B9BA4` (b.w to a no-op);
 - widget vtable words: Mix tick/onChildEvent/onEvent, Pads and Seq onChildEvent/onEvent, EQ graph touchDown, FX Return onChildEvent/onEvent;
 - four EQ default band-type bytes;
 - Tools → Master (`master.S`):

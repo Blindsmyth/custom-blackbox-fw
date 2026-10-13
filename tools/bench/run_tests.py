@@ -1772,6 +1772,8 @@ def t_env_source(bench, res):
               "Slicer Conf: Env Trig after Pad Note")
     res.check(u16(0x080EF206) == 0xF5 and u16(0x080EF208) == 0x1A2 and u16(0x080EF20A) == 0,
               "Slicer Conf (type-0x4C list): Env Trig after Pad Note")
+    res.check(all(u16(a - 2) == 0xF5 and u16(a) == 0x1A2 and u16(a + 2) == 0 for a in (0x080EFA78, 0x080EF370)),
+              "Clip Conf (both lists): Env Trig after Pad Note")
     names, codes = bench.sym["env_src_names"], bench.sym["env_src_codes"]
     res.check(all(u32(a) == names for a in (0x0808CCC0, 0x080B6964))
               and all(u32(a) == codes for a in (0x0809A69C, 0x080B696C, 0x080B7B00)), "source list readers repointed")
@@ -1791,6 +1793,10 @@ def t_env_source(bench, res):
               f"{b.u32(clip + 0x448 + 16):#x} {b.u32(clip + 0x858 + 16):#x}")
     route(0x62, 0, 0x30)
     res.check(b.u32(clip + 0x26C + 8) == clip + 0x4E0 and b.u32(clip + 0x67C + 8) == clip + 0x8F0, "ENV -> Pan")
+    route(0x5C, 2, 0x30)
+    res.check(b.u32(clip + 0x2F4 + 24) == clip + 0x4E0 and b.u32(clip + 0x704 + 24) == clip + 0x8F0
+              and b.u32(clip + 0x2F4 + 28) != 0, f"ENV -> Pitch: both voices, amount set "
+              f"{b.u32(clip + 0x2F4 + 24):#x} {b.u32(clip + 0x704 + 24):#x}")
     route(0xC8, 2, 4)
     res.check(b.u32(clip + 0x448 + 24) == clip + 0x388, f"LFO routing unchanged {b.u32(clip + 0x448 + 24):#x}")
     route(0xC8, 0, 0xD)

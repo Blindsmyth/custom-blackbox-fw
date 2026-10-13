@@ -8,10 +8,9 @@
 @
 @ ENV source. Mod routing FUN_08067018(clip, msg{+0xC target, +0x10 slot, +0x14 source,
 @ +0x16 amount}) binds a target's modparam slot to a float pointer with FUN_0806FCD4(amount,
-@ modparam, source, slot) (modparam +8 + slot*8 = source pointer). VEL (0xD) binds both
-@ voices' modparams to per-voice floats; the engine reads the pointer every block. ENV runs
-@ the VEL path and repoints both slots at that voice's envelope level (+0x28): per voice,
-@ so no extra state and no block hook. Same targets as VEL. The source list gains a 9th
+@ modparam, source, slot) (modparam +8 + slot*8 = source pointer). The engine reads the pointer every block. ENV runs
+@ the LFO path (code 4: both voices, every target, Pitch included) and repoints both slots at that voice's envelope level (+0x28): per voice,
+@ so no extra state and no block hook. Same targets as LFO. The source list gains a 9th
 @ entry "ENV" (code ENV_CODE); Sample/Multisample pads ignore the code (their handler
 @ FUN_08056810 is not hooked yet).
 @
@@ -153,7 +152,7 @@ env_slice_after:
 
 @ ---- ENV source (audio task)
 
-@ bl site 0x080685C4: FUN_08067018(clip, msg). ENV: VEL's per-voice binding, then both
+@ bl site 0x080685C4: FUN_08067018(clip, msg). ENV: LFO's binding (both voices), then both
 @ voices' slot pointers -> that voice's envelope level.
 .thumb_func
 env_route:
@@ -166,7 +165,7 @@ env_route:
     push    {r4, r5, r6, lr}
     mov     r4, r0
     mov     r5, r1
-    movs    r2, #0xD                @ as VEL
+    movs    r2, #4                  @ as LFO: binds both voices for every target, Pitch too
     strh    r2, [r5, #0x14]
     ldr     r12, =ROUTE
     blx     r12
@@ -200,7 +199,7 @@ env_route:
     pop     {r4, r5, r6, pc}
 
 .align 2
-env_targets:                            @ target id, voice 0 / voice 1 modparam (VEL's list)
+env_targets:                            @ target id, voice 0 / voice 1 modparam (LFO path)
     .hword  0xC8, 0x448, 0x858          @ Cutoff
     .hword  0x11, 0x484, 0x894
     .hword  0x02, 0x2B8, 0x6C8
@@ -208,6 +207,7 @@ env_targets:                            @ target id, voice 0 / voice 1 modparam 
     .hword  0x3C, 0x514, 0x924          @ Attack
     .hword  0x3E, 0x548, 0x958          @ Decay
     .hword  0x40, 0x57C, 0x98C
+    .hword  0x5C, 0x2F4, 0x704          @ Pitch
     .hword  0x62, 0x26C, 0x67C          @ Pan
     .hword  0
 
