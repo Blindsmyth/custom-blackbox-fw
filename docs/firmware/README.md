@@ -23,7 +23,7 @@ Confidence marks: **S** read from code, **L** one step inferred, **?** open ques
 
 - STM32H743, Cortex-M7, double-precision FPU (Unicorn can't execute `.f64` VFP ops; the bench stubs those functions). **S**
 - Memory map, patch budget and SRAM4 layout: [../memory.md](../memory.md) (timestretch branch) and `.cursor/rules/memory-layout.mdc`. **S**
-- **SRAM4 in 3.1.Q:** `0x38000000` folder state (`0x4930`), `0x38005000` Warp flags, `0x38005200` MX_STATE (`'MIXU'`, +0..+76), `0x38005400` EQ page buttons (4 × 0xA0, to `0x38005680`), `0x38005700` Rec Len own-length label (16 bytes), `0x38005800` looper note buffer. **S**
+- **SRAM4 in 3.1.Q:** `0x38000000` folder state (`0x4930`), `0x38005000` Warp flags, `0x38005200` MX_STATE (`'MIXU'`, +0..+76), `0x38005400` EQ page buttons (4 × 0xA0, to `0x38005680`), `0x38005110` Env Trig table (magic + 0x50 bytes by row<<2|col, `adsr.S`; save slots at +4), `0x38005700` Rec Len own-length label (16 bytes), `0x38005800` looper note buffer. **S**
 - Tasks:
   - **defaultTask** `0x08043DEC`: the UI loop. Input → App vtable+8 → draw `FUN_0808B2D0`. **S**
   - **pcmStreamer**: FatFs and preset load/save; the only task that may touch the card. **S**
@@ -132,9 +132,10 @@ Details: [../map-319.md#sequence-recording-31q-custom-rec-len](../map-319.md#seq
 
 See [../map-319.md](../map-319.md#clip-control-panel-main--pos) and the Warp/stretch notes on the timestretch branch. Highlights:
 - Clip object 0xBB8 bytes, two voices at +0x260/+0x670 (0x410 each). **S**
-- Envelope at voice+0x258: gate on `FUN_0806A5F8`. **S**
-- Modulation: route handler `FUN_08067018`, 3 slots per modparam, evaluator `FUN_0806FB30`. **S**
-- Lane render `FUN_080667B8`; grain start `FUN_08065550`; slicer grain path `FUN_08065290` (10 arguments). **S**
+- **Envelope** at voice+0x258: +4 stage (0 idle, 1 attack, 2 decay, 3 sustain, 4 release, 5 done), +8 settings, +0x28 raw ADSR level 0..1 (written every block by the process `FUN_0806A6C0(env, buf, mode, n)`), +0x1C smoothed level applied to the audio, +0x34/+0x38 velocity scaling. Gate on `FUN_0806A5F8` (resets +0x1C to 0, or 1.0 with zero attack), note off `FUN_0806A63C`, quick release `FUN_0806A698`, reset `FUN_0806A5D8`. **S**
+- **Modulation routing** `FUN_08067018(clip, msg)` (only caller `bl` at `0x080685C4`): msg +0xC target id, +0x10 slot, +0x14 source code, +0x16 amount (s16). It binds a modparam slot to a float pointer with `FUN_0806FCD4(amount, modparam, source, slot)` (modparam +8 + slot·8 = source pointer, +0xC + slot·8 = amount); the engine reads the pointer every block, evaluator `FUN_0806FB30`. VEL (0xD) binds both voices' modparams to per-voice floats (clip+0x2A8 / +0x6B8); other sources bind voice 0's modparam to a pad-level float: LFO 4 → +0x388, 0xE → +0x2B0, 0x19 → +0xB60, 0x1A → +0xB48, 0x1C → +0xB50, 0x1D → +0xB58, the rest → +0xB70. Targets (voice 0 / voice 1 modparam): 0xC8 Cutoff +0x448/+0x858, 0x11 +0x484/+0x894, 2 and 4 +0x2B8/+0x6C8, 0x3C +0x514/+0x924, 0x3E +0x548/+0x958, 0x40 +0x57C/+0x98C, 0x62 Pan +0x26C/+0x67C; 0x4E and 0x5C special. **S**
+- **Source list** (param 0x53): codes `0x080ECCFC` (u16), names `0x080ECD0C`, 8 entries (none, VEL 0xD, LFO 4, PTCH 0x19, MODW 0x1A, MVOL 0x1C, MPAN 0x1D, CC 0x8000). 3.1.Q adds ENV (code 0x30, `adsr.S`): routed like VEL, then each voice's slot points at its envelope level (clip+0x4E0 / +0x8F0), so ENV is per voice. **S**
+- Lane render `FUN_080667B8(clip, ?, voice, ...)` (one call per voice, `bl` at `0x0806887C`); grain start `FUN_08065550(clip, voice, …, 3 stack args)`, slice-change calls at `0x08066B9A` / `0x08066CF2` (and `0x08065A9A`); slicer grain path `FUN_08065290` (10 arguments). Env Trig = Slice (pad param 0x1A2) restarts a held voice's envelope there. **S**
 
 ## FX, EQ
 

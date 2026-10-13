@@ -23,6 +23,7 @@ Planned features for the `mix-overhaul` line (3.1.Q and later). Addresses are st
 - Custom (free-length) sequence recording: Rec Len per sequence, Seq Default in Tools → Rec (renamed from Seq Rec Len; CLR always resets to it), REC launches on the next Quant Size boundary and closes the loop on the next one.
 - The EQ page shares the FX selector row.
 - Seq length knob at Step Len speed: Custom, 1/8 … 32 bars, polymetric ×2/÷2 that returns to the user's step, Dbl Copy, 15/16-style labels; Rec Len follows Step Count / Step Len; Seq Default (any Rec Len) and CLR always resets to it.
+- Clip/Slicer: ENV as a mod source (amp ADSR, per voice) and Env Trig Note / Slice on the Slicer Conf page.
 - Tools → Master: master compressor and limiter settings (threshold, ratio, attack, release, input gain, limiter attack/release).
 - **Looper takes (Boss style):** transport stopped + any empty sequence: REC arms (LED blinks), first note starts, REC again picks 1–16 bars for the Tools → Rec → Loop BPM range, sets the tempo, writes the notes quantised and starts playback at once. Open: stamps are taken when the UI pops the ring (block + UI-loop jitter); block-accurate stamps would need the engine stub at `0x0805C936` / `0x0805CA8C` (entry +0x20).
 - Fix: FX → Return crashed on the device: the bottom-bar rect sat at a 2-byte-aligned address and stock setRect reads it with LDM, which hard-faults on the M7 (Unicorn executes it). build_patch.py now checks word-table alignment.
@@ -59,8 +60,8 @@ Encoders no longer select pads or sequences, and no longer switch pages on the P
 
 | Feature | Hook | Size |
 | --- | --- | --- |
-| Slices trigger the ADSR: new option at the bottom of the Slicer Conf page (after Pad Note `0xF5`) | Param like Warp (registry, bag template, XML). Gate-on `FUN_0806A5F8(voice+0x258)` after the slice-change `bl FUN_08065550` at `0x08066B9A` / `0x08066CF2` in `FUN_080667B8`, when env stage is 1–3 | M |
-| ADSR → filter, Clip/Slicer | Route handler `FUN_08067018` at `0x08067046`: src 1 → `FUN_0806FCD4(amt, clip+0x448/+0x858, clip+0x4DC/+0x8EC, slot)`. Add "ENV" to the `modsource` enum (`0x080ECCFC`, `0x080ECD0C`, count in `Param_RegisterAll`) | M |
+| ~~Slices trigger the ADSR~~ | Done in 3.1.Q: Env Trig Note / Slice (`adsr.S`) | |
+| ~~ADSR → filter, Clip/Slicer~~ | Done in 3.1.Q: ENV mod source, per voice (`adsr.S`) | |
 | ADSR → filter, Sample pads | Sample route handler `FUN_08056810`; map the sample voice envelope and filter modparam first | M |
 
 ### Batch 3: Pads side panel

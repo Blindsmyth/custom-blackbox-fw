@@ -51,6 +51,10 @@ SITES = base.SITES + [
     (0x080A2F3C, "seqrec_rec_press", True, "fef7c2fb"),  # REC press
     (0x080AB594, "hdr_tick", True, "00f0faf8"),       # header bar tick (direct call): "Sel"
     (0x080A2936, "looper_pop", True, "a9f70dff"),       # App_Update note-ring pop (looper)
+    # Clip/Slicer ENV source and slice-triggered envelopes (adsr.S)
+    (0x080685C4, "env_route", True, "fef728fd"),       # mod routing FUN_08067018
+    (0x08066B9A, "env_slice", True, "fef7d9fc"),       # slice change: FUN_08065550 (site 1)
+    (0x08066CF2, "env_slice", True, "fef72dfc"),       # slice change: FUN_08065550 (site 2)
     (0x080A282E, "seqrec_recstate", True, "f8f717fa"),  # recording on/off
     (0x080A2696, "seqrec_started", True, "faf7d3fd"),   # sequence started
     # Tools -> Master (master.S)
@@ -87,6 +91,10 @@ BYTES = [
     (0x080EED66, "9e01", "0000"),                       # Tools -> Rec: Seq Default
     (0x080EED68, "a001", "0000"),                       # Tools -> Rec: Loop BPM
     (0x080EED6A, "a101", "0000"),                       # Tools -> Rec: Dbl Copy
+    (0x080EF910, "a201", "0000"),                       # Slicer Conf: Env Trig after Pad Note
+    (0x0808CB3E, "09210091", "cdf800b0"),               # mod source count 8 -> 9 (movs r1,#9; str r1,[sp])
+    (0x080B67CC, "092b", "082b"),                       # knob page loop: cmp r3,#8 -> #9
+    (0x080B7994, "0920", "0820"),                       # mod screen loop: movne r0,#8 -> #9
     (0x0809470E, "0222", "0022"),
     (0x0809474E, "0322", "0022"),
     (0x0809478E, "0322", "0022"),
@@ -104,6 +112,12 @@ BYTES = [
 # (address, cave symbol, stock word): data pointers into the cave, no Thumb bit.
 WORDS = [
     (0x080EEE90, "s_master", 0x080CB060),              # Tools tab names[4]: "" -> "Master"
+    # Mod source list: 8 stock entries + ENV (adsr.S); readers as in j3threejay/blackbox-mod
+    (0x0808CCC0, "env_src_names", 0x080ECD0C),         # registration: names
+    (0x080B6964, "env_src_names", 0x080ECD0C),         # knob page: names
+    (0x0809A69C, "env_src_codes", 0x080ECCFC),         # app: list index -> code
+    (0x080B696C, "env_src_codes", 0x080ECCFC),         # knob page: code -> index
+    (0x080B7B00, "env_src_codes", 0x080ECCFC),         # mod screen: code -> index
 ]
 
 
@@ -112,7 +126,8 @@ WORDS = [
 WORD_TABLES = ["fxr_bar_rect", "fxr_labels", "fader_vt", "rest_values", "layer_main",
                "layer_held", "ticks_per_beat", "sr_short_labels", "sr_regs", "sr_len_labels",
                "sr_set_labels", "sr_len_ticks", "sr_960", "sr_bpm_labels",
-               "sr_dbl_labels", "sr_len_ticks_q", "lp_k", "m_regs", "m_defaults", "m_fields"]
+               "sr_dbl_labels", "sr_len_ticks_q", "lp_k", "m_regs", "m_defaults", "m_fields",
+               "env_targets", "env_src_names", "env_src_codes", "sr_envtrig_labels"]
 
 
 def check_collisions():

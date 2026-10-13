@@ -1758,6 +1758,79 @@ def t_looper(bench, res):
     res.check(w.b.u32(MX_STATE + 80) == 1, "an empty sequence queued for PLAY arms too")
 
 
+def t_env_source(bench, res):
+    """Clip/Slicer: ENV mod source (amp ADSR per voice) and Env Trig (slice-triggered envelope)."""
+    b = _mix_setup(bench, build=False)
+    img = b.image
+    if b.call(0x0808E305, 0x3E) == 0:
+        b.call(0x0808C159)
+    title = lambda i: b.cstr(b.call(0x0808E221, i))
+    u16 = lambda a: struct.unpack_from("<H", img, a - bd.BASE)[0]
+    u32 = lambda a: struct.unpack_from("<I", img, a - bd.BASE)[0]
+    res.check(title(0x1A2) == "Env Trig:" and b.call(0x0808E2A5, 0x1A2) == 2, f"Env Trig registered ({title(0x1A2)!r})")
+    res.check(u16(0x080EF90E) == 0xF5 and u16(0x080EF910) == 0x1A2 and u16(0x080EF912) == 0,
+              "Slicer Conf: Env Trig after Pad Note")
+    names, codes = bench.sym["env_src_names"], bench.sym["env_src_codes"]
+    res.check(all(u32(a) == names for a in (0x0808CCC0, 0x080B6964))
+              and all(u32(a) == codes for a in (0x0809A69C, 0x080B696C, 0x080B7B00)), "source list readers repointed")
+    res.check(img[0x0808CB3E - bd.BASE: 0x0808CB42 - bd.BASE].hex() == "09210091" and img[0x080B67CC - bd.BASE] == 9
+              and img[0x080B7994 - bd.BASE] == 9, "source count 9")
+    labels = [b.cstr(b.u32(names + 4 * i)) for i in range(9)]
+    res.check(labels[2] == "LFO" and labels[8] == "ENV" and b.u16(codes + 16) == 0x30, f"9th source ENV {labels}")
+    clip, msg = 0x30030000, 0x30033000
+    b.mu.mem_write(clip, b"\0" * 0xC00)
+    def route(target, slot, src):
+        b.mu.mem_write(msg, b"\0" * 0x18)
+        b.mu.mem_write(msg + 0xC, struct.pack("<HxxHxxHh", target, slot, src, 500))
+        b.call(bench.sym["env_route"], clip, msg)
+    route(0xC8, 1, 0x30)
+    res.check(b.u32(clip + 0x448 + 16) == clip + 0x4E0 and b.u32(clip + 0x858 + 16) == clip + 0x8F0
+              and b.u16(msg + 0x14) == 0x30, f"ENV -> Cutoff: each voice's slot reads its envelope level "
+              f"{b.u32(clip + 0x448 + 16):#x} {b.u32(clip + 0x858 + 16):#x}")
+    route(0x62, 0, 0x30)
+    res.check(b.u32(clip + 0x26C + 8) == clip + 0x4E0 and b.u32(clip + 0x67C + 8) == clip + 0x8F0, "ENV -> Pan")
+    route(0xC8, 2, 4)
+    res.check(b.u32(clip + 0x448 + 24) == clip + 0x388, f"LFO routing unchanged {b.u32(clip + 0x448 + 24):#x}")
+    route(0xC8, 0, 0xD)
+    res.check(b.u32(clip + 0x448 + 8) == clip + 0x2A8 and b.u32(clip + 0x858 + 8) == clip + 0x6B8, "VEL routing unchanged")
+    # Env Trig: param path -> table, slice change retriggers a held envelope
+    pid = 0x0102                                          # row 1, col 2
+    b.mu.mem_write(clip + 0x18, struct.pack("<I", pid))
+    pmsg = 0x30033100
+    b.mu.mem_write(pmsg, b"\0" * 0x18)
+    b.mu.mem_write(pmsg + 0xC, struct.pack("<II", 0x1A2, 1))
+    b.call(bench.sym["hook_clip_param"], clip, 0, pmsg)
+    packed = 1 << 2 | 2
+    res.check(b.call(bench.sym["envtrig_read"], 0, packed) == 1, "engine param 0x1A2 = Slice reaches the table")
+    b.call(bench.sym["envtrig_post"], 0, pid, 0x1A2, 0)
+    res.check(b.call(bench.sym["envtrig_read"], 0, packed) == 0, "UI post 0x1A2 = Note reaches the table")
+    b.call(bench.sym["envtrig_post"], 0, pid, 0x1A2, 1)
+    voice = clip + 0x260
+    env = voice + 0x258
+    gates, ret = [], [3]
+    def gate(board):
+        gates.append(board.arg(0))
+        board.mu.mem_write(board.arg(0) + 0x1C, struct.pack("<f", 0.0))
+    b.stub(0x0806A5F8, gate)
+    b.stub(0x08065550, lambda board: ret[0])
+    for stage, r, trig, want, why in ((2, 3, 1, 1, "held note, Slice: retrigger"),
+                                      (3, 3, 1, 1, "sustain: retrigger"),
+                                      (4, 3, 1, 0, "released: no retrigger"),
+                                      (2, 0xFFFFFFFF, 1, 0, "no grain: no retrigger"),
+                                      (2, 3, 0, 0, "Env Trig Note: stock")):
+        gates.clear()
+        ret[0] = r
+        b.call(bench.sym["envtrig_write"], trig, packed)
+        b.mu.mem_write(env + 4, bytes([stage]))
+        b.mu.mem_write(env + 0x1C, struct.pack("<f", 0.7))
+        got = b.call(bench.sym["env_slice"], clip, voice, 0, 0)
+        level = struct.unpack("<f", b.mu.mem_read(env + 0x1C, 4))[0]
+        res.check(len(gates) == want and got == r and (not want or (gates == [env] and abs(level - 0.7) < 1e-6)),
+                  f"{why} (gates {[hex(g) for g in gates]}, ret {got:#x}, level {level})")
+    b.unstub(0x0806A5F8)
+    b.unstub(0x08065550)
+
+
 def t_mix_button(bench, res):
     b = _mix_setup(bench, build=False)
     calls = []
@@ -2125,6 +2198,7 @@ def main():
             ("Seq length knob and label", t_seq_length),
             ("Rec Len follows Step Count / Step Len", t_seqrec_sync),
             ("looper take", t_looper),
+            ("ENV source and Env Trig", t_env_source),
             ("untouched EQ gets the default bands", t_eq_untouched_defaults),
             ("SEQS held shows the layer panel", t_seq_panel),
             ("PADS held shows the edit panel", t_pads_panel),

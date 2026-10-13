@@ -111,6 +111,7 @@ sr_regs:
     .word   SR_SET, s_sr_set, sr_set_labels, 2, x_sr_set
     .word   SR_BPM, s_sr_bpm, sr_bpm_labels, 5, x_sr_bpm
     .word   SR_DBL, s_sr_dbl, sr_dbl_labels, 2, x_sr_dbl
+    .word   0x1A2, s_envtrig, sr_envtrig_labels, 2, x_envtrig  @ adsr.S, pad param
     .word   0
 sr_len_labels:                          @ Seq Default uses the first ten
     .word   s_custom, s_1_8, s_1_4, s_1_2, s_1bar, s_2bars, s_4bars, s_8bars, s_16bars, s_32bars
@@ -121,6 +122,8 @@ sr_bpm_labels:
     .word   s_bpm60, s_bpm70, s_bpm80, s_bpm90, s_bpm100
 sr_dbl_labels:
     .word   s_off, s_on
+sr_envtrig_labels:
+    .word   s_note, s_slice
 sr_len_ticks:                           @ Rec Len -> ticks (960 per beat, 4 beats per bar)
     .word   0, 480, 960, 1920, 3840, 7680, 15360, 30720, 61440, 122880
 
@@ -789,6 +792,10 @@ s_off:      .asciz "Off"
 s_on:       .asciz "On"
 s_sr_bpm:   .asciz "Loop BPM:"
 s_sr_dbl:   .asciz "Dbl Copy:"
+s_envtrig:  .asciz "Env Trig:"
+x_envtrig:  .asciz "envtrig"
+s_note:     .asciz "Note"
+s_slice:    .asciz "Slice"
 x_sr_bpm:   .asciz "seqloopbpm"
 x_sr_dbl:   .asciz "seqdblcopy"
 s_bpm60:    .asciz "60-120"

@@ -80,6 +80,12 @@ hook_template:
     movw    r1, #ID_REPITCH
     movs    r2, #0
     call    PARAM_ADD
+.ifdef MIX_EXT
+    mov     r0, r4                  @ 3.1.Q: Env Trig (adsr.S), default Note
+    movw    r1, #0x1A2
+    movs    r2, #0
+    call    PARAM_ADD
+.endif
     pop     {r4, pc}
 
 .thumb_func
@@ -136,6 +142,12 @@ hook_post:
     bl      pack_key_unpacked
     bl      flag_write
 1:
+.ifdef MIX_EXT
+    ldr     r1, [sp, #4]            @ 3.1.Q: Env Trig (adsr.S)
+    ldr     r2, [sp, #8]
+    ldr     r3, [sp, #12]
+    bl      envtrig_post
+.endif
     pop     {r0, r1, r2, r3, lr}
     push    {lr}
     sub     sp, #0x1C
@@ -147,7 +159,13 @@ hook_set:
     push    {r0, r1, r2, r3, lr}
     movw    r3, #ID_REPITCH
     cmp     r1, r3
+.ifdef MIX_EXT
+    beq     3f
+    movw    r3, #0x1A2              @ 3.1.Q: Env Trig, added like Warp when a preset lacks it
+    cmp     r1, r3
+.endif
     bne     1f
+3:
     bl      bag_has
     cmp     r0, #0
     bne     1f
@@ -177,6 +195,18 @@ hook_clip_param:
     bl      flag_write
     pop     {r0, r1, r2, r3, r4, pc}
 1:
+.ifdef MIX_EXT
+    movw    r3, #0x1A2              @ 3.1.Q: Env Trig (adsr.S), swallowed like Warp
+    cmp     r4, r3
+    bne     2f
+    ldr     r4, [r2, #0x10]
+    ldr     r1, [r0, #0x18]
+    bl      pack_key_unpacked
+    mov     r0, r4
+    bl      envtrig_write
+    pop     {r0, r1, r2, r3, r4, pc}
+2:
+.endif
     pop     {r0, r1, r2, r3, r4, lr}
     push    {r4, r5, r6, r7, lr}
     ldr.w   lr, [r2, #0xc]

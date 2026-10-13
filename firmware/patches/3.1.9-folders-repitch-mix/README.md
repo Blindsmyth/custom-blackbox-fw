@@ -47,6 +47,15 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
   - New EQs start as Low Shelf, Param, Param, High Shelf. So does an EQ from an older preset that nobody touched (all bands None, gains 0, frequencies 200/400/600/800) when you open it. An EQ you've edited stays as it is.
 - **FX button:** toggles between DJ FX and the FX Return page. The Return page and the EQ page share a button row along the bottom, like the pad page's Main / Pos / LFO / Conf: **A Delay | B Reverb | EQ |** (empty). The page you're on is lit. On the EQ page the EQ view is 40 px shorter to make room. The send page is no longer in the cycle (sends live on Mix).
 
+## Clip / Slicer: ENV source and Env Trig
+
+- **ENV modulation source.** A pad's mod slots (Source list after CC) can now pick **ENV**: the pad's own amp ADSR (Attack / Decay / Sustain / Release). Route it like LFO, e.g. ENV → Cutoff with the slot's Amount for a filter envelope. Each voice follows its own envelope (Clip and Slicer pads have two voices). ENV works on the same targets as VEL (Cutoff, Pan, Attack, Decay, pitch and a few more).
+  - Clip and Slicer pads only for now. On Sample / Multisample pads ENV does nothing yet.
+- **Env Trig: Note / Slice** (Slicer pads, Conf page, after Pad Note):
+  - **Note** (default): stock, the envelope starts when the note starts.
+  - **Slice:** every time playback crosses into the next slice while the note is held, the envelope (and so ENV) starts again, gliding from where it was so there's no click.
+- Both are saved with the preset. Stock firmware ignores them.
+
 ## Tools → Master
 
 Stock has one master compressor with a limiter after it. Its settings are hardcoded, and the only control was Tools → Main → Compressor (on/off). Tools now has a fifth section, **Master**:
@@ -127,6 +136,9 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 21. Tools shows five tabs: Main, Rec, MIDI, Clock, **Master**. Main no longer has Compressor. Master lists Compressor, C Thresh −4.0, C Ratio 4, C Attack 10 ms, C Release 250 ms, C Gain −4.0, L Attack 4 ms, L Release 750 ms.
 22. Compressor On with those defaults sounds as before. Lower C Thresh (e.g. −20.0) with a loud loop: clearly more compression; C Ratio 1: none. Raise C Gain: louder and squashed into the limiter. Power cycle: the values are kept, in every preset.
 
+21. Slicer pad, Conf → Env Trig: Slice. Long Attack, short Decay, low Sustain; hold a note that plays through several slices: each slice swells in again. Env Trig: Note: one swell only.
+22. Clip or Slicer pad, mod slot Source ENV → Cutoff, Amount up, Filter low: each note opens and closes the filter with the ADSR (and each slice with Env Trig Slice). Save, reload: kept.
+
 ## Rebuild and test
 
 ```
@@ -148,6 +160,6 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 
 `master_comp` reads the seven values from the global bag, clamps them, and writes them into the compressor object (dB as floats, times as ms × 48 samples). Then it runs the stock compressor. Five of the params are stock ids that 3.1.9 registers but never uses: `cthreshdb`, `cratio`, `cattack`, `crelease`, `cgaindb`. Two are new: `lattack` 0x1A8 and `lrelease` 0x1A9. `build_patch.py` stops if two entries patch the same byte.
 
-Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording), `mixmute.S` (Mix pads: mute / solo / select), `looper.S` (looper takes; wraps the note-ring pop `bl` at `0x080A2936`), `master.S` (Tools → Master).
+Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording), `mixmute.S` (Mix pads: mute / solo / select), `adsr.S` (ENV source, Env Trig; with `MIX_EXT` hooks in `../3.1.9-folders-repitch/repitch.S`), `looper.S` (looper takes; wraps the note-ring pop `bl` at `0x080A2936`), `master.S` (Tools → Master).
 
 The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with draw, touchDown, touchMove and touchUp wrapped for the centre detent and the blip, so faders on other screens are untouched.
