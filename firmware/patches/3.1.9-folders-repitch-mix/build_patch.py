@@ -68,6 +68,7 @@ SITES = base.SITES + [
 # Mix/Mute widget vtable 0x080F0F10: (address, cave symbol, stock word)
 VTABLE = [
     (0x080F0F10, "mix_tick", 0x080B6601),
+    (0x080F14CC, "pset_on_event", 0x080BDE61),         # preset screen onEvent: ^ button label
     (0x080F0F20, "mix_touch_down", 0x080B5F45),        # pads: select / mute / solo
     (0x080F0F24, "mix_touch_move", 0x080B5EBD),
     (0x080F0F40, "mix_child_event", 0x080B5A4D),

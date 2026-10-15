@@ -29,6 +29,7 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 
 ## Other screens
 
+- **Going up a folder:** like the sample browser, the small button at the top left of the preset screen shows **^** inside a folder; tap it (or press BACK) to go up. The ".." row is gone. At the top level the button is blank and BACK works as stock. (Holding BACK still puts the Blackbox into stock standby: display and LEDs off until you press a button.)
 - **PSET opens at the top.** The preset list starts on its first row (the first folder) instead of jumping to the loaded preset; the loaded preset is still marked in the list.
 
 - **Knobs no longer select pads or sequences or switch pages.** On Pads all four knobs are off for now (pad selection and the VEL / CUT-COPY panel switch); on Seq the three pad-selection knobs and the panel switch are off and the top-right knob changes the length (below). Parameter menus keep both knobs: one moves through the list, the other changes the selected parameter.
@@ -141,6 +142,7 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 21. Clip or Slicer pad, INFO → Conf → Env Trig (after Pad Note): Slice. Long Attack, short Decay, low Sustain; hold a note that plays through several slices: each slice swells in again. Env Trig: Note: one swell only.
 22. Clip or Slicer pad, mod slot Source ENV → Cutoff, Amount up, Filter low: each note opens and closes the filter with the ADSR (and each slice with Env Trig Slice). Save, reload: kept.
 
+24. PSET: inside a folder the top-left button shows ^ and there is no ".." row; tap ^ (or press BACK once): one level up. At the top the button is blank. BACK on the Pads screen still does stock BACK.
 23. PSET: the list opens on the first row (first folder). Scroll down and wait a few seconds: the cursor stays where you put it. Enter a folder: it opens on its first row.
 
 ## Rebuild and test

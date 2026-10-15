@@ -73,6 +73,7 @@ class Bench:
             symfile = Path(image).with_suffix(".sym.json")
             self.sym = {k: int(v, 16) for k, v in json.loads(symfile.read_text()).items()}
         self.folders = "fm_init" in self.sym
+        self.dotdot = "pset_on_event" not in self.sym   # 3.1.Q: ^ button instead of a ".." row
         self.repitch = "hook_register" in self.sym
         self.patched = self.folders
         self.loadbank = []
@@ -146,8 +147,21 @@ class Bench:
         self.b.call(REQUEST_LOAD, PM, self.b.put_cstr(NAME_BUF, new))
         self.pump()
 
+    def nested(self, rows):
+        """Expected rows below the top level: with a leading ".." unless the image dropped it."""
+        return ([".."] if self.dotdot else []) + rows
+
+    def up(self):
+        """Go up one folder: the ".." row where it exists, else BACK (the ^ button)."""
+        if self.dotdot:
+            self.press_load("..")
+        else:
+            self.back()
+
     def back(self):
         """Press BACK on the preset screen. Returns True when the screen was left."""
+        self.b.mu.mem_write(0x24020088 + 0x8CA4, b"\x07")    # on the preset screen
+        self.b.w32(0x24015CE4, self.b.u32(0x24015CE4) + 1000)  # past the 300 ms debounce
         left = []
         self.b.stub(UI_POST_UP, lambda b: left.append(b.arg(1)) or 0)
         self.b.call(self.sym["hook_back"], FAKE_APP, EVT_BUF)
@@ -433,7 +447,7 @@ def t_enter_group(bench, res):
     res.check(not bench.screen, "stays on the preset screen")
     res.check(bench.browse() == "Presets\\_Test", f"browse path {bench.browse()!r}")
     rows = bench.rows()
-    res.check(rows == ["..", "/Sub", "One", "Two"], f"group rows {rows}")
+    res.check(rows == bench.nested(["/Sub", "One", "Two"]), f"group rows {rows}")
     res.check(any(e[0] == 0x11 for e in bench.events), "list-done event posted (UI refresh)")
 
 
@@ -441,14 +455,14 @@ def t_nested_load_and_samples(bench, res):
     bench.refresh()
     bench.press_load("/_Test")
     bench.press_load("/Sub")
-    res.check(bench.rows() == ["..", "Deep"], f"nested rows {bench.rows()}")
+    res.check(bench.rows() == bench.nested(["Deep"]), f"nested rows {bench.rows()}")
     bench.press_load("Deep")
     res.check(len(bench.load_ok()) == 1, "Deep loads from Presets\\_Test\\Sub")
     res.check(bench.current() == "Deep", f"current preset {bench.current()!r}")
     res.check(bench.base() == "Presets\\_Test\\Sub", f"loaded-preset folder {bench.base()!r}")
     res.check(bench.join("Deep") == "Presets\\_Test\\Sub\\Deep", f"sample path base {bench.join('Deep')!r}")
-    bench.press_load("..")
-    bench.press_load("..")
+    bench.up()
+    bench.up()
     res.check(bench.browse() == "Presets", f"back at top {bench.browse()!r}")
     res.check(bench.join("Deep") == "Presets\\_Test\\Sub\\Deep",
               "sample path still uses the loaded preset's folder after browsing away")
@@ -457,7 +471,7 @@ def t_nested_load_and_samples(bench, res):
 def t_dotdot_floor(bench, res):
     bench.refresh()
     bench.press_load("/_Test")
-    bench.press_load("..")
+    bench.up()
     res.check(bench.browse() == "Presets", f"'..' returns to {bench.browse()!r}")
     rows = bench.rows()
     res.check(".." not in rows, "no '..' row at the top level")
@@ -499,7 +513,7 @@ def t_marker(bench, res):
     res.check("Beta" in rows and "Alpha" in rows, "preset folders unmarked")
     res.check("Root" in rows, "root xml preset unmarked")
     bench.press_load("/_Test")
-    res.check(bench.rows() == ["..", "/Sub", "One", "Two"], f"nested group marked {bench.rows()}")
+    res.check(bench.rows() == bench.nested(["/Sub", "One", "Two"]), f"nested group marked {bench.rows()}")
 
 
 def t_marker_cache(bench, res):
@@ -521,23 +535,67 @@ def t_back(bench, res):
     bench.press_load("/Sub")
     res.check(not bench.back(), "BACK in a nested folder stays on the screen")
     res.check(bench.browse() == "Presets\\_Test", f"BACK goes up to {bench.browse()!r}")
-    res.check(bench.rows() == ["..", "/Sub", "One", "Two"], f"list rebuilt {bench.rows()}")
+    res.check(bench.rows() == bench.nested(["/Sub", "One", "Two"]), f"list rebuilt {bench.rows()}")
     res.check(not bench.back(), "BACK again stays on the screen")
     res.check(bench.browse() == "Presets", f"BACK reaches {bench.browse()!r}")
     res.check(bench.back(), "BACK at the top leaves the screen")
     res.check(bench.browse() == "Presets", "browse path stays at Presets")
     # Hardware BACK is HandleInput type 7. hook_type7 is a bl that can leave
     # that function's frame, so the bench only calls folder_back.
+    tick = lambda: bench.b.w32(0x24015CE4, bench.b.u32(0x24015CE4) + 1000)
     bench.press_load("/_Test")
+    tick()
     res.check(bench.b.call(bench.sym["folder_back"]) == 0, "folder_back pops a level")
     bench.pump()
     res.check(bench.browse() == "Presets", f"folder_back browse {bench.browse()!r}")
+    tick()
     res.check(bench.b.call(bench.sym["folder_back"]) == 1, "folder_back at the top is a no-op")
+    if not bench.dotdot:
+        bench.press_load("/_Test")
+        bench.press_load("/Sub")
+        tick()
+        bench.b.mu.mem_write(0x24020088 + 0x8CA4, b"\x02")    # Pads screen
+        res.check(bench.b.call(bench.sym["folder_back"]) == 1, "BACK off the preset screen stays stock")
+        bench.b.mu.mem_write(0x24020088 + 0x8CA4, b"\x07")
+        bench.b.call(bench.sym["folder_back"])
+        bench.b.call(bench.sym["folder_back"])                  # same press via the second hook
+        bench.pump()
+        res.check(bench.browse() == "Presets\\_Test", f"one press goes up one level ({bench.browse()!r})")
+        tick()
+        bench.b.call(bench.sym["folder_back"])
+        bench.pump()
     bench.press_load("/_Test")
     bench.b.reads = 0
-    bench.press_load("..")
+    bench.up()
     res.check(bench.browse() == "Presets", f"cached BACK browse {bench.browse()!r}")
     res.check(bench.b.reads < 100, f"cached BACK reads {bench.b.reads}")
+
+
+def t_pset_up_button(bench, res):
+    """The preset screen's leftmost button (id 0x7F) reads ^ below the top level."""
+    b = bench.b
+    scr = 0xC2000000
+    b.mu.mem_write(0xE000ED88, struct.pack("<I", 0xF << 20))
+    b.mu.mem_write(scr, b"\0" * 0x3000)
+    b.call(0x080BE20D, scr)
+    btn = scr + 0x630
+    res.check(b.u32(btn + 0x14) == 0x7F and struct.unpack("<4i", b.mu.mem_read(btn + 4, 16)) == (0, 182, 38, 38),
+              "the 38 x 38 id-0x7F button at the left of the top panel")
+    texts = []
+    b.stub(0x080BDE60, lambda board: 0)
+    b.stub(0x080A3DEC, lambda board: (texts.append(board.cstr(board.arg(1))),
+                                      board.mu.mem_write(board.arg(0) + 0x34 + 0x31, board.cstr(board.arg(1)).encode() + b"\0"))[1])
+    bench.refresh()
+    bench.press_load("/_Test")
+    b.call(bench.sym["pset_on_event"], scr, EVT_BUF)
+    b.call(bench.sym["pset_on_event"], scr, EVT_BUF)
+    res.check(texts == ["^"], f"inside a folder: ^ (set once) {texts}")
+    bench.back()
+    b.call(bench.sym["pset_on_event"], scr, EVT_BUF)
+    res.check(texts == ["^", ""], f"back at the top: blank {texts}")
+    res.check(".." not in bench.rows(), "no .. row")
+    b.unstub(0x080BDE60)
+    b.unstub(0x080A3DEC)
 
 
 def diff(before, after):
@@ -636,7 +694,7 @@ def t_delete(bench, res):
         now = bench.files()
         res.check(now == after, f"Delete {name!r} is refused")
         res.check(any(e[0] == 0x27 for e in bench.events), f"Delete {name!r} still completes for the UI")
-    bench.press_load("..")
+    bench.up()
     bench.request(REQUEST_DELETE, "/_Test")
     res.check(bench.files() == after, "Delete on a top-level group row is refused")
 
@@ -655,7 +713,7 @@ def t_rename(bench, res):
     bench.request(REQUEST_RENAME, "/Sub", "/Sub2")
     now = bench.files()
     res.check("Presets/_Test/Sub2/Deep/preset.xml" in now and "Presets/_Test/Sub" not in now, "folder renamed")
-    res.check(bench.rows() == ["..", "/Sub2", "One", "Three"], f"list rebuilt with the marker {bench.rows()}")
+    res.check(bench.rows() == bench.nested(["/Sub2", "One", "Three"]), f"list rebuilt with the marker {bench.rows()}")
     bench.request(REQUEST_RENAME, "..", "X")
     res.check(bench.files() == now, "rename of '..' refused")
     bench.request(REQUEST_RENAME, "One", "..")
@@ -2191,6 +2249,7 @@ def main():
             ("folder marker", t_marker),
             ("marker cache on rebuild", t_marker_cache),
             ("BACK goes up", t_back),
+            *([("preset ^ button", t_pset_up_button)] if "pset_on_event" in sym else []),
         ]
         write_cases = [
             ("Save As into a group folder", t_save_as_into_group, TREE),

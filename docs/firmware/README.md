@@ -23,7 +23,7 @@ Confidence marks: **S** read from code, **L** one step inferred, **?** open ques
 
 - STM32H743, Cortex-M7, double-precision FPU (Unicorn can't execute `.f64` VFP ops; the bench stubs those functions). **S**
 - Memory map, patch budget and SRAM4 layout: [../memory.md](../memory.md) (timestretch branch) and `.cursor/rules/memory-layout.mdc`. **S**
-- **SRAM4 in 3.1.Q:** `0x38000000` folder state (`0x4930`), `0x38005000` Warp flags, `0x38005200` MX_STATE (`'MIXU'`, +0..+76), `0x38005400` EQ page buttons (4 × 0xA0, to `0x38005680`), `0x38005110` Env Trig table (magic + 0x50 bytes by row<<2|col, `adsr.S`; save slots at +4), `0x38005700` Rec Len own-length label (16 bytes), `0x38005800` looper note buffer. **S**
+- **SRAM4 in 3.1.Q:** `0x38000000` folder state (`0x4930`), `0x38005000` Warp flags, `0x38005200` MX_STATE (`'MIXU'`, +0..+76), `0x38005400` EQ page buttons (4 × 0xA0, to `0x38005680`), `0x38005180` tick of the last BACK folder-up (debounce), `0x38005110` Env Trig table (magic + 0x50 bytes by row<<2|col, `adsr.S`; save slots at +4), `0x38005700` Rec Len own-length label (16 bytes), `0x38005800` looper note buffer. **S**
 - Tasks:
   - **defaultTask** `0x08043DEC`: the UI loop. Input → App vtable+8 → draw `FUN_0808B2D0`. **S**
   - **pcmStreamer**: FatFs and preset load/save; the only task that may touch the card. **S**
@@ -98,6 +98,9 @@ Details: [../map-319.md#mix-and-mute](../map-319.md#mix-and-mute) and [#encoders
 - **Page lists:** `InfoPage_Build` `0x08098D40` walks ushort id lists (pad pages 0x48 bytes per page; sequence page 0 at `0x080EEF28`; layers `0x080EEE98`; Tools `0x080EED18` + page × 0x48). **S**
 
 ## Presets screen
+
+- **Layout** (ctor `FUN_080BE20C`, vtable `0x080F1498`: +0x30 `preset_screen_key` `0x080BD928`, +0x34 onEvent `0x080BDE60`). Top panel at +0x34 (rect 0,182,320,38) is a slot row filled from the right (count +0x34, slots +0x36 of the panel): Load +0x1B38 (id 0x18), Save +0x1A98 (0x20), File +0x19F8 (0x127: popup New / SaveAs / Rename / Pack / Clean / Delete, ids 0x1A, 0x21, 0x1D, 0x22, 0x23, 0x1C), and leftmost a 38 x 38 button +0x630 (class vtable `0x080F106C`, id 0x7F = key BACK), unlabelled in stock. The sample browser labels its equivalent "^" in a subfolder (`FUN_080B2DF0`, button +0x844, path +0xACA). 3.1.Q labels +0x630 "^" below the top level (`pset.S`). **S**
+- **Buttons:** table at `0x24009AB0` (13 × 0x18, filled by `FUN_08045544`): +0 port, +4 pin mask, +8 press event, +0xA release event, +0xC hold event (sent after 600 ms), +0xE debounced level. BACK = GPIOC pin 2: press 7, hold 8. Hold 8 → `FUN_080A16C4(app, 1)`: standby (transport stop, engine quiet, display and LEDs off, flag App+0xEA9E); any key handler ends with `FUN_080A16C4(app, 0)` and wakes it. App+0x8CC3 is a busy flag (save/pack/load in progress) that blocks App_HandleInput. **S**
 
 - onEvent `0x080BDE60`. Event `0x68` selects the loaded preset by name; `0x149` (list rebuilt) selects the pending row name at +0x1CDF (set around a load by key 0x139), else the loaded preset, else row 0. Name lookup `FUN_08097AC8(sessionmgr, buf)` (0 = none) at `0x080BDE96` / `0x080BDFEE`; select by name `FUN_080BD8C0(screen, name)`; draw rows `preset_screen_draw` `0x080BD7D4` (7 visible rows from +0x3AC, 0x58 each; selected index +0x614; list slider +0x618). 3.1.Q (`pset.S`) makes both lookups report none, so the list opens on row 0. **S**
 
