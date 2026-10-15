@@ -1788,15 +1788,29 @@ def t_env_source(bench, res):
         b.mu.mem_write(msg + 0xC, struct.pack("<HxxHxxHh", target, slot, src, 500))
         b.call(bench.sym["env_route"], clip, msg)
     route(0xC8, 1, 0x30)
-    res.check(b.u32(clip + 0x448 + 16) == clip + 0x4E0 and b.u32(clip + 0x858 + 16) == clip + 0x8F0
+    res.check(b.u32(clip + 0x448 + 16) == clip + 0x4DC and b.u32(clip + 0x858 + 16) == clip + 0x8EC
               and b.u16(msg + 0x14) == 0x30, f"ENV -> Cutoff: each voice's slot reads its envelope level "
               f"{b.u32(clip + 0x448 + 16):#x} {b.u32(clip + 0x858 + 16):#x}")
     route(0x62, 0, 0x30)
-    res.check(b.u32(clip + 0x26C + 8) == clip + 0x4E0 and b.u32(clip + 0x67C + 8) == clip + 0x8F0, "ENV -> Pan")
+    res.check(b.u32(clip + 0x26C + 8) == clip + 0x4DC and b.u32(clip + 0x67C + 8) == clip + 0x8EC, "ENV -> Pan")
     route(0x5C, 2, 0x30)
-    res.check(b.u32(clip + 0x2F4 + 24) == clip + 0x4E0 and b.u32(clip + 0x704 + 24) == clip + 0x8F0
+    res.check(b.u32(clip + 0x2F4 + 24) == clip + 0x4DC and b.u32(clip + 0x704 + 24) == clip + 0x8EC
               and b.u32(clip + 0x2F4 + 28) != 0, f"ENV -> Pitch: both voices, amount set "
               f"{b.u32(clip + 0x2F4 + 24):#x} {b.u32(clip + 0x704 + 24):#x}")
+    # the real evaluator reads source pointer + 4: the envelope level must come out
+    env0 = clip + 0x260 + 0x258
+    b.mu.mem_write(env0 + 0x28, struct.pack("<f", 0.5))
+    b.mu.mem_write(env0 + 0x2C, struct.pack("<f", 0.0))
+    from unicorn import arm_const as A
+    def evaluate(mp):
+        b.call(0x0806FB31, mp)
+        return struct.unpack("<f", b.mu.mem_read(mp + 0x30, 4))[0]
+    mp = clip + 0x2F4                                # Pitch, voice 0 (routed above, slot 2)
+    b.mu.mem_write(mp + 0x28, struct.pack("<ff", -1000.0, 1000.0))
+    v_half = evaluate(mp)
+    b.mu.mem_write(env0 + 0x28, struct.pack("<f", 1.0))
+    v_full = evaluate(mp)
+    res.check(v_half != 0 and abs(v_full - 2 * v_half) < 1e-4, f"evaluator follows the envelope level: 0.5 -> {v_half}, 1.0 -> {v_full}")
     route(0xC8, 2, 4)
     res.check(b.u32(clip + 0x448 + 24) == clip + 0x388, f"LFO routing unchanged {b.u32(clip + 0x448 + 24):#x}")
     route(0xC8, 0, 0xD)

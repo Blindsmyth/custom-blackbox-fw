@@ -153,7 +153,9 @@ env_slice_after:
 @ ---- ENV source (audio task)
 
 @ bl site 0x080685C4: FUN_08067018(clip, msg). ENV: LFO's binding (both voices), then both
-@ voices' slot pointers -> that voice's envelope level.
+@ voices' slot pointers -> that voice's envelope. The evaluator FUN_0806FB30 reads each source
+@ as *(float *)(pointer + 4) (sources are objects with their output at +4), so the pointer is
+@ env+0x24 to read the ADSR level at env+0x28.
 .thumb_func
 env_route:
     ldrh    r2, [r1, #0x14]
@@ -189,11 +191,11 @@ env_route:
     adds    r6, #8                  @ modparam + 8 + slot * 8: source pointer
     ldrh    r2, [r1, #2]            @ voice 0 modparam
     add     r2, r4
-    add.w   r3, r4, #(0x260 + ENV_OFF + 0x28)
+    addw    r3, r4, #(0x260 + ENV_OFF + 0x24)
     str     r3, [r2, r6]
     ldrh    r2, [r1, #4]            @ voice 1 modparam
     add     r2, r4
-    add.w   r3, r4, #(0x670 + ENV_OFF + 0x28)
+    addw    r3, r4, #(0x670 + ENV_OFF + 0x24)
     str     r3, [r2, r6]
 9:
     pop     {r4, r5, r6, pc}
