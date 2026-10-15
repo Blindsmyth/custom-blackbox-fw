@@ -1853,6 +1853,18 @@ def t_env_source(bench, res):
     b.unstub(0x08065550)
 
 
+def t_pset_first_row(bench, res):
+    """The preset list opens on its first row, not on the loaded preset."""
+    b = bench.b
+    from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
+    for va in (0x080BDE96, 0x080BDFEE):
+        insn = next(md.disasm(bytes(b.image[va - bd.BASE: va - bd.BASE + 4]), va))
+        res.check(insn.mnemonic == "bl" and int(insn.op_str.lstrip("#"), 16) == bench.sym["pset_no_current"] & ~1,
+                  f"{va:#x}: no current-preset lookup ({insn.mnemonic} {insn.op_str})")
+    res.check(b.call(bench.sym["pset_no_current"], 0x24020088, 0x2001C600) == 0, "reports no current preset name")
+
+
 def t_mix_button(bench, res):
     b = _mix_setup(bench, build=False)
     calls = []
@@ -2221,6 +2233,7 @@ def main():
             ("Rec Len follows Step Count / Step Len", t_seqrec_sync),
             ("looper take", t_looper),
             ("ENV source and Env Trig", t_env_source),
+            ("preset list opens on row 0", t_pset_first_row),
             ("untouched EQ gets the default bands", t_eq_untouched_defaults),
             ("SEQS held shows the layer panel", t_seq_panel),
             ("PADS held shows the edit panel", t_pads_panel),

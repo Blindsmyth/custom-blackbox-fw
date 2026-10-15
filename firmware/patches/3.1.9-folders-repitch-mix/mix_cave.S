@@ -56,3 +56,8 @@
 .ltorg
 
 .include "adsr.S"
+
+.align 2
+.ltorg
+
+.include "pset.S"

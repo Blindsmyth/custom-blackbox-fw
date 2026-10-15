@@ -29,6 +29,8 @@ Planned next: [docs/roadmap.md](../../../docs/roadmap.md).
 
 ## Other screens
 
+- **PSET opens at the top.** The preset list starts on its first row (the first folder) instead of jumping to the loaded preset; the loaded preset is still marked in the list.
+
 - **Knobs no longer select pads or sequences or switch pages.** On Pads all four knobs are off for now (pad selection and the VEL / CUT-COPY panel switch); on Seq the three pad-selection knobs and the panel switch are off and the top-right knob changes the length (below). Parameter menus keep both knobs: one moves through the list, the other changes the selected parameter.
 - **"Sel" in the top bar:** while you're selecting (PADS held, SEQS held, or MIX held on Mix), "Sel" shows between the bar counter and "Seq x". "Seq x" sits a little further right to make room.
 - **Hold PADS:** the side panel shows CUT / COPY / PSTE / CLR (instead of VEL), and tapping a pad selects it without playing. Let go: VEL comes back.
@@ -139,6 +141,8 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 21. Clip or Slicer pad, INFO → Conf → Env Trig (after Pad Note): Slice. Long Attack, short Decay, low Sustain; hold a note that plays through several slices: each slice swells in again. Env Trig: Note: one swell only.
 22. Clip or Slicer pad, mod slot Source ENV → Cutoff, Amount up, Filter low: each note opens and closes the filter with the ADSR (and each slice with Env Trig Slice). Save, reload: kept.
 
+23. PSET: the list opens on the first row (first folder). Scroll down and wait a few seconds: the cursor stays where you put it. Enter a folder: it opens on its first row.
+
 ## Rebuild and test
 
 ```
@@ -159,6 +163,6 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 
 `master_comp` reads the seven values from the global bag, clamps them, and writes them into the compressor object (dB as floats, times as ms × 48 samples). Then it runs the stock compressor. Five of the params are stock ids that 3.1.9 registers but never uses: `cthreshdb`, `cratio`, `cattack`, `crelease`, `cgaindb`. Two are new: `lattack` 0x1A8 and `lrelease` 0x1A9. `build_patch.py` stops if two entries patch the same byte.
 
-Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording), `mixmute.S` (Mix pads: mute / solo / select), `adsr.S` (ENV source, Env Trig; with `MIX_EXT` hooks in `../3.1.9-folders-repitch/repitch.S`), `looper.S` (looper takes; wraps the note-ring pop `bl` at `0x080A2936`), `master.S` (Tools → Master).
+Sources: `mixui.S` (Mix), `navknobs.S` (Batch 0), `padsel.S`, `seqtools.S`, `eqtouch.S`, `fxret.S` (Batch 1 and the EQ row), `seqrec.S` (Custom sequence recording), `mixmute.S` (Mix pads: mute / solo / select), `adsr.S` (ENV source, Env Trig; with `MIX_EXT` hooks in `../3.1.9-folders-repitch/repitch.S`), `pset.S` (preset list opens on row 0), `looper.S` (looper takes; wraps the note-ring pop `bl` at `0x080A2936`), `master.S` (Tools → Master).
 
 The four Mix faders also point at `fader_vt`, a copy of the stock fader vtable with draw, touchDown, touchMove and touchUp wrapped for the centre detent and the blip, so faders on other screens are untouched.

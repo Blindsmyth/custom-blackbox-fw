@@ -97,6 +97,10 @@ Details: [../map-319.md#mix-and-mute](../map-319.md#mix-and-mute) and [#encoders
 - **Settings rows (INFO page class, vtable `0x080F0004`):** a row builder calls `Param_Labels` at `0x080A7F20`, then slider set-labels `FUN_080B0998(slider, labels, count)` (slider+0x158 labels, +0x154 count) and set-value `FUN_080B08F4(slider, value, force)`, which copies `labels[value]` into the slider text (+0x9C, `FUN_080C3B98`) only when the value changed or force is set. The page onEvent `0x080A6D28` handles `0x66` for its own key (page+0x29C == event+8) by re-setting every row (`FUN_080A54A0` → `FUN_080A7FE6`, force 1), so a label pointing into RAM picks up new text on each refresh. 3.1.Q uses this for Rec Len value 10 (`SR_TXT` SRAM4 `0x38005700`). **S** (refresh path read from code; device check pending)
 - **Page lists:** `InfoPage_Build` `0x08098D40` walks ushort id lists (pad pages 0x48 bytes per page; sequence page 0 at `0x080EEF28`; layers `0x080EEE98`; Tools `0x080EED18` + page × 0x48). **S**
 
+## Presets screen
+
+- onEvent `0x080BDE60`. Event `0x68` selects the loaded preset by name; `0x149` (list rebuilt) selects the pending row name at +0x1CDF (set around a load by key 0x139), else the loaded preset, else row 0. Name lookup `FUN_08097AC8(sessionmgr, buf)` (0 = none) at `0x080BDE96` / `0x080BDFEE`; select by name `FUN_080BD8C0(screen, name)`; draw rows `preset_screen_draw` `0x080BD7D4` (7 visible rows from +0x3AC, 0x58 each; selected index +0x614; list slider +0x618). 3.1.Q (`pset.S`) makes both lookups report none, so the list opens on row 0. **S**
+
 ## Sequencer
 
 Details: [../map-319.md#sequence-recording-31q-custom-rec-len](../map-319.md#sequence-recording-31q-custom-rec-len).
