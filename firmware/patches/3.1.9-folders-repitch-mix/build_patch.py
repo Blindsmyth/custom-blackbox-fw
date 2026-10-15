@@ -51,8 +51,8 @@ SITES = base.SITES + [
     (0x080A2F3C, "seqrec_rec_press", True, "fef7c2fb"),  # REC press
     (0x080AB594, "hdr_tick", True, "00f0faf8"),       # header bar tick (direct call): "Sel"
     (0x080A2936, "looper_pop", True, "a9f70dff"),       # App_Update note-ring pop (looper)
-    (0x080BDE96, "pset_no_current", True, "d9f717fe"),  # preset screen 0x68: no jump to the loaded preset
-    (0x080BDFEE, "pset_no_current", True, "d9f76bfd"),  # preset list rebuilt: open on row 0
+    (0x080BDEA4, "pset_select", True, "fff70cfd"),     # preset screen 0x68: loaded preset, else row 0
+    (0x080BDFF8, "pset_select", True, "fff762fc"),     # preset list rebuilt: loaded preset, else row 0
     # Clip/Slicer ENV source and slice-triggered envelopes (adsr.S)
     (0x080685C4, "env_route", True, "fef728fd"),       # mod routing FUN_08067018
     (0x08066B9A, "env_slice", True, "fef7d9fc"),       # slice change: FUN_08065550 (site 1)

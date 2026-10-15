@@ -195,7 +195,7 @@
  "env_slice_after": "0x080f4ed0",
  "env_targets": "0x080f4f70",
  "s_env": "0x080f4fe0",
- "s_up": "0x080f5030",
+ "s_up": "0x080f5054",
  "hook_register": "0x080f27e0",
  "hook_template": "0x080f2836",
  "hook_clip_def": "0x080f285e",
@@ -266,6 +266,6 @@
  "envtrig_read": "0x080f4e68",
  "env_src_names": "0x080f4fa8",
  "env_src_codes": "0x080f4fcc",
- "pset_no_current": "0x080f4fe8",
- "pset_on_event": "0x080f4fec"
+ "pset_select": "0x080f4fe8",
+ "pset_on_event": "0x080f5010"
 }

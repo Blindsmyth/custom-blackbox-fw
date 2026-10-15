@@ -1912,15 +1912,32 @@ def t_env_source(bench, res):
 
 
 def t_pset_first_row(bench, res):
-    """The preset list opens on its first row, not on the loaded preset."""
+    """Preset list: the loaded preset when it is listed, otherwise the first row."""
     b = bench.b
     from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB
     md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
+    stock = open(STOCK_IMAGE, "rb").read()
     for va in (0x080BDE96, 0x080BDFEE):
+        res.check(b.image[va - bd.BASE: va - bd.BASE + 4] == stock[va - bd.BASE: va - bd.BASE + 4],
+                  f"{va:#x}: loaded-preset name lookup is stock")
+    for va in (0x080BDEA4, 0x080BDFF8):
         insn = next(md.disasm(bytes(b.image[va - bd.BASE: va - bd.BASE + 4]), va))
-        res.check(insn.mnemonic == "bl" and int(insn.op_str.lstrip("#"), 16) == bench.sym["pset_no_current"] & ~1,
-                  f"{va:#x}: no current-preset lookup ({insn.mnemonic} {insn.op_str})")
-    res.check(b.call(bench.sym["pset_no_current"], 0x24020088, 0x2001C600) == 0, "reports no current preset name")
+        res.check(insn.mnemonic == "bl" and int(insn.op_str.lstrip("#"), 16) == bench.sym["pset_select"] & ~1,
+                  f"{va:#x}: select by name goes through pset_select")
+    calls = []
+    found = [1]
+    b.stub(0x080BD8C0, lambda board: calls.append("byname") or found[0])
+    b.stub(0x080B074C, lambda board: calls.append(("index", board.arg(0), board.arg(1))) and None)
+    b.stub(0x080BD7D4, lambda board: calls.append(("draw", board.arg(1), board.arg(2))) and None)
+    scr = 0xC2000000
+    r = b.call(bench.sym["pset_select"], scr, 0x2001C600)
+    res.check(r == 1 and calls == ["byname"], f"loaded preset listed: selected, nothing else {calls}")
+    calls.clear()
+    found[0] = 0
+    r = b.call(bench.sym["pset_select"], scr, 0x2001C600)
+    res.check(calls == ["byname", ("index", scr + 0x618, 0), ("draw", 0, 1)], f"not listed: first row {calls}")
+    for fn in (0x080BD8C0, 0x080B074C, 0x080BD7D4):
+        b.unstub(fn)
 
 
 def t_mix_button(bench, res):
@@ -2292,7 +2309,7 @@ def main():
             ("Rec Len follows Step Count / Step Len", t_seqrec_sync),
             ("looper take", t_looper),
             ("ENV source and Env Trig", t_env_source),
-            ("preset list opens on row 0", t_pset_first_row),
+            ("preset list selection", t_pset_first_row),
             ("untouched EQ gets the default bands", t_eq_untouched_defaults),
             ("SEQS held shows the layer panel", t_seq_panel),
             ("PADS held shows the edit panel", t_pads_panel),

@@ -1,21 +1,36 @@
-@ Preset list opens on its first row (the first folder) instead of the loaded preset.
-@ docs/firmware/README.md "Presets".
+@ Preset list selection: the loaded preset when it is in the list, otherwise the first row.
+@ docs/firmware/README.md "Presets screen".
 @
-@ Preset screen onEvent 0x080BDE60: event 0x68 selects the loaded preset by name, and
-@ event 0x149 (list rebuilt) selects the pending row name (+0x1CDF, kept around a load) or
-@ else the loaded preset, falling back to row 0 when the name isn't listed. Both look the
-@ name up with FUN_08097AC8(sessionmgr, buf) -> 0 when there is none. With preset folders
-@ the browse path starts in the loaded preset's folder, so the list opened on that preset.
-@ Both calls now report "no name": 0x68 leaves the selection alone and 0x149 picks row 0.
-@ The loaded preset's own highlight (preset_screen_draw) keeps calling FUN_08097AC8.
+@ Preset screen onEvent 0x080BDE60: event 0x68 (screen shown) selects the loaded preset by
+@ name with FUN_080BD8C0(screen, name), which changes nothing when the name isn't listed;
+@ the index then stays at the ctor's -1 (+0x614), which showed as the bottom row once
+@ folders put other rows in the list. Event 0x149 (list rebuilt) selects the pending row
+@ (+0x1CDF, kept around a load), else the loaded preset, else row 0 itself.
+@ pset_select wraps both FUN_080BD8C0 calls: not found -> row 0.
 
-.global pset_no_current
+.equ SEL_NAME,    0x080BD8C1            @ FUN_080BD8C0(screen, name) -> found
+.equ LIST_INDEX,  0x080B074D            @ FUN_080B074C(slider, index)
+.equ PSET_DRAW,   0x080BD7D5            @ preset_screen_draw(screen, index, force)
 
-@ bl sites 0x080BDE96 / 0x080BDFEE (was bl FUN_08097AC8).
+.global pset_select
+
+@ bl sites 0x080BDEA4 (event 0x68) / 0x080BDFF8 (event 0x149).
 .thumb_func
-pset_no_current:
+pset_select:
+    push    {r4, lr}
+    mov     r4, r0
+    call    SEL_NAME
+    cbnz    r0, 9f
+    add     r0, r4, #0x618          @ not in this folder: first row
+    movs    r1, #0
+    call    LIST_INDEX
+    mov     r0, r4
+    movs    r1, #0
+    movs    r2, #1
+    call    PSET_DRAW
     movs    r0, #0
-    bx      lr
+9:
+    pop     {r4, pc}
 
 @ ---- ^ button (like the sample browser's, FUN_080B2DF0)
 @ The preset screen's top panel (screen+0x34, a slot row filled from the right) holds Load
