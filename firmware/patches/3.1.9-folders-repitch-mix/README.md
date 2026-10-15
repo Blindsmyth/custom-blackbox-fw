@@ -142,8 +142,8 @@ To go back, copy the stock file to `BLACKBOX.BIN` on the card and run BACK+INFO 
 21. Clip or Slicer pad, INFO → Conf → Env Trig (after Pad Note): Slice. Long Attack, short Decay, low Sustain; hold a note that plays through several slices: each slice swells in again. Env Trig: Note: one swell only.
 22. Clip or Slicer pad, mod slot Source ENV → Cutoff, Amount up, Filter low: each note opens and closes the filter with the ADSR (and each slice with Env Trig Slice). Save, reload: kept.
 
-24. PSET: inside a folder the top-left button shows ^ and there is no ".." row; tap ^ (or press BACK once): one level up. At the top the button is blank. BACK on the Pads screen still does stock BACK.
 23. PSET: the list opens on the first row (first folder). Scroll down and wait a few seconds: the cursor stays where you put it. Enter a folder: it opens on its first row.
+24. PSET: inside a folder the top-left button shows ^ and there is no ".." row; tap ^ (or press BACK once): one level up. At the top the button is blank. BACK on the Pads screen still does stock BACK.
 
 ## Rebuild and test
 
