@@ -2668,6 +2668,15 @@ def t_diag_cpu_meter(bench, res):
     mid, space = diag_tools_label(bench)
     res.check(space == "12.3 GB", f"free space still set ({space!r})")
     res.check(mid == "39/39%", f"load {mid!r} (1.0M of 2.56M cycles = 39%)")
+    b.w32(RB_VOICE + 8, 1)                      # Rubber running, 120 % of a block on its own
+    b.w32(RB_VOICE + 12, 25600 * 120)
+    for _ in range(200):
+        b.stub(0x08088756, receive)
+        b.call(bench.sym["cpu_wait"], 0, 0, 0, 0)
+        clock[0] += busy
+        b.w32(0xE0001004, clock[0])
+    mid, _ = diag_tools_label(bench)
+    res.check(mid == "39/39% R120", f"with Rubber's own share: {mid!r}")
     res.check(b.u32(0x50003004) & (1 << 9), "watchdog early wakeup armed")
 
 

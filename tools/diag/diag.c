@@ -19,6 +19,7 @@
  *
  * What shows on the Tools bar's middle label:
  *   "34/71%" or "34/71%+3"   load since the last look (avg / peak, late blocks)
+ *   "... R58"                Rubber Band's own share, last second of rendering
  *   "F0810abcd"              the boot before died in a fault at that PC (this boot only)
  *   "W0810abcd"              the boot before was reset by the watchdog while running that PC
  * The Rubber label in the Warp list carries the stage the boot before died in (b2pair.c).
@@ -163,6 +164,18 @@ static char *put_hex(char *p, uint32_t v)
     return p;
 }
 
+/* " R120": Rubber Band's own share of the block, from rubber.cpp's figure for the last second
+ * of rendering (RbVoice.avg_cyc, cycles per 256-frame block; 25,600 cycles = 1 %). */
+static char *rubber_share(char *p)
+{
+    const volatile RbVoice *v = (const volatile RbVoice *)RB_VOICE;
+    if (v->magic != RB_VOICE_MAGIC || (v->state & 0xffu) != RB_ST_READY || !v->avg_cyc)
+        return p;
+    *p++ = ' ';
+    *p++ = 'R';
+    return put_uint(p, (v->avg_cyc + 12800u) / 25600u);
+}
+
 static void compose(char *buf)
 {
     volatile struct diag_state *m = DIAG;
@@ -182,6 +195,7 @@ static void compose(char *buf)
             *p++ = '+';
             p = put_uint(p, m->late);
         }
+        p = rubber_share(p);
     } else if (m->magic == DIAG_MAGIC && m->status == ST_NO_CLOCK) {
         *p++ = '-';
         *p++ = '-';
@@ -197,7 +211,7 @@ static void compose(char *buf)
 void cpu_mid(uint8_t *label)
 {
     volatile struct diag_state *m = DIAG;
-    char buf[16];
+    char buf[24];                /* "999/999%+99 R999" at most */
     if (m->magic == DIAG_MAGIC && m->n) {
         m->avg_shown = (uint16_t)(m->sum / m->n);
         m->peak_shown = m->peak;
