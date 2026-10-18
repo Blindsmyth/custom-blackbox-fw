@@ -44,6 +44,8 @@ typedef struct RbVoice {
     int32_t block_done;   /* 24 one render per audio block (repitch.S SM_BLOCK) */
     int32_t prev_active;  /* 28 */
     char label[16];       /* 32 the Warp list label: "Rubber", "Rubber!", "Rubber 54%" */
+    uint32_t cyc_avg;     /* 48 rb_mix's cycles per block, smoothed over ~16 blocks (b2pair.c) */
+    uint32_t over_n;      /* 52 blocks in a row over RB_GUARD_CYC */
 } RbVoice;
 
 #define RB_ST_UNKNOWN  0u
@@ -51,6 +53,14 @@ typedef struct RbVoice {
 #define RB_ST_ABSENT   2u             /* no valid payload in bank 2: Rubber plays stock grains */
 #define RB_ST_PAIRED   3u             /* payload intact, not started yet (b2pair.c rb_start) */
 #define RB_ST_BROKEN   4u             /* payload intact, but the last start never came back: off */
+#define RB_ST_SLOW     5u             /* switched itself off: too slow for the audio block */
+
+/* The CPU guard (b2pair.c rb_mix): a 256-frame block is 2,560,000 cycles at 480 MHz. A render
+ * that keeps the audio task busy past its block starves every other task until the watchdog
+ * resets the unit, so Rubber turns itself off after RB_GUARD_N blocks in a row over this. */
+#define RB_BLOCK_CYC   2560000u
+#define RB_GUARD_CYC   (RB_BLOCK_CYC / 4u * 3u)
+#define RB_GUARD_N     32u
 
 /* Rubber Band runs on its own stack at the top of SRAM1-3 (rb_call_on_stack, rubber_cave.S),
  * not on the audio or disk task's: its render needs ~5 KB. rubber.ld keeps .data/.bss below. */

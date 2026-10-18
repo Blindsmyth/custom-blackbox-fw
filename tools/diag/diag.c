@@ -164,29 +164,33 @@ static char *put_hex(char *p, uint32_t v)
     return p;
 }
 
-/* " R120": Rubber Band's own share of the block, from rubber.cpp's figure for the last second
- * of rendering (RbVoice.avg_cyc, cycles per 256-frame block; 25,600 cycles = 1 %). */
-static char *rubber_share(char *p)
+/* " R120": Rubber Band's own share of the block, smoothed over its last ~16 renders (b2pair.c
+ * rb_mix; 25,600 cycles = 1 %). Kept after the CPU guard switched Rubber off, so the cost that
+ * did it can still be read. */
+static char *rubber_share(char *buf, char *p)
 {
     const volatile RbVoice *v = (const volatile RbVoice *)RB_VOICE;
-    if (v->magic != RB_VOICE_MAGIC || (v->state & 0xffu) != RB_ST_READY || !v->avg_cyc)
+    uint32_t st = v->state & 0xffu;
+    if (v->magic != RB_VOICE_MAGIC || (st != RB_ST_READY && st != RB_ST_SLOW) || !v->cyc_avg)
         return p;
-    *p++ = ' ';
+    if (p != buf)
+        *p++ = ' ';
     *p++ = 'R';
-    return put_uint(p, (v->avg_cyc + 12800u) / 25600u);
+    return put_uint(p, (v->cyc_avg + 12800u) / 25600u);
 }
 
 static void compose(char *buf)
 {
     volatile struct diag_state *m = DIAG;
     char *p = buf;
+    int crash = 1;
     if (*REC(RB_BKP_FAULT_SV) == RB_FAULT_MAGIC) {
         *p++ = 'F';
         p = put_hex(p, REC(RB_BKP_FAULT_SV)[1]);
     } else if (*REC(RB_BKP_WDG_SV) == RB_WDG_MAGIC) {
         *p++ = 'W';
         p = put_hex(p, REC(RB_BKP_WDG_SV)[1]);
-    } else if (m->magic == DIAG_MAGIC && m->status == ST_OK) {
+    } else if ((crash = 0), m->magic == DIAG_MAGIC && m->status == ST_OK) {
         p = put_uint(p, (m->avg_shown + 5u) / 10u);
         *p++ = '/';
         p = put_uint(p, (m->peak_shown + 5u) / 10u);
@@ -195,12 +199,13 @@ static void compose(char *buf)
             *p++ = '+';
             p = put_uint(p, m->late);
         }
-        p = rubber_share(p);
     } else if (m->magic == DIAG_MAGIC && m->status == ST_NO_CLOCK) {
         *p++ = '-';
         *p++ = '-';
         *p++ = '%';
     }
+    if (!crash)
+        p = rubber_share(buf, p);
     *p = 0;
 }
 

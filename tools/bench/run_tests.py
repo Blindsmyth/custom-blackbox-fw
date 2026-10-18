@@ -2669,7 +2669,7 @@ def t_diag_cpu_meter(bench, res):
     res.check(space == "12.3 GB", f"free space still set ({space!r})")
     res.check(mid == "39/39%", f"load {mid!r} (1.0M of 2.56M cycles = 39%)")
     b.w32(RB_VOICE + 8, 1)                      # Rubber running, 120 % of a block on its own
-    b.w32(RB_VOICE + 12, 25600 * 120)
+    b.w32(RB_VOICE + 48, 25600 * 120)          # rb_mix's smoothed cost (RbVoice.cyc_avg)
     for _ in range(200):
         b.stub(0x08088756, receive)
         b.call(bench.sym["cpu_wait"], 0, 0, 0, 0)
@@ -2811,6 +2811,46 @@ def t_rubber_release(bench, res):
     res.check(not fm.erased and not fm.words, "next boot with RBFREE.TXT still there: stays blank")
 
 
+
+def t_rubber_cpu_guard(bench, res):
+    """A render that keeps the block busy switches Rubber off before the watchdog would; a cheaper
+    one does not. The cost stays readable on the Tools bar."""
+    b = bench.b
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    fake_mix = 0x08180001
+    b.mu.mem_write(RB_B2, bytes(20) + struct.pack("<I", fake_mix) + bytes(8))
+    cost = [1_000_000]
+
+    def render(bb):
+        bb.w32(0xE0001004, (bb.u32(0xE0001004) + cost[0]) & 0xFFFFFFFF)
+
+    b.stub(fake_mix, render)
+    b.w32(RB_VOICE + 8, 1)
+    for _ in range(100):
+        b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
+    res.check(rb_state(bench) == 1, f"39 % per block: keeps running ({rb_state(bench)})")
+    cost[0] = 2_300_000                         # 90 %
+    for i in range(31):
+        b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
+    res.check(rb_state(bench) == 1, "31 slow blocks: still on")
+    b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
+    res.check(rb_state(bench) == 5 and rb_label(bench) == "Rubber! cpu", f"32nd: off, {rb_label(bench)!r}")
+    b.watch(fake_mix)
+    b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
+    res.check(b.calls[fake_mix & ~1] == 0, "no render after that")
+    b.call(bench.sym["rb_ready"])
+    res.check(b.call(bench.sym["rb_ready"]) == 0, "lane hook sees Rubber off (stock grains)")
+    b.w32(0xE0001004, 0)
+    b.stub(0x08088756, lambda bb: 1)
+    for _ in range(3):
+        b.call(bench.sym["cpu_wait"], 0, 0, 0, 0)
+    mid, _ = diag_tools_label(bench)
+    import re
+    m = re.search(r"R(\d+)$", mid or "")
+    res.check(m is not None and 70 <= int(m.group(1)) <= 90, f"cost still on Tools: {mid!r}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
@@ -2880,6 +2920,7 @@ def main():
             ("Rubber card loader refuses", t_rubber_loader_refuses),
             ("Rubber engine renders (emu build)", t_rubber_engine),
             ("Rubber broken start is left alone", t_rubber_broken_left_alone),
+            ("Rubber CPU guard", t_rubber_cpu_guard),
             ("Rubber takes over bank 2 only with RBTAKE.TXT", t_rubber_takeover),
             ("Rubber gives bank 2 back with RBFREE.TXT", t_rubber_release),
             ("Rubber stage of a dead boot on the label", t_rubber_stage_label),

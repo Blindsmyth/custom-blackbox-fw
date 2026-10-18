@@ -111,6 +111,7 @@ void rb_pair(void)
     v->block_done = 0;
     v->prev_active = 0;
     v->avg_cyc = v->peak_cyc = 0;
+    v->cyc_avg = v->over_n = 0;
     rb_bkp_enable();
     diag_boot();                  /* the boot before: crash records, and where it got to */
     rb_bkp_put(RB_BKP_LAST, rb_bkp_get(RB_BKP_STAGE));
@@ -159,11 +160,26 @@ int rb_ready(void)
     return v->magic == RB_VOICE_MAGIC && (v->state & 0xffu) == RB_ST_READY;   /* b2load.c sets 0x100 */
 }
 
+#define DWT_CYCCNT (*(volatile uint32_t *)0xe0001004u)
+
 void rb_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
 {
+    RbVoice *v = (RbVoice *)RB_VOICE;
     const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
-    if (rb_ready())
-        rb_call_on_stack(h->mix, clip, lane, mix, ctx);
+    uint32_t t0, c;
+    if (!rb_ready())
+        return;
+    t0 = DWT_CYCCNT;
+    rb_call_on_stack(h->mix, clip, lane, mix, ctx);
+    c = DWT_CYCCNT - t0;
+    v->cyc_avg = v->cyc_avg - (v->cyc_avg >> 4) + (c >> 4);
+    if (c <= RB_GUARD_CYC) {
+        v->over_n = 0;
+    } else if (++v->over_n >= RB_GUARD_N) {
+        /* Off before the watchdog: the Clip plays stock grains from the next block. */
+        v->state = (v->state & ~0xffu) | RB_ST_SLOW;
+        label(v, "Rubber! cpu");
+    }
 }
 
 /* The expectations the build fills in (b2_finish in build_patch.py). In .rodata, so in the cave. */
