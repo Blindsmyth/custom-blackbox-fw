@@ -16,3 +16,8 @@ firmware/patches/*/BLACKBOX.bin
 /BLACKBOX*.BIN
 *.pdf
 Blackbox-User-Manual*
+
+# Rubber Band checkout for the Rubber Warp (fetch_rubberband.sh)
+tools/stretch/rubber/rubberband/
+tools/stretch/rubber/build/
+firmware/patches/*/BBRUBBER.BIN

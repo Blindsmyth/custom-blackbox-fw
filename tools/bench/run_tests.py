@@ -67,6 +67,7 @@ TREE["Root.xml"] = mkcard.PRESET_XML  # legacy root preset: listed at the top le
 class Bench:
     def __init__(self, image, card, allow_writes=False):
         self.card_path = card
+        self.image_path = str(image)
         self.b = bd.Board(image, card, allow_writes=allow_writes)
         self.sym = {}
         if self.b.image[VERSION_OFF] != ord("9"):
@@ -818,7 +819,7 @@ def t_mix_hooks(bench, res):
                             (0x080F0F44, "mix_on_event", 0x080B5C71)):
         word = struct.unpack_from("<I", img, va - bd.BASE)[0]
         res.check(word == bench.sym[name] | 1, f"Mix vtable {va:#x} -> {name} ({word:#x}, stock {stock:#x})")
-    res.check(img[VERSION_OFF] == ord("Q"), "menu letter is Q")
+    res.check(img[VERSION_OFF] in (ord("Q"), ord("R")), f"menu letter is {chr(img[VERSION_OFF])}")
 
 
 def t_mix_pads(bench, res):
@@ -2230,9 +2231,348 @@ def t_master_gui(bench, res):
     res.check(scr == 0x29 and b.u8(page3 + 0xA5E0) == 4, f"screen 0x29 shows Master ({scr:#x})")
 
 
+# ---- Warp Rubber (3.1.R): pairing, lane hook, card loader, engine ---------------------------
+
+RB_VOICE = 0x38007000
+RB_B2 = 0x08100000
+RB_BKP = 0x38800000
+FLASH2_REGS = (0x52002104, 0x5200210C, 0x52002110, 0x52002114)   # KEYR2 CR2 SR2 CCR2
+FLASH1_REGS = (0x52002004, 0x5200200C, 0x52002010, 0x52002014)   # KEYR1 CR1 SR1 CCR1
+
+
+def rb_payload(bench):
+    """The BBRUBBER payload built with this image (BBRUBBER.BIN / BBRUBBER_emu.BIN beside it)."""
+    img = Path(bench.image_path)
+    p = img.with_name(img.name.replace("BLACKBOX", "BBRUBBER"))
+    return bytearray(p.read_bytes()) if p.exists() else None
+
+
+def rb_state(bench):
+    return bench.b.u32(RB_VOICE + 8) & 0xFF
+
+
+def rb_label(bench):
+    return bench.b.cstr(RB_VOICE + 32)
+
+
+def rb_bkp(bench, mark=0, booting=0):
+    b = bench.b
+    b.w32(RB_BKP, 0x4B424252)      # "RBBK": rb_bkp_enable keeps the words
+    b.w32(RB_BKP + 4, mark)
+    b.w32(RB_BKP + 16, booting)
+
+
+def t_rubber_absent(bench, res):
+    """Erased bank 2: Rubber is listed, says "Rubber!", and never renders."""
+    b = bench.b
+    b.call(bench.sym["state_init"])
+    res.check(rb_state(bench) == 2, f"voice state {rb_state(bench)} (2 = absent)")
+    res.check(rb_label(bench) == "Rubber!", f"label {rb_label(bench)!r}")
+    res.check(b.call(bench.sym["rb_ready"]) == 0, "rb_ready is 0")
+    labels = bench.sym["labels_repitch"]
+    got = [b.cstr(b.u32(labels + 4 * i)) for i in range(3)]
+    res.check(got == ["Stretch", "Repitch", "Rubber!"], f"Warp labels {got}")
+    reg = bench.sym["hook_register"] & ~1
+    code = bytes(b.mu.mem_read(reg, 0x40))
+    res.check(b"\x03\x24" in code, "Warp enum has 3 values (movs r4, #3)")
+    res.check(b.u32(0x24000088) == 0xC3F00000, f"sample stack top {b.u32(0x24000088):#x} (reserve above)")
+
+
+def t_rubber_pair_rejects(bench, res):
+    """A payload that is not exactly this image's, or a leftover scan mark, keeps Rubber off."""
+    pay = rb_payload(bench)
+    if pay is None:
+        res.check(False, "BBRUBBER payload beside the image")
+        return
+    b = bench.b
+    boot = bench.sym["rb_pair"]
+    reads = [0]
+
+    def on_read(mu, access, addr, size, value, data):
+        reads[0] += 1
+
+    for what, mutate in (("one byte flipped", lambda p: p.__setitem__(len(p) // 2, p[len(p) // 2] ^ 1)),
+                         ("wrong id", lambda p: p.__setitem__(4, p[4] ^ 0xFF))):
+        p = bytearray(pay)
+        mutate(p)
+        b.mu.mem_write(RB_B2, bytes(p))
+        rb_bkp(bench)
+        b.call(boot)
+        res.check(rb_state(bench) == 2 and rb_label(bench) == "Rubber!", f"{what}: absent ({rb_state(bench)})")
+    from unicorn import UC_HOOK_MEM_READ
+    b.mu.mem_write(RB_B2, bytes(pay))
+    rb_bkp(bench, mark=0x4E435352)     # "RSCN": the last scan never came back
+    h = b.mu.hook_add(UC_HOOK_MEM_READ, on_read, begin=RB_B2, end=RB_B2 + 0xFFFFF)
+    b.call(boot)
+    b.mu.hook_del(h)
+    res.check(rb_state(bench) == 2, "scan mark: absent")
+    res.check(reads[0] == 0, f"scan mark: bank 2 not read ({reads[0]} reads)")
+    rb_bkp(bench, booting=0x544F4252)  # "RBOT": the last boot died in rubber_boot
+    b.watch(bench.sym["rubber_boot"])
+    b.call(boot)
+    res.check(rb_state(bench) == 2 and rb_label(bench) == "Rubber!!", f"boot mark: off, {rb_label(bench)!r}")
+    res.check(b.calls[bench.sym["rubber_boot"] & ~1] == 0, "boot mark: rubber_boot not entered")
+
+
+def t_rubber_lane_hook(bench, res):
+    """hook_lane renders a Rubber Clip once per block through bank 2's mix entry, only when ready."""
+    b = bench.b
+    calls, stock = [], [0]
+    fake_mix = 0x08180001
+    b.call(bench.sym["state_init"])
+    head = bytes(4 * 5) + struct.pack("<I", fake_mix) + bytes(8)
+    b.mu.mem_write(RB_B2, head)
+    b.stub(fake_mix, lambda bb: calls.append((bb.arg(0), bb.arg(1), bb.arg(2), bb.arg(3))))
+    b.stub(0x080667BC, lambda bb: stock.__setitem__(0, stock[0] + 1))
+    clip, mixbuf, ctx = 0x2001C800, 0x2001E000, 0x2001E100
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.mu.mem_write(clip + 0xBB1, b"\x02")       # Warp Rubber
+    b.mu.mem_write(clip + 0x260, b"\x01")       # lane 0 active
+    lane0, lane1 = clip + 0x260, clip + 0x670
+    hook = bench.sym["hook_lane"]
+
+    def lane_call(lane):
+        try:
+            b.call(hook, clip, 0, lane, 0, 0, mixbuf, ctx)
+        except RuntimeError:
+            pass                                # the stock stub returns with lane_stock's push on the stack
+
+    lane_call(lane0)
+    res.check(stock[0] == 1 and not calls, f"not ready: stock grains ({stock[0]}), no render ({len(calls)})")
+    b.w32(RB_VOICE + 8, 1)                       # READY
+    lane_call(lane0)
+    res.check(calls == [(clip, lane0, mixbuf, ctx)], f"ready: one render with the right args {calls}")
+    res.check(b.u32(RB_VOICE + 4) == clip, f"owner {b.u32(RB_VOICE + 4):#x}")
+    lane_call(lane1)
+    res.check(len(calls) == 1, "second lane in the same block does not render again")
+    b.mu.mem_write(clip + 0x254, b"\x01")       # Slicer
+    b.w32(RB_VOICE + 24, 0)
+    lane_call(lane0)
+    res.check(len(calls) == 1, "Slicer keeps stock grains")
+
+
+class FlashModel:
+    """STM32H7 bank 2 controller, enough for b2load.c: lock/keys, sector erase, 256-bit programming.
+    Records every register and bank 2 write so the test can check what was touched."""
+
+    def __init__(self, b, fail=False):
+        from unicorn import UC_HOOK_MEM_WRITE
+        self.b, self.fail = b, fail
+        self.keys, self.erased, self.words, self.bad = [], [], [], []
+        self.reset = False
+        try:
+            b.mu.mem_map(0x52000000, 0x10000)
+        except Exception:
+            pass                                # already mapped by an earlier model
+        b.w32(0x5200210C, 1)                    # CR2: locked
+        b.w32(0x52002110, 0)                    # SR2: idle, no errors
+        self.h = [b.mu.hook_add(UC_HOOK_MEM_WRITE, self.on_reg, begin=0x52002000, end=0x520021FF),
+                  b.mu.hook_add(UC_HOOK_MEM_WRITE, self.on_flash, begin=RB_B2, end=0x081FFFFF),
+                  b.mu.hook_add(UC_HOOK_MEM_WRITE, self.on_aircr, begin=0xE000ED0C, end=0xE000ED0F)]
+
+    def close(self):
+        for h in self.h:
+            self.b.mu.hook_del(h)
+
+    def on_reg(self, mu, access, addr, size, value, data):
+        if addr in FLASH1_REGS:
+            self.bad.append(f"bank 1 register {addr:#x}")
+        if addr == 0x52002104:
+            self.keys.append(value)
+            if self.keys[-2:] == [0x45670123, 0xCDEF89AB]:
+                mu.mem_write(0x5200210C, struct.pack("<I", 0))
+        elif addr == 0x5200210C and (value & 0x84) == 0x84:    # SER | START
+            sector = (value >> 8) & 7
+            self.erased.append(sector)
+            if sector >= 6:
+                self.bad.append(f"erase of sector {sector}")
+            mu.mem_write(RB_B2 + sector * 0x20000, b"\xff" * 0x20000)
+            if self.fail:
+                mu.mem_write(0x52002110, struct.pack("<I", 1 << 17))   # WRPERR
+
+    def on_flash(self, mu, access, addr, size, value, data):
+        off = addr - RB_B2
+        if not (off < 0xC0000 or 0xC0000 <= off < 0xC0020):
+            self.bad.append(f"write at bank 2 +{off:#x}")
+        self.words.append(off & ~31)
+
+    def on_aircr(self, mu, access, addr, size, value, data):
+        if value & 4:
+            self.reset = True
+            mu.emu_stop()
+
+
+class FakeFile:
+    """f_open/f_read/f_close serving one file from memory."""
+
+    def __init__(self, b, name, data):
+        self.b, self.name, self.data, self.pos, self.opens = b, name, data, 0, 0
+        b.stub(0x08086534, self.f_open)
+        b.stub(0x08086866, self.f_read)
+        b.stub(0x08086D76, lambda bb: 0)
+
+    def f_open(self, b):
+        if b.cstr(b.arg(1)) != self.name or self.data is None:
+            return 4                            # FR_NO_FILE
+        self.pos, self.opens = 0, self.opens + 1
+        return 0
+
+    def f_read(self, b):
+        to, n, got = b.arg(1), b.arg(2), b.arg(3)
+        chunk = bytes(self.data[self.pos:self.pos + n])
+        b.mu.mem_write(to, chunk)
+        b.w32(got, len(chunk))
+        self.pos += len(chunk)
+        return 0
+
+
+def rb_loader_boot(bench):
+    """A boot with an erased bank 2 as far as the loader sees: pairing says absent, card is up."""
+    b = bench.b
+    b.call(bench.sym["rb_pair"])
+    b.mu.mem_write(0x240021A4 + 0x15, b"\x01")
+
+
+def rb_poll(bench):
+    try:
+        bench.b.call(bench.sym["rb_load_poll"], limit=400_000_000)
+    except RuntimeError:
+        pass                                    # a requested reset stops the emulation
+
+
+def t_rubber_loader(bench, res):
+    pay = rb_payload(bench)
+    if pay is None:
+        res.check(False, "BBRUBBER payload beside the image")
+        return
+    b = bench.b
+    rb_bkp(bench)
+    rb_loader_boot(bench)
+    FakeFile(b, "BBRUBBER.BIN", pay)
+    fm = FlashModel(b)
+    rb_poll(bench)
+    fm.close()
+    got = bytes(b.mu.mem_read(RB_B2, len(pay)))
+    res.check(got == bytes(pay), "bank 2 holds the payload")
+    res.check(b.u32(RB_B2 + 0xC0000) == 0x43424252, "claim word written at sector 6")
+    res.check(fm.erased == list(range((len(pay) + 0x1FFFF) // 0x20000)), f"erased sectors {fm.erased}")
+    res.check(not fm.bad, f"nothing outside bank 2's payload/claim or registers {fm.bad[:3]}")
+    hdr = [i for i, w in enumerate(fm.words) if w == 0]
+    res.check(hdr and hdr[0] > max(i for i, w in enumerate(fm.words) if w != 0 and w != 0xC0000),
+              "header flash word written last")
+    res.check(fm.reset, "restart requested after a verified write")
+    res.check(b.u32(RB_BKP + 12) == 0, "tries counter cleared")
+    # A second poll in the same boot does nothing.
+    fm = FlashModel(b)
+    rb_poll(bench)
+    fm.close()
+    res.check(not fm.erased and not fm.words, "one go per boot")
+
+
+def t_rubber_loader_refuses(bench, res):
+    pay = rb_payload(bench)
+    if pay is None:
+        res.check(False, "BBRUBBER payload beside the image")
+        return
+    b = bench.b
+    # Foreign data in bank 2 and no claim: left alone.
+    b.mu.mem_write(RB_B2 + 0x50000, b"\x12\x34\x56\x78")
+    rb_bkp(bench)
+    rb_loader_boot(bench)
+    FakeFile(b, "BBRUBBER.BIN", pay)
+    fm = FlashModel(b)
+    rb_poll(bench)
+    fm.close()
+    res.check(not fm.erased and not fm.words, "foreign bank 2: no erase, no write")
+    res.check(b.u32(RB_B2 + 0x50000) == 0x78563412, "foreign data untouched")
+    # A damaged file is never written.
+    b.mu.mem_write(RB_B2, b"\xff" * 0x100000)
+    bad = bytearray(pay)
+    bad[len(bad) // 3] ^= 0x40
+    rb_loader_boot(bench)
+    FakeFile(b, "BBRUBBER.BIN", bad)
+    fm = FlashModel(b)
+    rb_poll(bench)
+    fm.close()
+    res.check(not fm.erased, "damaged file: nothing erased")
+    # Failing flash: two tries, then no more.
+    b.mu.mem_write(RB_B2, b"\xff" * 0x100000)
+    attempts = []
+    for _ in range(3):
+        rb_loader_boot(bench)
+        FakeFile(b, "BBRUBBER.BIN", pay)
+        fm = FlashModel(b, fail=True)
+        rb_poll(bench)
+        fm.close()
+        attempts.append(len(fm.erased))
+    res.check(attempts[0] > 0 and attempts[1] > 0 and attempts[2] == 0, f"tries per boot {attempts}")
+
+
+def t_rubber_engine(bench, res):
+    """--emu build: bank 2 boots, pairs, and renders a Clip through stubbed stock buffers."""
+    pay = rb_payload(bench)
+    if pay is None or "_emu" not in bench.image_path:
+        res.check(True, "engine run needs the --emu build (skipped)")
+        return
+    import math
+    b = bench.b
+    b.mu.mem_write(RB_B2, bytes(pay))
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"], limit=2_000_000_000)
+    res.check(rb_state(bench) == 1 and rb_label(bench) == "Rubber", f"paired and booted: {rb_label(bench)!r}")
+    if rb_state(bench) != 1:
+        return
+    sr, n_src = 48000, 48000 * 2
+    src = [0.4 * math.sin(2 * math.pi * 220 * i / sr) * (1.0 if (i // 6000) % 2 == 0 else 0.3) for i in range(n_src)]
+    sample, clip, mixbuf, ctx, scratch = 0x2001C000, 0x2001C800, 0x2001E000, 0x2001E100, 0x2001E200
+    planes = (0x30040000, 0x30041000)
+    out = []
+
+    def pcm_read(bb):
+        dest, count, pos = bb.arg(1), bb.arg(2), bb.arg(3)
+        bb.mu.mem_write(dest, struct.pack(f"<{count}f", *[src[(pos + i) % n_src] for i in range(count)]))
+        return count
+
+    def buf_planes(bb):
+        bb.w32(bb.arg(1), planes[0])
+        bb.w32(bb.arg(2), planes[1])
+
+    def buf_clear(bb):
+        bb.mu.mem_write(planes[0], b"\0" * 1024)
+        bb.mu.mem_write(planes[1], b"\0" * 1024)
+
+    def buf_mix(bb):
+        out.extend(struct.unpack("<256f", bytes(bb.mu.mem_read(planes[0], 1024))))
+
+    for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: 1),
+                     (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, buf_clear), (0x0804D8E8, lambda bb: 256),
+                     (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
+                     (0x0804DA6C, buf_mix)):
+        b.stub(addr, fn)
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.w32(clip + 0x24, sample)
+    b.mu.mem_write(clip + 0xBB4, struct.pack("<f", 0.8))
+    b.mu.mem_write(clip + 0x260, b"\x01")
+    b.w32(RB_VOICE + 20, 1)                     # launch
+    for _ in range(60):
+        b.call(bench.sym["rb_mix"], clip, clip + 0x260, mixbuf, ctx, limit=400_000_000)
+    finite = all(math.isfinite(x) for x in out)
+    silent = next((i for i, x in enumerate(out) if abs(x) > 1e-4), len(out))
+    tail = out[20 * 256:]
+    rms = math.sqrt(sum(x * x for x in tail) / max(1, len(tail)))
+    res.check(len(out) == 60 * 256 and finite, f"60 blocks rendered, all finite ({len(out)})")
+    res.check(silent < 20 * 256, f"sound after the priming blocks (first at {silent} samples)")
+    res.check(0.08 < rms < 0.5, f"output level {rms:.3f} (input 0.2-0.28 rms)")
+    ups = sum(1 for i in range(1, len(tail)) if tail[i - 1] < 0 <= tail[i])
+    hz = ups * sr / max(1, len(tail))
+    res.check(205 < hz < 235, f"pitch kept at 0.8x tempo: {hz:.0f} Hz (input 220 Hz)")
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
+    ap.add_argument("--only", help="run only the cases whose name contains this text")
     args = ap.parse_args()
     image = args.image
     probe = open(image, "rb").read()
@@ -2289,6 +2629,15 @@ def main():
             ("repitch grain store keeps r3", t_repitch_main_rate_preserves_r3),
             ("slicer grain keeps stack args", t_repitch_slicer_grain_stack),
         ]
+    if "rb_pair" in sym:
+        cases += [
+            ("Rubber absent: label and fallback", t_rubber_absent),
+            ("Rubber pairing rejects", t_rubber_pair_rejects),
+            ("Rubber lane hook", t_rubber_lane_hook),
+            ("Rubber card loader writes bank 2", t_rubber_loader),
+            ("Rubber card loader refuses", t_rubber_loader_refuses),
+            ("Rubber engine renders (emu build)", t_rubber_engine),
+        ]
     if "mix_tick" in sym:
         cases += [
             ("Mix hooks and letter", t_mix_hooks),
@@ -2330,6 +2679,9 @@ def main():
             ("Master defaults are the stock settings", t_master_defaults_are_stock),
             ("real GUI: Tools -> Master tab", t_master_gui),
         ]
+    if args.only:
+        cases = [c for c in cases if args.only in c[0]]
+        write_cases = [c for c in write_cases if args.only in c[0]]
     for name, fn in cases:
         run_case(image, name, fn, res)
     if write_cases:

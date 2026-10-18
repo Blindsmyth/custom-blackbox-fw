@@ -1,0 +1,423 @@
+diff --git a/src/common/FFT.cpp b/src/common/FFT.cpp
+index c1fd65f..b934a86 100644
+--- a/src/common/FFT.cpp
++++ b/src/common/FFT.cpp
+@@ -75,6 +75,7 @@ extern "C" {
+ #ifndef HAVE_KISSFFT
+ #ifndef USE_BUILTIN_FFT
+ #ifndef HAVE_VDSP
++#ifndef HAVE_CMSIS_DSP
+ #error No FFT implementation selected!
+ #endif
+ #endif
+@@ -82,6 +83,7 @@ extern "C" {
+ #endif
+ #endif
+ #endif
++#endif
+ 
+ #include <cmath>
+ #include <iostream>
+@@ -1942,6 +1944,10 @@ private:
+ 
+ #endif /* HAVE_KISSFFT */
+ 
++#ifdef HAVE_CMSIS_DSP
++#include "fft_cmsis_impl.inc"
++#endif
++
+ #ifdef USE_BUILTIN_FFT
+ 
+ class D_Builtin : public FFTImpl
+@@ -2584,6 +2590,9 @@ getImplementationDetails()
+ #ifdef USE_BUILTIN_FFT
+     impls["builtin"] = SizeConstraintEvenPowerOfTwo;
+ #endif
++#ifdef HAVE_CMSIS_DSP
++    impls["cmsis"] = SizeConstraintEvenPowerOfTwo;
++#endif
+ 
+     impls["dft"] = SizeConstraintNone;
+ 
+@@ -2619,7 +2628,7 @@ pickImplementation(int size)
+     } 
+     
+     std::string preference[] = {
+-        "ipp", "vdsp", "sleef", "fftw", "builtin", "kissfft"
++        "ipp", "vdsp", "sleef", "fftw", "cmsis", "builtin", "kissfft"
+     };
+ 
+     for (int i = 0; i < int(sizeof(preference)/sizeof(preference[0])); ++i) {
+@@ -2715,6 +2724,10 @@ FFT::FFT(int size, int debugLevel) :
+     } else if (impl == "builtin") {
+ #ifdef USE_BUILTIN_FFT
+         d = new FFTs::D_Builtin(size);
++#endif
++    } else if (impl == "cmsis") {
++#ifdef HAVE_CMSIS_DSP
++        d = new FFTs::D_CMSIS(size);
+ #endif
+     } else if (impl == "dft") {
+         d = new FFTs::D_DFT(size);
+diff --git a/src/common/VectorOpsComplex.cpp b/src/common/VectorOpsComplex.cpp
+index bba7cef..6cbeb1e 100644
+--- a/src/common/VectorOpsComplex.cpp
++++ b/src/common/VectorOpsComplex.cpp
+@@ -66,6 +66,7 @@ float approximate_atan2f(float real, float imag)
+             if (imag < 0.f) atan -= pi;
+         }
+     }
++    return atan;
+ }
+ #endif
+ 
+diff --git a/src/common/VectorOpsComplex.h b/src/common/VectorOpsComplex.h
+index 3be1baa..3cf79a2 100644
+--- a/src/common/VectorOpsComplex.h
++++ b/src/common/VectorOpsComplex.h
+@@ -26,6 +26,7 @@
+ 
+ #include "VectorOps.h"
+ 
++#include <cmath>
+ 
+ namespace RubberBand {
+ 
+@@ -40,6 +41,27 @@ inline void c_phasor(T *real, T *imag, T phase)
+     } else {
+         vvsincos((double *)imag, (double *)real, (const double *)&phase, &one);
+     }
++#elif defined USE_FAST_PHASOR
++    if (sizeof(T) == sizeof(float)) {
++        /* 256-entry sin LUT; scale radians → index without libm floor. */
++        const float inv_twopi = 0.15915494309189535f; /* 1/(2π) */
++        float turns = phase * inv_twopi;
++        turns -= (float)(int)turns;
++        if (turns < 0.f) turns += 1.f;
++        float n = turns * 256.f;
++        int i = (int)n;
++        float f = n - (float)i;
++        extern const float rb_fast_sin_lut[257];
++        float s0 = rb_fast_sin_lut[i & 255];
++        float s1 = rb_fast_sin_lut[(i + 1) & 255];
++        float c0 = rb_fast_sin_lut[(i + 64) & 255];
++        float c1 = rb_fast_sin_lut[(i + 65) & 255];
++        *imag = s0 + f * (s1 - s0);
++        *real = c0 + f * (c1 - c0);
++    } else {
++        *real = cos(phase);
++        *imag = sin(phase);
++    }
+ #elif defined LACK_SINCOS
+     if (sizeof(T) == sizeof(float)) {
+         *real = cosf(phase);
+diff --git a/src/faster/R2Stretcher.cpp b/src/faster/R2Stretcher.cpp
+index 52737a4..858ddb1 100644
+--- a/src/faster/R2Stretcher.cpp
++++ b/src/faster/R2Stretcher.cpp
+@@ -541,7 +541,11 @@ R2Stretcher::calculateSizes()
+     if (m_realtime) {
+         // This headroom is so as to try to avoid reallocation when
+         // the pitch scale changes
++#ifdef RB_FIXED_PITCH
++        m_outbufSize = m_outbufSize * 2;
++#else
+         m_outbufSize = m_outbufSize * 16;
++#endif
+     } else {
+ #ifndef NO_THREADING
+         if (m_threaded) {
+@@ -597,8 +601,13 @@ R2Stretcher::configure()
+     set<size_t> windowSizes;
+     if (m_realtime) {
+         windowSizes.insert(m_baseFftSize);
++#ifndef RB_FIXED_PITCH
++        // RB_FIXED_PITCH (Blackbox build): with the pitch fixed and the time
++        // ratio clamped to 0.5x-2x, calculateSizes() always picks the base
++        // size, so the other two would only hold memory.
+         windowSizes.insert(m_baseFftSize / 2);
+         windowSizes.insert(m_baseFftSize * 2);
++#endif
+ //        windowSizes.insert(m_baseFftSize * 4);
+     }
+     windowSizes.insert(m_fftSize);
+@@ -646,9 +655,16 @@ R2Stretcher::configure()
+         m_studyFFT->initFloat();
+     }
+ 
++    // RB_FIXED_PITCH (Blackbox build): pitch is never changed, so real-time
++    // mode needs no resampler ready in advance (5.7 MB of phase tables).
++#ifdef RB_FIXED_PITCH
++    if (m_pitchScale != 1.0 ||
++        (m_options & RubberBandStretcher::OptionPitchHighConsistency)) {
++#else
+     if (m_pitchScale != 1.0 ||
+         (m_options & RubberBandStretcher::OptionPitchHighConsistency) ||
+         m_realtime) {
++#endif
+ 
+         for (size_t c = 0; c < m_channels; ++c) {
+ 
+diff --git a/src/common/fast_sin_lut.inc b/src/common/fast_sin_lut.inc
+new file mode 100644
+index 0000000..52a7d09
+--- /dev/null
++++ b/src/common/fast_sin_lut.inc
+@@ -0,0 +1,257 @@
++    0.00000000f,
++    0.02454123f,
++    0.04906767f,
++    0.07356456f,
++    0.09801714f,
++    0.12241068f,
++    0.14673047f,
++    0.17096189f,
++    0.19509032f,
++    0.21910124f,
++    0.24298018f,
++    0.26671276f,
++    0.29028468f,
++    0.31368174f,
++    0.33688985f,
++    0.35989504f,
++    0.38268343f,
++    0.40524131f,
++    0.42755509f,
++    0.44961133f,
++    0.47139674f,
++    0.49289819f,
++    0.51410274f,
++    0.53499762f,
++    0.55557023f,
++    0.57580819f,
++    0.59569930f,
++    0.61523159f,
++    0.63439328f,
++    0.65317284f,
++    0.67155895f,
++    0.68954054f,
++    0.70710678f,
++    0.72424708f,
++    0.74095113f,
++    0.75720885f,
++    0.77301045f,
++    0.78834643f,
++    0.80320753f,
++    0.81758481f,
++    0.83146961f,
++    0.84485357f,
++    0.85772861f,
++    0.87008699f,
++    0.88192126f,
++    0.89322430f,
++    0.90398929f,
++    0.91420976f,
++    0.92387953f,
++    0.93299280f,
++    0.94154407f,
++    0.94952818f,
++    0.95694034f,
++    0.96377607f,
++    0.97003125f,
++    0.97570213f,
++    0.98078528f,
++    0.98527764f,
++    0.98917651f,
++    0.99247953f,
++    0.99518473f,
++    0.99729046f,
++    0.99879546f,
++    0.99969882f,
++    1.00000000f,
++    0.99969882f,
++    0.99879546f,
++    0.99729046f,
++    0.99518473f,
++    0.99247953f,
++    0.98917651f,
++    0.98527764f,
++    0.98078528f,
++    0.97570213f,
++    0.97003125f,
++    0.96377607f,
++    0.95694034f,
++    0.94952818f,
++    0.94154407f,
++    0.93299280f,
++    0.92387953f,
++    0.91420976f,
++    0.90398929f,
++    0.89322430f,
++    0.88192126f,
++    0.87008699f,
++    0.85772861f,
++    0.84485357f,
++    0.83146961f,
++    0.81758481f,
++    0.80320753f,
++    0.78834643f,
++    0.77301045f,
++    0.75720885f,
++    0.74095113f,
++    0.72424708f,
++    0.70710678f,
++    0.68954054f,
++    0.67155895f,
++    0.65317284f,
++    0.63439328f,
++    0.61523159f,
++    0.59569930f,
++    0.57580819f,
++    0.55557023f,
++    0.53499762f,
++    0.51410274f,
++    0.49289819f,
++    0.47139674f,
++    0.44961133f,
++    0.42755509f,
++    0.40524131f,
++    0.38268343f,
++    0.35989504f,
++    0.33688985f,
++    0.31368174f,
++    0.29028468f,
++    0.26671276f,
++    0.24298018f,
++    0.21910124f,
++    0.19509032f,
++    0.17096189f,
++    0.14673047f,
++    0.12241068f,
++    0.09801714f,
++    0.07356456f,
++    0.04906767f,
++    0.02454123f,
++    0.00000000f,
++    -0.02454123f,
++    -0.04906767f,
++    -0.07356456f,
++    -0.09801714f,
++    -0.12241068f,
++    -0.14673047f,
++    -0.17096189f,
++    -0.19509032f,
++    -0.21910124f,
++    -0.24298018f,
++    -0.26671276f,
++    -0.29028468f,
++    -0.31368174f,
++    -0.33688985f,
++    -0.35989504f,
++    -0.38268343f,
++    -0.40524131f,
++    -0.42755509f,
++    -0.44961133f,
++    -0.47139674f,
++    -0.49289819f,
++    -0.51410274f,
++    -0.53499762f,
++    -0.55557023f,
++    -0.57580819f,
++    -0.59569930f,
++    -0.61523159f,
++    -0.63439328f,
++    -0.65317284f,
++    -0.67155895f,
++    -0.68954054f,
++    -0.70710678f,
++    -0.72424708f,
++    -0.74095113f,
++    -0.75720885f,
++    -0.77301045f,
++    -0.78834643f,
++    -0.80320753f,
++    -0.81758481f,
++    -0.83146961f,
++    -0.84485357f,
++    -0.85772861f,
++    -0.87008699f,
++    -0.88192126f,
++    -0.89322430f,
++    -0.90398929f,
++    -0.91420976f,
++    -0.92387953f,
++    -0.93299280f,
++    -0.94154407f,
++    -0.94952818f,
++    -0.95694034f,
++    -0.96377607f,
++    -0.97003125f,
++    -0.97570213f,
++    -0.98078528f,
++    -0.98527764f,
++    -0.98917651f,
++    -0.99247953f,
++    -0.99518473f,
++    -0.99729046f,
++    -0.99879546f,
++    -0.99969882f,
++    -1.00000000f,
++    -0.99969882f,
++    -0.99879546f,
++    -0.99729046f,
++    -0.99518473f,
++    -0.99247953f,
++    -0.98917651f,
++    -0.98527764f,
++    -0.98078528f,
++    -0.97570213f,
++    -0.97003125f,
++    -0.96377607f,
++    -0.95694034f,
++    -0.94952818f,
++    -0.94154407f,
++    -0.93299280f,
++    -0.92387953f,
++    -0.91420976f,
++    -0.90398929f,
++    -0.89322430f,
++    -0.88192126f,
++    -0.87008699f,
++    -0.85772861f,
++    -0.84485357f,
++    -0.83146961f,
++    -0.81758481f,
++    -0.80320753f,
++    -0.78834643f,
++    -0.77301045f,
++    -0.75720885f,
++    -0.74095113f,
++    -0.72424708f,
++    -0.70710678f,
++    -0.68954054f,
++    -0.67155895f,
++    -0.65317284f,
++    -0.63439328f,
++    -0.61523159f,
++    -0.59569930f,
++    -0.57580819f,
++    -0.55557023f,
++    -0.53499762f,
++    -0.51410274f,
++    -0.49289819f,
++    -0.47139674f,
++    -0.44961133f,
++    -0.42755509f,
++    -0.40524131f,
++    -0.38268343f,
++    -0.35989504f,
++    -0.33688985f,
++    -0.31368174f,
++    -0.29028468f,
++    -0.26671276f,
++    -0.24298018f,
++    -0.21910124f,
++    -0.19509032f,
++    -0.17096189f,
++    -0.14673047f,
++    -0.12241068f,
++    -0.09801714f,
++    -0.07356456f,
++    -0.04906767f,
++    -0.02454123f,
++    -0.00000000f

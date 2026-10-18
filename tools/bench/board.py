@@ -69,6 +69,9 @@ class Board:
                            (0x38800000, 0x1000), (0xC0000000, 0x4000000), (0xE0000000, 0x100000)):
             mu.mem_map(base, size)
         mu.mem_write(BASE, self.image)
+        # Flash bank 2 (3.1.R's Rubber engine): erased, as on a unit nothing has programmed.
+        mu.mem_map(0x08100000, 0x100000)
+        mu.mem_write(0x08100000, b"\xff" * 0x100000)
         mu.hook_add(UC_HOOK_MEM_UNMAPPED, self._unmapped)
         self._hooked = set()
         self._install_default_stubs()
