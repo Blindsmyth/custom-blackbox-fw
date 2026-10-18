@@ -73,7 +73,7 @@ void rb_stage(uint32_t stage);
 /* Clean every cache line of backup SRAM out to the SRAM (before a reset). */
 void rb_bkp_flush(void);
 /* rubber_cave.S: fn(a, b, c, d) on Rubber's own stack (RB_STACK_TOP). */
-void rb_call_on_stack(uint32_t fn, unsigned a, unsigned b, unsigned c, unsigned d);
+uint32_t rb_call_on_stack(uint32_t fn, unsigned a, unsigned b, unsigned c, unsigned d);   /* fn's r0 */
 /* b2pair.c, from the card loader's poll (pcmStreamer): start bank 2 once pairing found it. */
 void rb_start(void);
 /* b2pair.c: append the loader's one-character verdict to the Rubber label. */

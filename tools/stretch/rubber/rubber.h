@@ -17,7 +17,7 @@
 #define RB_MAGIC       0x32424252u    /* "RBB2" */
 #define RB_CLAIM       0x43424252u    /* "RBBC" */
 
-typedef void (*rb_boot_fn)(void);
+typedef int (*rb_boot_fn)(void);   /* 1 = started, 0 = not (out of memory) */
 typedef void (*rb_mix_fn)(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);
 
 /* The first 32 bytes of bank 2 (one flash word). The loader writes it last. */
@@ -46,6 +46,7 @@ typedef struct RbVoice {
     char label[16];       /* 32 the Warp list label: "Rubber", "Rubber!", "Rubber 54%" */
     uint32_t cyc_avg;     /* 48 rb_mix's cycles per block, smoothed over ~16 blocks (b2pair.c) */
     uint32_t over_n;      /* 52 blocks in a row over RB_GUARD_CYC */
+    uint32_t cyc_peak;    /* 56 worst rb_mix block since the Tools bar last showed it (diag.c) */
 } RbVoice;
 
 #define RB_ST_UNKNOWN  0u
@@ -63,8 +64,9 @@ typedef struct RbVoice {
 #define RB_GUARD_N     32u
 
 /* Rubber Band runs on its own stack at the top of SRAM1-3 (rb_call_on_stack, rubber_cave.S),
- * not on the audio or disk task's: its render needs ~5 KB. rubber.ld keeps .data/.bss below. */
+ * not on the audio or disk task's: its render needs ~5 KB. rubber.ld keeps .data/.bss and the
+ * heap (rt.c) below. */
 #define RB_STACK_TOP   0x30048000u
-#define RB_STACK_SIZE  0x00008000u
+#define RB_STACK_SIZE  0x00003000u    /* 12 KB: the render needs 5.2 KB (bench) */
 
 #endif

@@ -226,6 +226,25 @@ class Result:
             print(f"  FAIL  {what}")
 
 
+def itcm_watch(bench):
+    """3.1.R runs Rubber Band's hot code from ITCM (0x00001000-0x0000FFFF). Stock code must never
+    write anywhere in ITCM, nor read our part of it. Reads below 0x1000 are null-pointer reads
+    (str_is_empty on an empty string reads address 0); they hit ITCM on a stock unit too, and the
+    4 KB guard keeps them off our code."""
+    if "rb_pair" not in bench.sym:
+        return None
+    from unicorn import UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_MEM_WRITE
+    seen = []
+
+    def on(mu, access, addr, size, value, data):
+        pc = mu.reg_read(bd.A.UC_ARM_REG_PC)
+        if 0x08040000 <= pc < 0x080F1E80 and len(seen) < 8 and (access == UC_MEM_WRITE or addr >= 0x1000):
+            seen.append(("write" if access == UC_MEM_WRITE else "read", hex(pc), hex(addr)))
+
+    bench.b.mu.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, on, begin=0, end=0xFFFF)
+    return seen
+
+
 def run_case(image, name, fn, res, tree=None, writes=False):
     print(f"[{name}]")
     with tempfile.TemporaryDirectory() as tmp:
@@ -233,10 +252,13 @@ def run_case(image, name, fn, res, tree=None, writes=False):
         # Save As only copies samples with 100 MB to spare
         mkcard.build(card, tree or TREE, size_mb=160 if writes else 64)
         bench = Bench(image, card, allow_writes=writes)
+        itcm = itcm_watch(bench)
         try:
             fn(bench, res)
         except Exception as e:  # a crash in emulation is a failure, not a bench error
             res.check(False, f"no emulation fault ({e})")
+        if itcm is not None:
+            res.check(not itcm, f"stock code never writes ITCM nor reads our part ({itcm[:2]})")
         if not writes:
             res.check(not bench.b.writes, f"no disk writes attempted ({len(bench.b.writes)})")
             res.check(not bench.b.changed_sectors(), "card image unchanged")
@@ -2285,7 +2307,7 @@ def t_rubber_absent(bench, res):
     reg = bench.sym["hook_register"] & ~1
     code = bytes(b.mu.mem_read(reg, 0x40))
     res.check(b"\x02\x24" in code, "Warp enum has 2 values (movs r4, #2)")
-    res.check(b.u32(0x24000088) == 0xC3F00000, f"sample stack top {b.u32(0x24000088):#x} (reserve above)")
+    res.check(b.u32(0x24000088) == 0xC4000000, f"sample stack top {b.u32(0x24000088):#x} (all SDRAM for samples)")
 
 
 def t_rubber_pair_rejects(bench, res):
@@ -2597,6 +2619,13 @@ def t_rubber_engine(bench, res):
     ups = sum(1 for i in range(1, len(tail)) if tail[i - 1] < 0 <= tail[i])
     hz = ups * sr / max(1, len(tail))
     res.check(205 < hz < 235, f"pitch kept at 0.8x tempo: {hz:.0f} Hz (input 220 Hz)")
+    used = b.u32(bench.sym["rb_fast_used"])
+    res.check(0 < used <= 0x30045000 - 0x30000000 and not b.u32(bench.sym["rb_heap_failed"]),
+              f"heap all in SRAM1 ({used} bytes), nothing in SDRAM")
+    n_itcm = bench.sym["__itcm_end"] - bench.sym["__itcm_start"]
+    load = RB_B2 + 32                           # .itcm's image follows the 32-byte header (rubber.ld)
+    res.check(n_itcm > 8192 and bytes(b.mu.mem_read(bench.sym["__itcm_start"], n_itcm)) == bytes(b.mu.mem_read(load, n_itcm)),
+              f"hot code copied into ITCM ({n_itcm} bytes)")
 
 
 
@@ -2670,13 +2699,15 @@ def t_diag_cpu_meter(bench, res):
     res.check(mid == "39/39%", f"load {mid!r} (1.0M of 2.56M cycles = 39%)")
     b.w32(RB_VOICE + 8, 1)                      # Rubber running, 120 % of a block on its own
     b.w32(RB_VOICE + 48, 25600 * 120)          # rb_mix's smoothed cost (RbVoice.cyc_avg)
+    b.w32(RB_VOICE + 56, 25600 * 131)          # and its worst block (cyc_peak)
     for _ in range(200):
         b.stub(0x08088756, receive)
         b.call(bench.sym["cpu_wait"], 0, 0, 0, 0)
         clock[0] += busy
         b.w32(0xE0001004, clock[0])
     mid, _ = diag_tools_label(bench)
-    res.check(mid == "39/39% R120", f"with Rubber's own share: {mid!r}")
+    res.check(mid == "39/39% R120/131", f"with Rubber's own share: {mid!r}")
+    res.check(b.u32(RB_VOICE + 56) == 0, "peak starts again after the look")
     res.check(b.u32(0x50003004) & (1 << 9), "watchdog early wakeup armed")
 
 
@@ -2847,8 +2878,83 @@ def t_rubber_cpu_guard(bench, res):
         b.call(bench.sym["cpu_wait"], 0, 0, 0, 0)
     mid, _ = diag_tools_label(bench)
     import re
-    m = re.search(r"R(\d+)$", mid or "")
+    m = re.search(r"R(\d+)/\d+$", mid or "")
     res.check(m is not None and 70 <= int(m.group(1)) <= 90, f"cost still on Tools: {mid!r}")
+
+
+
+def t_rubber_cost_flat(bench, res):
+    """emu build: one hop per block at every tempo, so the cost per block is flat over time and
+    the same at 0.5x, 1x and 2x; the tempo is right (source frames per output frame)."""
+    pay = rb_payload(bench)
+    if pay is None or "_emu" not in bench.image_path:
+        res.check(True, "cost run needs the --emu build (skipped)")
+        return
+    import math
+    from unicorn import UC_HOOK_BLOCK
+    b = bench.b
+    b.mu.mem_write(RB_B2, bytes(pay))
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    b.call(bench.sym["rb_load_poll"], limit=2_000_000_000)
+    if rb_state(bench) != 1:
+        res.check(False, f"Rubber running ({rb_label(bench)!r})")
+        return
+    sr, n_src = 48000, 48000 * 30
+    sample, clip, mixbuf, ctx, scratch = 0x2001C000, 0x2001C800, 0x2001E000, 0x2001E100, 0x2001E200
+    planes = (0x2001A000, 0x2001B000)
+    reads = [0]
+    work = [0]
+
+    def pcm_read(bb):
+        dest, count, pos, ch = bb.arg(1), bb.arg(2), bb.arg(3), bb.arg(4)
+        if ch == 0:
+            reads[0] += count
+        bb.mu.mem_write(dest, struct.pack(f"<{count}f", *[drums(pos + i) for i in range(count)]))
+        return count
+
+    def drums(t):
+        # a 220 Hz tone plus a noise hit every quarter second: R2's transient path runs
+        hit = (t % 12000)
+        noise = ((t * 1103515245 + 12345) >> 8 & 0xFFFF) / 32768.0 - 1.0
+        return 0.25 * math.sin(2 * math.pi * 220 * t / sr) + 0.6 * math.exp(-hit / 400.0) * noise
+
+    def buf_planes(bb):
+        bb.w32(bb.arg(1), planes[0])
+        bb.w32(bb.arg(2), planes[1])
+
+    for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: 1),
+                     (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, lambda bb: 0), (0x0804D8E8, lambda bb: 256),
+                     (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
+                     (0x0804DA6C, lambda bb: 0)):
+        b.stub(addr, fn)
+    b.mu.hook_add(UC_HOOK_BLOCK, lambda mu, a, sz, d: work.__setitem__(0, work[0] + sz), begin=0, end=0xFFFF)
+    b.mu.hook_add(UC_HOOK_BLOCK, lambda mu, a, sz, d: work.__setitem__(0, work[0] + sz), begin=RB_B2, end=0x081FFFFF)
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.w32(clip + 0x24, sample)
+    b.mu.mem_write(clip + 0x260, b"\x01")
+    means = {}
+    for ratio in (1.0, 0.5, 2.0, 0.8, 1.25):
+        b.mu.mem_write(clip + 0xBB4, struct.pack("<f", ratio))
+        b.w32(RB_VOICE + 20, 1)                 # relaunch
+        per = []
+        for i in range(140):
+            work[0] = 0
+            r0 = reads[0]
+            b.call(bench.sym["rb_mix"], clip, clip + 0x260, mixbuf, ctx, limit=200_000_000)
+            if i == 60:
+                start_reads = reads[0]
+            if i >= 60:
+                per.append(work[0])
+        rate = (reads[0] - start_reads) / (79 * 256)
+        mean = sum(per) / len(per)
+        means[ratio] = mean
+        res.check(max(per) <= 1.35 * mean, f"{ratio}x: flat, peak/mean {max(per) / mean:.2f}")
+        res.check(abs(rate - ratio) < 0.03 * ratio + 0.01, f"{ratio}x: tempo {rate:.3f}")
+    off_unity = [v for k, v in means.items() if k != 1.0]   # exactly 1.0x is cheaper (R2's unity path)
+    spread = max(off_unity) / min(off_unity)
+    res.check(spread <= 1.2 and means[1.0] <= max(off_unity), f"same cost at every tempo (max/min {spread:.2f}, " +
+              ", ".join(f"{k}x {v / 1e6:.2f}M" for k, v in means.items()) + ")")
 
 
 def main():
@@ -2921,6 +3027,7 @@ def main():
             ("Rubber engine renders (emu build)", t_rubber_engine),
             ("Rubber broken start is left alone", t_rubber_broken_left_alone),
             ("Rubber CPU guard", t_rubber_cpu_guard),
+            ("Rubber cost flat over tempo (emu build)", t_rubber_cost_flat),
             ("Rubber takes over bank 2 only with RBTAKE.TXT", t_rubber_takeover),
             ("Rubber gives bank 2 back with RBFREE.TXT", t_rubber_release),
             ("Rubber stage of a dead boot on the label", t_rubber_stage_label),

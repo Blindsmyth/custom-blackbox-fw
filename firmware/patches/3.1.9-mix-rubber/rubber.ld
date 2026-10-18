@@ -12,7 +12,10 @@
 MEMORY {
   CAVE  (rx)  : ORIGIN = 0x080F1E80, LENGTH = 0x08100000 - 0x080F1E80
   BANK2 (rx)  : ORIGIN = 0x08100000, LENGTH = 0x000C0000
-  B2RAM (rwx) : ORIGIN = 0x30000000, LENGTH = 0x00040000   /* top 32 KB: Rubber's stack (rubber.h) */
+  B2RAM (rwx) : ORIGIN = 0x30000000, LENGTH = 0x00045000   /* top 12 KB: Rubber's stack (rubber.h) */
+  /* ITCM, zero-wait instruction RAM; stock never uses it (no reset copy, nothing loaded there).
+     The first 4 KB stay empty so a stray null-pointer write by stock cannot reach our code. */
+  ITCM  (rwx) : ORIGIN = 0x00001000, LENGTH = 0x0000F000
 }
 ENTRY(hook_register)
 SECTIONS {
@@ -25,6 +28,34 @@ SECTIONS {
   } > CAVE
 
   .b2head : { KEEP(*(.b2head)) } > BANK2
+  /* Rubber Band's hot code (bench profile: ~97 % of the render's instructions), run from ITCM
+     instead of bank 2 flash through the 16 KB I-cache. rubber_boot copies it before anything
+     else. Before .b2text, which would otherwise take these sections; calls to and from bank 2 go through linker veneers. */
+  .itcm : {
+    . = ALIGN(4);
+    __itcm_start = .;
+    *cmsis_*.o(.text .text.*)
+    *fast_trig.o(.text .text.*)
+    *libc_a-memcpy.o(.text .text.*)
+    *libc_a-memmove.o(.text .text.*)
+    *(.text._ZN10RubberBand11R2Stretcher11modifyChunk*)
+    *(.text._ZN10RubberBand11R2Stretcher15synthesiseChunk*)
+    *(.text._ZN10RubberBand11R2Stretcher12analyseChunk*)
+    *(.text._ZN10RubberBand11R2Stretcher19calculateIncrements*)
+    *(.text._ZN10RubberBand11R2Stretcher10writeChunk*)
+    *(.text._ZN10RubberBand11R2Stretcher15processOneChunk*)
+    *(.text._ZN10RubberBand11R2Stretcher22processChunkForChannel*)
+    *(.text._ZN10RubberBand4FFTs7D_CMSIS*)
+    *(.text._ZN10RubberBand3FFT*)
+    *(.text._ZN10RubberBand18approximate_atan2f*)
+    *(.text._ZN10RubberBand20PercussiveAudioCurve*)
+    *(.text._ZN10RubberBand18CompoundAudioCurve*)
+    *(.text._ZN10RubberBand16SilentAudioCurve*)
+    *(.text._ZN10RubberBand10RingBuffer*)
+    . = ALIGN(4);
+    __itcm_end = .;
+  } > ITCM AT > BANK2
+  __itcm_load = LOADADDR(.itcm);
   .b2text : {
     *(.text .text.*)
     *(.rodata .rodata.*)
@@ -42,6 +73,7 @@ SECTIONS {
   } > BANK2
   .ARM.extab : { *(.ARM.extab* .gnu.linkonce.armextab.*) } > BANK2
   .ARM.exidx : { __exidx_start = .; *(.ARM.exidx*) __exidx_end = .; } > BANK2
+
 
   .b2data : {
     . = ALIGN(4);

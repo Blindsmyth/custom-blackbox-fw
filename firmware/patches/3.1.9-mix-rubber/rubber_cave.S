@@ -24,17 +24,6 @@ b2load_thunk:
     bx      r12
 .ltorg
 
-@ Stock's sample allocator (FUN_08044404, top-down from 0x24000088) resets its top to
-@ 0xC4000000 when the stack empties (FUN_08044470, `mov.w r2, #0xC4000000` at 0x08044498).
-@ The top megabyte belongs to Rubber Band's heap (tools/stretch/rubber/rt.c), so the reset
-@ uses 0xC3F00000; the boot value at 0x080F1E08 is patched the same way (build_patch.py).
-.global sdram_top_thunk
-.thumb_func
-sdram_top_thunk:
-    ldr     r2, =0xC3F00000
-    ldr     r12, =0x0804449D
-    bx      r12
-.ltorg
 
 @ rb_call_on_stack(fn, a, b, c, d): fn(a, b, c, d) on Rubber's own stack, the top 32 KB of SRAM1-3
 @ (tools/stretch/rubber/rubber.h RB_STACK_TOP). Rubber Band's render needs ~5 KB of stack, which

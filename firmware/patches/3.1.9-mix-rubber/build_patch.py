@@ -131,7 +131,7 @@ def link(objs):
     b2 = BUILD / "bank2.bin"
     run([T / "arm-none-eabi-objcopy", "-O", "binary", "-j", ".cave", ELF, cave])
     run([T / "arm-none-eabi-objcopy", "-O", "binary", "-j", ".b2head", "-j", ".b2text", "-j", ".ARM.extab",
-         "-j", ".ARM.exidx", "-j", ".b2data", ELF, b2])
+         "-j", ".ARM.exidx", "-j", ".itcm", "-j", ".b2data", ELF, b2])
     return bytearray(cave.read_bytes()), bytearray(b2.read_bytes()), syms
 
 
@@ -189,7 +189,6 @@ def add_rubber_sites(stock):
         (0x080667B8, "hook_lane", False, "2de9f04f"),            # per-lane render: Rubber renders
         *[(va, "b2load_thunk", True, stock_bl(stock, va, 0x08092F5C))
           for va in (0x0807443E, 0x0807446E, 0x080744D8)],     # pcmStreamer file steps: card loader
-        (0x08044498, "sdram_top_thunk", False, "4ff04442"),      # sample stack empty: top 0xC3F00000
         (0x080414E4, "cpu_wait", True, stock_bl(stock, 0x080414E4, 0x08088756)),   # audio wait: CPU meter
         (0x080C5264, "tools_thunk", True, stock_bl(stock, 0x080C5264, 0x0809BBF8)),  # Tools bar: load / crash
     ])
@@ -200,7 +199,6 @@ def add_rubber_sites(stock):
         (0x08040018, "fault_handler", 0x0804626D),                # UsageFault
         (0x08040040, "wdg_handler", 0x080402AB),                  # IRQ 0 WWDG1: early wakeup
     ])
-    mix.BYTES.append((0x080F1E08, "0000f0c3", "000000c4"))      # .data: sample stack top at boot
 
 
 def main():
@@ -264,7 +262,8 @@ def main():
     OUT.write_bytes(image)
     OUT_B2.write_bytes(b2)
     keep = {k: f"{v:#010x}" for k, v in syms.items()
-            if (base.CAVE_VA <= v < B2_BASE) or k in ("rubber_boot", "rubber_mix", "rb_header")}
+            if (base.CAVE_VA <= v < B2_BASE) or k in ("rubber_boot", "rubber_mix", "rb_header", "rb_fast_used",
+                                                      "rb_heap_failed", "__itcm_start", "__itcm_end")}
     SYMS.write_text(json.dumps(keep, indent=1) + "\n")
     print("wrote", OUT, len(image), "and", OUT_B2, len(b2))
 

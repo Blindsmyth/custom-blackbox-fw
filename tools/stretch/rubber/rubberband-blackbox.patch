@@ -1,5 +1,5 @@
 diff --git a/src/common/FFT.cpp b/src/common/FFT.cpp
-index c1fd65f..b934a86 100644
+index c1fd65f..9634769 100644
 --- a/src/common/FFT.cpp
 +++ b/src/common/FFT.cpp
 @@ -75,6 +75,7 @@ extern "C" {
@@ -111,53 +111,6 @@ index 3be1baa..3cf79a2 100644
  #elif defined LACK_SINCOS
      if (sizeof(T) == sizeof(float)) {
          *real = cosf(phase);
-diff --git a/src/faster/R2Stretcher.cpp b/src/faster/R2Stretcher.cpp
-index 52737a4..858ddb1 100644
---- a/src/faster/R2Stretcher.cpp
-+++ b/src/faster/R2Stretcher.cpp
-@@ -541,7 +541,11 @@ R2Stretcher::calculateSizes()
-     if (m_realtime) {
-         // This headroom is so as to try to avoid reallocation when
-         // the pitch scale changes
-+#ifdef RB_FIXED_PITCH
-+        m_outbufSize = m_outbufSize * 2;
-+#else
-         m_outbufSize = m_outbufSize * 16;
-+#endif
-     } else {
- #ifndef NO_THREADING
-         if (m_threaded) {
-@@ -597,8 +601,13 @@ R2Stretcher::configure()
-     set<size_t> windowSizes;
-     if (m_realtime) {
-         windowSizes.insert(m_baseFftSize);
-+#ifndef RB_FIXED_PITCH
-+        // RB_FIXED_PITCH (Blackbox build): with the pitch fixed and the time
-+        // ratio clamped to 0.5x-2x, calculateSizes() always picks the base
-+        // size, so the other two would only hold memory.
-         windowSizes.insert(m_baseFftSize / 2);
-         windowSizes.insert(m_baseFftSize * 2);
-+#endif
- //        windowSizes.insert(m_baseFftSize * 4);
-     }
-     windowSizes.insert(m_fftSize);
-@@ -646,9 +655,16 @@ R2Stretcher::configure()
-         m_studyFFT->initFloat();
-     }
- 
-+    // RB_FIXED_PITCH (Blackbox build): pitch is never changed, so real-time
-+    // mode needs no resampler ready in advance (5.7 MB of phase tables).
-+#ifdef RB_FIXED_PITCH
-+    if (m_pitchScale != 1.0 ||
-+        (m_options & RubberBandStretcher::OptionPitchHighConsistency)) {
-+#else
-     if (m_pitchScale != 1.0 ||
-         (m_options & RubberBandStretcher::OptionPitchHighConsistency) ||
-         m_realtime) {
-+#endif
- 
-         for (size_t c = 0; c < m_channels; ++c) {
- 
 diff --git a/src/common/fast_sin_lut.inc b/src/common/fast_sin_lut.inc
 new file mode 100644
 index 0000000..52a7d09
@@ -421,3 +374,244 @@ index 0000000..52a7d09
 +    -0.04906767f,
 +    -0.02454123f,
 +    -0.00000000f
+diff --git a/src/faster/PercussiveAudioCurve.cpp b/src/faster/PercussiveAudioCurve.cpp
+index ce4bedf..6181f2c 100644
+--- a/src/faster/PercussiveAudioCurve.cpp
++++ b/src/faster/PercussiveAudioCurve.cpp
+@@ -69,10 +69,19 @@ PercussiveAudioCurve::processFloat(const float *R__ mag, int)
+     const int sz = m_lastPerceivedBin;
+ 
+     for (int n = 1; n <= sz; ++n) {
++#ifdef RB_FIXED_PITCH
++        // RB_FIXED_PITCH (Blackbox build): mag / prev >= threshold as a
++        // multiply, in float: upstream divides in double for every bin.
++        float pm = float(m_prevMag[n]);
++        bool above;
++        if (pm > zeroThresh) above = (mag[n] >= threshold * pm);
++        else above = (mag[n] > zeroThresh);
++#else
+         float v = 0.f;
+         if (m_prevMag[n] > zeroThresh) v = mag[n] / m_prevMag[n];
+         else if (mag[n] > zeroThresh) v = threshold;
+         bool above = (v >= threshold);
++#endif
+         if (above) ++count;
+         if (mag[n] > zeroThresh) ++nonZeroCount;
+     }
+diff --git a/src/faster/R2Stretcher.cpp b/src/faster/R2Stretcher.cpp
+index 52737a4..adbd480 100644
+--- a/src/faster/R2Stretcher.cpp
++++ b/src/faster/R2Stretcher.cpp
+@@ -405,6 +405,22 @@ R2Stretcher::calculateSizes()
+     
+     double r = getEffectiveRatio();
+ 
++#ifdef RB_FIXED_PITCH
++    // RB_FIXED_PITCH (Blackbox build): one 2048 window and a fixed output
++    // hop of 256 at every ratio, so each 256-frame audio block costs one
++    // analysis and one synthesis per channel whatever the tempo. Only the
++    // input hop follows the ratio: 205-320 within +-25 % (R2's usual
++    // overlap), up to 512 at 2x faster (window/hop 4, more phasy) and down to
++    // 128 at 2x slower (smoother, smearier). Upstream used 512/512 at r == 1
++    // (a burst every second block) and more hops per block when squashing.
++    if (m_realtime) {
++        windowSize = m_baseFftSize;
++        outputIncrement = m_defaultIncrement;
++        inputIncrement = size_t(lrint(double(outputIncrement) / r));
++        if (inputIncrement < 1) inputIncrement = 1;
++        if (inputIncrement > windowSize) inputIncrement = windowSize;
++    } else
++#endif
+     if (m_realtime) {
+ 
+         if (r < 1) {
+@@ -541,7 +557,12 @@ R2Stretcher::calculateSizes()
+     if (m_realtime) {
+         // This headroom is so as to try to avoid reallocation when
+         // the pitch scale changes
++#ifdef RB_FIXED_PITCH
++        // Fixed output hop of 256, read out every block: 16 hops of room.
++        m_outbufSize = std::max(size_t(4096), std::max(m_aWindowSize, m_sWindowSize));
++#else
+         m_outbufSize = m_outbufSize * 16;
++#endif
+     } else {
+ #ifndef NO_THREADING
+         if (m_threaded) {
+@@ -597,8 +618,13 @@ R2Stretcher::configure()
+     set<size_t> windowSizes;
+     if (m_realtime) {
+         windowSizes.insert(m_baseFftSize);
++#ifndef RB_FIXED_PITCH
++        // RB_FIXED_PITCH (Blackbox build): with the pitch fixed and the time
++        // ratio clamped to 0.5x-2x, calculateSizes() always picks the base
++        // size, so the other two would only hold memory.
+         windowSizes.insert(m_baseFftSize / 2);
+         windowSizes.insert(m_baseFftSize * 2);
++#endif
+ //        windowSizes.insert(m_baseFftSize * 4);
+     }
+     windowSizes.insert(m_fftSize);
+@@ -646,9 +672,16 @@ R2Stretcher::configure()
+         m_studyFFT->initFloat();
+     }
+ 
++    // RB_FIXED_PITCH (Blackbox build): pitch is never changed, so real-time
++    // mode needs no resampler ready in advance (5.7 MB of phase tables).
++#ifdef RB_FIXED_PITCH
++    if (m_pitchScale != 1.0 ||
++        (m_options & RubberBandStretcher::OptionPitchHighConsistency)) {
++#else
+     if (m_pitchScale != 1.0 ||
+         (m_options & RubberBandStretcher::OptionPitchHighConsistency) ||
+         m_realtime) {
++#endif
+ 
+         for (size_t c = 0; c < m_channels; ++c) {
+ 
+diff --git a/src/faster/StretcherChannelData.cpp b/src/faster/StretcherChannelData.cpp
+index 8d76f41..3cfeea3 100644
+--- a/src/faster/StretcherChannelData.cpp
++++ b/src/faster/StretcherChannelData.cpp
+@@ -53,7 +53,14 @@ R2Stretcher::ChannelData::construct(const std::set<size_t> &sizes,
+                                     size_t initialFftSize,
+                                     size_t outbufSize)
+ {
++#ifdef RB_FIXED_PITCH
++    // RB_FIXED_PITCH (Blackbox build): the window never changes, so the work
++    // arrays need one window, not two (~190 KB less for stereo). The input
++    // ring keeps two windows: a full window plus the largest input hop.
++    size_t maxSize = initialWindowSize;
++#else
+     size_t maxSize = initialWindowSize * 2;
++#endif
+     if (initialFftSize > maxSize) maxSize = initialFftSize;
+ 
+     // std::set is ordered by value
+@@ -68,7 +75,11 @@ R2Stretcher::ChannelData::construct(const std::set<size_t> &sizes,
+ 
+     if (outbufSize < maxSize) outbufSize = maxSize;
+ 
++#ifdef RB_FIXED_PITCH
++    inbuf = new RingBuffer<float>(maxSize * 2);   // exactly twice: reset() and setSizes() rely on it
++#else
+     inbuf = new RingBuffer<float>(maxSize);
++#endif
+     outbuf = new RingBuffer<float>(outbufSize);
+ 
+     mag = allocate_and_zero<process_t>(realSize);
+@@ -83,8 +94,15 @@ R2Stretcher::ChannelData::construct(const std::set<size_t> &sizes,
+ 
+     accumulator = allocate_and_zero<float>(maxSize);
+     windowAccumulator = allocate_and_zero<float>(maxSize);
++#ifdef RB_FIXED_PITCH
++    // Mid/side input (OptionChannelsTogether) and the window > FFT
++    // interpolator are never used here.
++    ms = allocate_and_zero<float>(16);
++    interpolator = allocate_and_zero<float>(16);
++#else
+     ms = allocate_and_zero<float>(maxSize);
+     interpolator = allocate_and_zero<float>(maxSize);
++#endif
+     interpolatorScale = 0;
+ 
+     unityResetLow = 16000.f;
+@@ -114,9 +132,17 @@ void
+ R2Stretcher::ChannelData::setSizes(size_t windowSize,
+                                    size_t fftSize)
+ {
++#ifdef RB_FIXED_PITCH
++    size_t maxSize = std::max(windowSize, fftSize);
++#else
+     size_t maxSize = 2 * std::max(windowSize, fftSize);
++#endif
+     size_t realSize = maxSize / 2 + 1;
++#ifdef RB_FIXED_PITCH
++    size_t oldMax = inbuf->getSize() / 2;   // as in reset()
++#else
+     size_t oldMax = inbuf->getSize();
++#endif
+     size_t oldReal = oldMax / 2 + 1;
+ 
+     if (oldMax >= maxSize) {
+@@ -259,7 +285,11 @@ R2Stretcher::ChannelData::reset()
+ 
+     if (resampler) resampler->reset();
+ 
++#ifdef RB_FIXED_PITCH
++    size_t size = inbuf->getSize() / 2;   // the work arrays are half the input ring (construct)
++#else
+     size_t size = inbuf->getSize();
++#endif
+ 
+     for (size_t i = 0; i < size; ++i) {
+         accumulator[i] = 0.f;
+diff --git a/src/faster/StretcherProcess.cpp b/src/faster/StretcherProcess.cpp
+index 74d09e7..4d462d1 100644
+--- a/src/faster/StretcherProcess.cpp
++++ b/src/faster/StretcherProcess.cpp
+@@ -815,6 +815,17 @@ R2Stretcher::modifyChunk(size_t channel,
+ 
+     process_t distacc = 0.0;
+ 
++#ifdef RB_FIXED_PITCH
++    // RB_FIXED_PITCH (Blackbox build): the per-bin phase advance in float,
++    // with the constants worked out once per chunk. Upstream computes omega
++    // with M_PI in double and wraps phases with princarg(double): several
++    // double divides per bin, ~30 cycles each on the Cortex-M7 and most of
++    // the stretcher's time (bench profile). Same results to float rounding.
++    const float omegaStep = float(2.0 * M_PI * double(m_increment) / double(m_fftSize));
++    const float advanceScale = float(outputIncrement) / float(m_increment);
++    const float twoPi = float(2.0 * M_PI), invTwoPi = float(1.0 / (2.0 * M_PI));
++#endif
++
+     for (int i = count; i >= 0; i -= lookback) {
+ 
+         bool resetThis = phaseReset;
+@@ -839,6 +850,14 @@ R2Stretcher::modifyChunk(size_t channel,
+ 
+         if (!resetThis) {
+ 
++#ifdef RB_FIXED_PITCH
++            float omega = omegaStep * float(i);
++            float pp = cd.prevPhase[i];
++            float dp = p - (pp + omega);
++            perr = dp - twoPi * __builtin_rintf(dp * invTwoPi);   // princarg
++
++            float instability = fabsf(perr - cd.prevError[i]);
++#else
+             process_t omega = (2 * M_PI * m_increment * i) / (m_fftSize);
+ 
+             process_t pp = cd.prevPhase[i];
+@@ -846,6 +865,7 @@ R2Stretcher::modifyChunk(size_t channel,
+             perr = princarg(p - ep);
+ 
+             process_t instability = fabs(perr - cd.prevError[i]);
++#endif
+             bool direction = (perr > cd.prevError[i]);
+ 
+             bool inherit = false;
+@@ -861,14 +881,23 @@ R2Stretcher::modifyChunk(size_t channel,
+                 }
+             }
+ 
++#ifdef RB_FIXED_PITCH
++            process_t advance = (omega + perr) * advanceScale;
++#else
+             process_t advance = outputIncrement * ((omega + perr) / m_increment);
++#endif
+ 
+             if (inherit) {
+                 process_t inherited =
+                     cd.unwrappedPhase[i + lookback] - cd.prevPhase[i + lookback];
++#ifdef RB_FIXED_PITCH
++                advance = ((advance * distance) +
++                           (inherited * (maxdist - distance))) * 0.125f;   // / maxdist (8)
++#else
+                 advance = ((advance * distance) +
+                            (inherited * (maxdist - distance)))
+                     / maxdist;
++#endif
+                 outphase = p + advance;
+                 distacc += distance;
+                 distance += 1.0;

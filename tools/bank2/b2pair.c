@@ -111,7 +111,7 @@ void rb_pair(void)
     v->block_done = 0;
     v->prev_active = 0;
     v->avg_cyc = v->peak_cyc = 0;
-    v->cyc_avg = v->over_n = 0;
+    v->cyc_avg = v->over_n = v->cyc_peak = 0;
     rb_bkp_enable();
     diag_boot();                  /* the boot before: crash records, and where it got to */
     rb_bkp_put(RB_BKP_LAST, rb_bkp_get(RB_BKP_STAGE));
@@ -144,13 +144,15 @@ void rb_start(void)
     const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
     if (v->magic != RB_VOICE_MAGIC || (v->state & 0xffu) != RB_ST_PAIRED)
         return;
+    uint32_t ok;
     rb_bkp_put(RB_BKP_BOOTING, RB_MARK_BOOT);
     rb_stage(RB_SG_BOOT);
-    rb_call_on_stack(h->boot, 0, 0, 0, 0);
+    ok = rb_call_on_stack(h->boot, 0, 0, 0, 0);
     rb_bkp_put(RB_BKP_BOOTING, 0);
     rb_stage(0);
     __asm__ volatile("dsb");
-    v->state = (v->state & ~0xffu) | RB_ST_READY;   /* only now may the audio task render */
+    /* Only now may the audio task render. A start that ran out of memory left "Rubber! mem". */
+    v->state = (v->state & ~0xffu) | (ok == 1u ? RB_ST_READY : RB_ST_ABSENT);
 }
 
 /* repitch.S hook_lane: may the Rubber voice render? */
@@ -173,6 +175,8 @@ void rb_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     rb_call_on_stack(h->mix, clip, lane, mix, ctx);
     c = DWT_CYCCNT - t0;
     v->cyc_avg = v->cyc_avg - (v->cyc_avg >> 4) + (c >> 4);
+    if (c > v->cyc_peak)
+        v->cyc_peak = c;
     if (c <= RB_GUARD_CYC) {
         v->over_n = 0;
     } else if (++v->over_n >= RB_GUARD_N) {

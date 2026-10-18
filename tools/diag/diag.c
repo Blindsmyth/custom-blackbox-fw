@@ -164,9 +164,9 @@ static char *put_hex(char *p, uint32_t v)
     return p;
 }
 
-/* " R120": Rubber Band's own share of the block, smoothed over its last ~16 renders (b2pair.c
- * rb_mix; 25,600 cycles = 1 %). Kept after the CPU guard switched Rubber off, so the cost that
- * did it can still be read. */
+/* " R60/66": Rubber Band's own share of the block, smoothed over its last ~16 renders, and its
+ * worst block since the bar was last drawn (b2pair.c rb_mix; 25,600 cycles = 1 %). Kept after
+ * the CPU guard switched Rubber off, so the cost that did it can still be read. */
 static char *rubber_share(char *buf, char *p)
 {
     const volatile RbVoice *v = (const volatile RbVoice *)RB_VOICE;
@@ -176,7 +176,12 @@ static char *rubber_share(char *buf, char *p)
     if (p != buf)
         *p++ = ' ';
     *p++ = 'R';
-    return put_uint(p, (v->cyc_avg + 12800u) / 25600u);
+    p = put_uint(p, (v->cyc_avg + 12800u) / 25600u);
+    if (v->cyc_peak) {
+        *p++ = '/';
+        p = put_uint(p, (v->cyc_peak + 12800u) / 25600u);
+    }
+    return p;
 }
 
 static void compose(char *buf)
@@ -216,7 +221,7 @@ static void compose(char *buf)
 void cpu_mid(uint8_t *label)
 {
     volatile struct diag_state *m = DIAG;
-    char buf[24];                /* "999/999%+99 R999" at most */
+    char buf[32];                /* "999/999%+99 R999/999" at most */
     if (m->magic == DIAG_MAGIC && m->n) {
         m->avg_shown = (uint16_t)(m->sum / m->n);
         m->peak_shown = m->peak;
@@ -226,6 +231,7 @@ void cpu_mid(uint8_t *label)
     compose(buf);
     if (m->magic == DIAG_MAGIC)
         m->late = 0;
+    ((volatile RbVoice *)RB_VOICE)->cyc_peak = 0;   /* drawn: the next look reports from here */
     fw_label_set(label, buf);
 }
 

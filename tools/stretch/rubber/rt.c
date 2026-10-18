@@ -1,52 +1,41 @@
-/* Bank 2 runtime for Rubber Band: its allocator (SRAM1, then the top megabyte of SDRAM), and the
- * few OS calls newlib and libstdc++ expect. Single-threaded: only the audio task runs bank 2 code
- * after rubber_boot (which runs once, before audio uses it).
- *
- * The SDRAM reserve exists because the build lowers stock's sample allocator top from
- * 0xC4000000 to RB_HEAP_START (the .data initialiser at 0x080F1E08 and the empty-stack reset in
- * FUN_08044470), so samples never reach it. */
+/* Bank 2 runtime for Rubber Band: its allocator (SRAM1 only), and the few OS calls newlib and
+ * libstdc++ expect. Single-threaded: only the audio task runs bank 2 code
+ * after rubber_boot (which runs once, before audio uses it). */
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 
-#define RB_HEAP_START 0xC3F00000u
-#define RB_HEAP_END   0xC4000000u
-#define RB_FAST_END   0x30040000u     /* SRAM1-3 up to Rubber's stack (rubber.h RB_STACK_TOP) */
-#define RB_FAST_MAX   20000u          /* blocks up to this size go to SRAM1 while it lasts */
+#define RB_FAST_END   0x30045000u     /* SRAM1-3 up to Rubber's stack (rubber.h RB_STACK_*) */
 
-/* Rubber Band allocates everything when it is constructed (about 520 KB in 91 blocks, measured
- * on the bench) and nothing while it plays, so a bump allocator in two pools is enough, and
- * free() returns nothing (15 small frees at construction).
- *  - SRAM1, the free part after bank 2's .bss: the per-hop work arrays (8 and 16 KB each, swept
- *    every hop). Much faster than SDRAM on a cache miss, and nothing else uses it.
- *  - SDRAM, the top megabyte the build keeps from the sample allocator: the large ring buffers,
- *    read in order, and anything that does not fit in SRAM1. */
+/* Rubber Band allocates everything when it is constructed (about 245 KB with the Blackbox
+ * patch's fixed window and hops, measured on the bench) and nothing while it plays, so a bump
+ * allocator over the free part of SRAM1, after bank 2's .bss, is enough; free() returns nothing
+ * (a few small frees at construction). Nothing goes to SDRAM: the samples keep all of it. A
+ * block that does not fit sets rb_heap_failed and returns 0; rubber_boot then gives up
+ * ("Rubber! mem"). */
 extern char __b2_bss_end[];
-static uint32_t fast_at, slow_at = RB_HEAP_START;
-uint32_t rb_fast_used, rb_slow_used;  /* for the bench */
+static uint32_t fast_at;
+uint32_t rb_fast_used;  /* for the bench */
+int rb_heap_failed;
 
 typedef struct { uint32_t size, pad; } Head;   /* 8 bytes before every block, for realloc */
 
 static void *take(size_t n)
 {
     uint32_t need = ((uint32_t)n + sizeof(Head) + 15u) & ~15u;
-    uint32_t *at;
+    Head *h;
     if (!fast_at)
         fast_at = ((uint32_t)__b2_bss_end + 15u) & ~15u;
-    if (n <= RB_FAST_MAX && fast_at + need <= RB_FAST_END) {
-        at = &fast_at;
-        rb_fast_used += need;
-    } else if (slow_at + need <= RB_HEAP_END) {
-        at = &slow_at;
-        rb_slow_used += need;
-    } else {
+    if (fast_at + need + 8u > RB_FAST_END) {
+        rb_heap_failed = 1;
         errno = ENOMEM;
         return 0;
     }
-    Head *h = (Head *)(*at + 8u);   /* block itself 16-aligned */
-    *at += need + 8u;
+    rb_fast_used += need + 8u;
+    h = (Head *)(fast_at + 8u);   /* the block itself 16-aligned */
+    fast_at += need + 8u;
     h[-1].size = (uint32_t)n;
     return h;
 }

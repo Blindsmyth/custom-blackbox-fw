@@ -5,9 +5,10 @@
 // the voice. Everything this file allocates comes from the SDRAM reserve (rt.c), and its .data
 // and .bss live in SRAM1 (b2.ld), so nothing here touches stock's memory.
 //
-// Real-time mode does its FFT work per hop, so the cost per 256-frame block is even at tempo
-// ratios up to about 1.25 and comes in bursts above that (tools/lab/rb/m7 measurements); the
-// ratio is clamped to RB_MIN_RATIO..RB_MAX_RATIO. A launch primes the stretcher over several
+// The Blackbox patch fixes R2's output hop at 256 (rubberband-blackbox.patch, RB_FIXED_PITCH),
+// so every 256-frame block costs one analysis and one synthesis per channel at any tempo; only
+// the input hop follows the ratio. It sounds like R2 within +-25 % and degrades beyond (phasier
+// faster, smearier slower). The ratio is clamped to RB_MIN_RATIO..RB_MAX_RATIO. A launch primes the stretcher over several
 // blocks (silence) instead of in one, so a retrigger never overruns a block.
 #include "rubber.h"
 
@@ -17,17 +18,21 @@
 
 using RubberBand::RubberBandStretcher;
 
-#define RB_MIN_RATIO 0.5f
-#define RB_MAX_RATIO 1.25f
+#define RB_MIN_RATIO 0.5f     /* tempo ratio range; the cost per block is the same at every */
+#define RB_MAX_RATIO 2.0f     /* ratio (RB_FIXED_PITCH hops), the sound degrades past +-25 % */
 #define RB_FEED      512     /* frames per process() call */
 #define RB_BLOCKS_SEC 188    /* 48000 / 256: stats period */
+#define RB_RESERVE   192     /* frames of output kept on hand (4 ms): on a transient R2 outputs
+                                one input hop at once (128 at 0.5x) and catches up after */
+#define RB_HIGH      2048    /* above this much on hand a block skips its hop (never in normal use) */
 
 extern "C" {
 extern uint32_t __b2_data_load[], __b2_data_start[], __b2_data_end[];
+extern uint32_t __itcm_load[], __itcm_start[], __itcm_end[];
 extern uint32_t __b2_bss_start[], __b2_bss_end[];
 extern void (*__b2_init_array_start[])(void);
 extern void (*__b2_init_array_end[])(void);
-void rubber_boot(void);
+int rubber_boot(void);
 void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);
 }
 
@@ -103,12 +108,19 @@ static void label_load(uint32_t pct)
     set_label(s);
 }
 
-void rubber_boot(void)
+extern "C" int rb_heap_failed;   /* rt.c: an allocation did not fit */
+
+int rubber_boot(void)
 {
-    // Bank 2's .data from flash, .bss zeroed, then its C++ constructors (newlib, libstdc++).
-    for (uint32_t *s = __b2_data_load, *d = __b2_data_start; d < __b2_data_end;)
+    // The hot code into ITCM first (rubber.ld .itcm): memcpy and the FFT live there. Volatile so
+    // the compiler cannot turn these loops into a memcpy call before memcpy is in place.
+    for (volatile uint32_t *s = __itcm_load, *d = __itcm_start; d < __itcm_end;)
         *d++ = *s++;
-    for (uint32_t *d = __b2_bss_start; d < __b2_bss_end;)
+    __asm__ volatile("dsb\n isb");
+    // Bank 2's .data from flash, .bss zeroed, then its C++ constructors (newlib, libstdc++).
+    for (volatile uint32_t *s = __b2_data_load, *d = __b2_data_start; d < __b2_data_end;)
+        *d++ = *s++;
+    for (volatile uint32_t *d = __b2_bss_start; d < __b2_bss_end;)
         *d++ = 0;
     for (void (**f)(void) = __b2_init_array_start; f < __b2_init_array_end; f++)
         (*f)();
@@ -123,7 +135,14 @@ void rubber_boot(void)
                                  1.0 / RB_MIN_RATIO, 1.0);
     rb->setTimeRatio(1.0);
     cur_ratio = 1.f;
+    if (rb_heap_failed) {
+        // Constructed on null pointers somewhere: never use it.
+        rb = nullptr;
+        set_label("Rubber! mem");
+        return 0;
+    }
     set_label("Rubber");
+    return 1;
 }
 
 static void feed(void *sample, int length, int stereo, int frames)
@@ -218,7 +237,9 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         rb->reset();
         read_pos = 0;
         pad_left = (int)rb->getPreferredStartPad();
-        drop_left = (int)rb->getStartDelay();
+        drop_left = (int)rb->getStartDelay() - RB_RESERVE;   // the reserve stays buffered (4 ms)
+        if (drop_left < 0)
+            drop_left = 0;
     }
     if (ratio != cur_ratio) {
         rb->setTimeRatio(1.0 / ratio);
@@ -245,18 +266,16 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
             drop_left -= k;
         }
     } else {
-        int done = 0;
-        while (done < n) {
-            int avail = rb->available();
-            if (avail < 1) {
-                feed(sample, length, stereo, required());
-                continue;
-            }
-            int k = avail < n - done ? avail : n - done;
-            float *o[2] = { dl + done, (dr ? dr : dl) + done };
-            rb->retrieve(o, (size_t)k);
-            done += k;
-        }
+        // One hop every block, whatever is on hand: R2's output per hop swings around 256 at
+        // transients and its own timing correction evens it out, so the buffer level wanders
+        // around the reserve. Skipping a hop on a surplus is what made a later block run two.
+        // A second hop only if the reserve ever runs out.
+        if (rb->available() < n + RB_HIGH)
+            feed(sample, length, stereo, required());
+        while (rb->available() < n)
+            feed(sample, length, stereo, required());
+        float *o[2] = { dl, dr ? dr : dl };
+        rb->retrieve(o, (size_t)n);
     }
 
     FW_BUF_ENV((void *)(lane + 0x14c), scratch);
