@@ -76,6 +76,8 @@ void rb_bkp_flush(void);
 void rb_call_on_stack(uint32_t fn, unsigned a, unsigned b, unsigned c, unsigned d);
 /* b2pair.c, from the card loader's poll (pcmStreamer): start bank 2 once pairing found it. */
 void rb_start(void);
+/* b2pair.c: append the loader's one-character verdict to the Rubber label. */
+void rb_note(char c);
 /* diag.c, once per boot from rb_pair: latch the crash records of the boot before. */
 void diag_boot(void);
 

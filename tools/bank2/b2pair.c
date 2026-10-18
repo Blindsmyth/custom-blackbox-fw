@@ -83,6 +83,20 @@ static void label(RbVoice *v, const char *s)
     v->label[i] = 0;
 }
 
+/* The card loader's verdict after the label: "Rubber! -". Replaces an earlier one. */
+void rb_note(char c)
+{
+    RbVoice *v = (RbVoice *)RB_VOICE;
+    int i = 0;
+    while (i < 13 && v->label[i])
+        i++;
+    if (i >= 2 && v->label[i - 2] == ' ' && v->label[i - 1] == '.')
+        i -= 2;                   /* the loader's "looked" placeholder */
+    v->label[i++] = ' ';
+    v->label[i++] = c;
+    v->label[i] = 0;
+}
+
 /* Called by state_init every boot, while the app is being built (screen task). SRAM4 survives a
  * soft reset, so the voice is reset here. This only checks bank 2; rb_start runs it later, from
  * the disk task, once the unit is up. */

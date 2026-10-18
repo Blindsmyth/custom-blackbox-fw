@@ -6,8 +6,9 @@
  *  - The audio task waits on a queue between 256-frame blocks (bl 0x08088756 at 0x080414E4).
  *    Busy = wake to wait, against the nominal block (the smallest per-second mean period since
  *    boot), so a late block reads high, not low. "+n" counts blocks later than 1.5 x nominal.
- *  - The Tools bar's middle label is empty; the refresh that sets the free-space label beside it
- *    (bl 0x080A3DEC at 0x080C52A4) also fills it. Figures cover the time since the bar was last
+ *  - The Tools bar's middle label is empty (screen + 0xD4, the label before the free space). Ours
+ *    is filled from the refresh's free-space query (bl 0x0809BBF8 at 0x080C5264), which runs every
+ *    time; blackbox-mod hooked the label call after it, which stock skips when the query fails. Figures cover the time since the bar was last
  *    drawn. A version label with the figure appended never showed on the unit.
  *  - Stock's fault handlers spin until the watchdog resets, and every reset clears the SCB fault
  *    registers. So the handler records them itself, in backup SRAM, and resets at once.
@@ -30,7 +31,6 @@ typedef int (*receive_fn)(void *queue, void *item, uint32_t ticks, int peek);
 typedef void (*label_fn)(uint8_t *label, const char *s);
 #define fw_receive   ((receive_fn)FN(0x08088756u))   /* FreeRTOS queue receive */
 #define fw_label_set ((label_fn)FN(0x080a3decu))     /* label: set its text, then redraw */
-#define LABEL_SIZE   0xa0u                           /* the bar's labels sit one after the other */
 
 #define DEMCR      (*(volatile uint32_t *)0xe000edfcu)
 #define DWT_CTRL   (*(volatile uint32_t *)0xe0001000u)
@@ -190,13 +190,14 @@ static void compose(char *buf)
     *p = 0;
 }
 
-/* Replaces the Tools refresh's free-space label call (bl 0x080A3DEC at 0x080C52A4): the empty
- * label before it gets the load. Screen task. */
-void cpu_tools(uint8_t *space_label, const char *space)
+/* The Tools refresh (FUN_080C5180) asks for the card's free space at 0x080C5264 before it sets
+ * that label, and sets it only when the query succeeds; tools_thunk (rubber_cave.S) comes here
+ * first with the bar's empty middle label (screen + 0xD4, one label before the free space at
+ * +0x174). Screen task. */
+void cpu_mid(uint8_t *label)
 {
     volatile struct diag_state *m = DIAG;
     char buf[16];
-    fw_label_set(space_label, space);
     if (m->magic == DIAG_MAGIC && m->n) {
         m->avg_shown = (uint16_t)(m->sum / m->n);
         m->peak_shown = m->peak;
@@ -206,7 +207,7 @@ void cpu_tools(uint8_t *space_label, const char *space)
     compose(buf);
     if (m->magic == DIAG_MAGIC)
         m->late = 0;
-    fw_label_set(space_label - LABEL_SIZE, buf);
+    fw_label_set(label, buf);
 }
 
 /* Is a stacked frame pointer safe to read? After a stacking fault it points wherever SP went. */

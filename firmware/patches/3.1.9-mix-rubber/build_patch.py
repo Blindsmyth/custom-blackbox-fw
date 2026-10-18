@@ -191,7 +191,7 @@ def add_rubber_sites(stock):
           for va in (0x0807443E, 0x0807446E, 0x080744D8)],     # pcmStreamer file steps: card loader
         (0x08044498, "sdram_top_thunk", False, "4ff04442"),      # sample stack empty: top 0xC3F00000
         (0x080414E4, "cpu_wait", True, stock_bl(stock, 0x080414E4, 0x08088756)),   # audio wait: CPU meter
-        (0x080C52A4, "cpu_tools", True, stock_bl(stock, 0x080C52A4, 0x080A3DEC)),  # Tools bar: load / crash
+        (0x080C5264, "tools_thunk", True, stock_bl(stock, 0x080C5264, 0x0809BBF8)),  # Tools bar: load / crash
     ])
     mix.VTABLE.extend([                                           # crash recorder (tools/diag/diag.c)
         (0x0804000C, "fault_handler", 0x08046267),                # HardFault

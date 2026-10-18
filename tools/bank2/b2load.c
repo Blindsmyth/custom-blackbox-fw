@@ -79,7 +79,8 @@ static int header_ok(const uint32_t w[8])
            !(w[2] & 31u) && w[3] == rb_expect_sum;
 }
 
-/* The whole file is read and summed before anything is erased. */
+/* The whole file is read and summed before anything is erased. 1 = this image's payload,
+ * 0 = no file, -1 = a file, but another build's or damaged. */
 static int file_ok(void)
 {
     Src s;
@@ -101,7 +102,7 @@ static int file_ok(void)
     }
     fw_f_close(s.fil);
     rb_stage(0);
-    return ok;
+    return ok ? 1 : -1;
 }
 
 static inline void barrier(void)
@@ -258,25 +259,43 @@ void rb_load_poll(void)
     if ((v->state & 0xffu) == RB_ST_UNKNOWN)
         return;                       /* pairing has not run yet: ask again next step */
     v->state |= RB_ST_LOOKED;         /* before anything else: one go per boot */
+    if ((v->state & 0xffu) == RB_ST_ABSENT)
+        rb_note('.');                     /* looked; replaced by the verdict below */
     /* Only a bank 2 without this image's payload is written. READY, and BROKEN (intact, but its
      * start crashed), are left alone: rewriting the same payload cannot help, and clearing the
      * boot mark with it is what turned one crash into a crash on every preset load. */
-    if ((v->state & 0xffu) != RB_ST_ABSENT || !file_ok() || !owned())
+    if ((v->state & 0xffu) != RB_ST_ABSENT)
         return;
+    /* From here every way out names itself after the Rubber label (rb_note): "Rubber! -". */
+    n = (uint32_t)file_ok();
+    if (n != 1u) {
+        rb_note(n ? '?' : '-');           /* '-' no BBRUBBER.BIN, '?' another build's or damaged */
+        return;
+    }
+    if (!owned()) {
+        rb_note('x');                     /* bank 2 holds something that is not ours: left alone */
+        return;
+    }
     n = rb_bkp_get(RB_BKP_TRIES_ID) == tries_key() ? rb_bkp_get(RB_BKP_TRIES_N) : 0u;
-    if (n >= RB_MAX_TRIES)
+    if (n >= RB_MAX_TRIES) {
+        rb_note('t');                     /* two writes of this payload failed already */
         return;
+    }
     rb_bkp_put(RB_BKP_TRIES_ID, tries_key());
     rb_bkp_put(RB_BKP_TRIES_N, n + 1u);   /* before the write: one that kills the boot counts */
-    if (!program())
+    if (!program()) {
+        rb_note('e');                     /* the flash reported an error */
         return;
+    }
     rb_bkp_put(RB_BKP_MARK, RB_MARK_SCAN);
     rb_stage(RB_SG_VERIFY);
     n = (uint32_t)rb_b2_intact();
     rb_bkp_put(RB_BKP_MARK, 0);
     rb_stage(0);
-    if (!n)
+    if (!n) {
+        rb_note('v');                     /* written, but did not read back right */
         return;
+    }
     rb_bkp_put(RB_BKP_TRIES_N, 0);
     rb_bkp_put(RB_BKP_BOOTING, 0);        /* a new payload gets a fresh boot */
     rb_stage(0);

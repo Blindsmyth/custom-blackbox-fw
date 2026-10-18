@@ -2,7 +2,7 @@
 @ Built with -I ../3.1.9-folders-repitch-mix -I ../3.1.9-folders-repitch.
 @ Rubber Band itself lives in flash bank 2 (tools/stretch/rubber); bank 1 holds only the hooks,
 @ the pairing check and the card loader (tools/bank2), linked into this cave.
-.set WARP_RUBBER, 1                     @ repitch.S: Warp value 2 "Rubber", hook_lane
+.set WARP_RUBBER, 1                     @ repitch.S: Warp Stretch/Rubber only (value 1), hook_lane
 .include "mix_cave.S"
 
 .align 2
@@ -57,4 +57,18 @@ rb_call_on_stack:
     blx     r4
     mov     sp, r6
     pop     {r4, r5, r6, pc}
+.ltorg
+
+@ Tools refresh FUN_080C5180, its free-space query (bl 0x0809BBF8 at 0x080C5264): first fill the
+@ bar's middle label with the CPU load or the last crash (tools/diag/diag.c cpu_mid). r7 is the
+@ screen; the free-space label is r7 + 0x174 and the middle one sits 0xA0 before it.
+.global tools_thunk
+.thumb_func
+tools_thunk:
+    push    {r0, r1, r2, r3, r12, lr}
+    add.w   r0, r7, #0xD4
+    bl      cpu_mid
+    pop     {r0, r1, r2, r3, r12, lr}
+    ldr     r12, =0x0809BBF9
+    bx      r12
 .ltorg

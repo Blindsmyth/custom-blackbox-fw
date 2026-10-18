@@ -376,7 +376,12 @@ def t_repitch_main_rate_preserves_r3(bench, res):
     r3 = b.mu.reg_read(A.UC_ARM_REG_R3)
     stored = b.u32(grain + 0x48)
     res.check(r3 == grain, f"r3 clobbered on repitch {r3:#x}")
-    res.check(stored == 0x3F800000, f"repitch rate {stored:#x}")
+    if "rb_pair" in bench.sym:
+        # 3.1.R: the list is Stretch / Rubber, so value 1 is Rubber: grain rate unscaled, voice reset
+        res.check(stored == 0x40000000, f"rubber leaves the rate {stored:#x}")
+        res.check(b.u32(0x38007000 + 20) == 1, "rubber: a new grain asks the voice to reset")
+    else:
+        res.check(stored == 0x3F800000, f"repitch rate {stored:#x}")
 
 
 CLIP_GRAIN = 0x08065290
@@ -435,8 +440,13 @@ def t_repitch_slicer_grain_stack(bench, res):
     b.mu.reg_write(A.UC_ARM_REG_SP, sp)
     b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
     b.mu.emu_start(bench.sym["hook_grain"] | 1, bd.STOP, count=400)
-    res.check(b.u32(clip + 0xE0 + 0x48) == 0x3F800000, "repitch scales grain rate")
-    res.check(b.u32(clip + 0xE0 + 0x60) == 0, "repitch clears stretch pad")
+    if "rb_pair" in bench.sym:
+        # 3.1.R: value 1 is Rubber; on a Slicer it plays stock grains, unscaled
+        res.check(b.u32(clip + 0xE0 + 0x48) == 0x40000000, "rubber leaves grain rate")
+        res.check(b.u32(clip + 0xE0 + 0x60) == 0x12345678, "rubber leaves stretch pad")
+    else:
+        res.check(b.u32(clip + 0xE0 + 0x48) == 0x3F800000, "repitch scales grain rate")
+        res.check(b.u32(clip + 0xE0 + 0x60) == 0, "repitch clears stretch pad")
     res.check(b.mu.reg_read(A.UC_ARM_REG_R0) == 2, "repitch keeps grain index")
 
 
@@ -2270,11 +2280,11 @@ def t_rubber_absent(bench, res):
     res.check(rb_label(bench) == "Rubber!", f"label {rb_label(bench)!r}")
     res.check(b.call(bench.sym["rb_ready"]) == 0, "rb_ready is 0")
     labels = bench.sym["labels_repitch"]
-    got = [b.cstr(b.u32(labels + 4 * i)) for i in range(3)]
-    res.check(got == ["Stretch", "Repitch", "Rubber!"], f"Warp labels {got}")
+    got = [b.cstr(b.u32(labels + 4 * i)) for i in range(2)]
+    res.check(got == ["Stretch", "Rubber!"], f"Warp labels {got}")
     reg = bench.sym["hook_register"] & ~1
     code = bytes(b.mu.mem_read(reg, 0x40))
-    res.check(b"\x03\x24" in code, "Warp enum has 3 values (movs r4, #3)")
+    res.check(b"\x02\x24" in code, "Warp enum has 2 values (movs r4, #2)")
     res.check(b.u32(0x24000088) == 0xC3F00000, f"sample stack top {b.u32(0x24000088):#x} (reserve above)")
 
 
@@ -2326,7 +2336,7 @@ def t_rubber_lane_hook(bench, res):
     b.stub(0x080667BC, lambda bb: stock.__setitem__(0, stock[0] + 1))
     clip, mixbuf, ctx = 0x2001C800, 0x2001E000, 0x2001E100
     b.mu.mem_write(clip, b"\x00" * 0xC00)
-    b.mu.mem_write(clip + 0xBB1, b"\x02")       # Warp Rubber
+    b.mu.mem_write(clip + 0xBB1, b"\x01")       # Warp Rubber (Stretch / Rubber list)
     b.mu.mem_write(clip + 0x260, b"\x01")       # lane 0 active
     lane0, lane1 = clip + 0x260, clip + 0x670
     hook = bench.sym["hook_lane"]
@@ -2485,6 +2495,11 @@ def t_rubber_loader_refuses(bench, res):
     fm.close()
     res.check(not fm.erased and not fm.words, "foreign bank 2: no erase, no write")
     res.check(b.u32(RB_B2 + 0x50000) == 0x78563412, "foreign data untouched")
+    res.check(rb_label(bench) == "Rubber! x", f"foreign bank 2 named: {rb_label(bench)!r}")
+    rb_loader_boot(bench)
+    FakeFile(b, "BBRUBBER.BIN", None)
+    rb_poll(bench)
+    res.check(rb_label(bench) == "Rubber! -", f"no file named: {rb_label(bench)!r}")
     # A damaged file is never written.
     b.mu.mem_write(RB_B2, b"\xff" * 0x100000)
     bad = bytearray(pay)
@@ -2495,6 +2510,7 @@ def t_rubber_loader_refuses(bench, res):
     rb_poll(bench)
     fm.close()
     res.check(not fm.erased, "damaged file: nothing erased")
+    res.check(rb_label(bench) == "Rubber! ?", f"damaged file named: {rb_label(bench)!r}")
     # Failing flash: two tries, then no more.
     b.mu.mem_write(RB_B2, b"\xff" * 0x100000)
     attempts = []
@@ -2506,6 +2522,7 @@ def t_rubber_loader_refuses(bench, res):
         fm.close()
         attempts.append(len(fm.erased))
     res.check(attempts[0] > 0 and attempts[1] > 0 and attempts[2] == 0, f"tries per boot {attempts}")
+    res.check(rb_label(bench) == "Rubber! t", f"tries used up: {rb_label(bench)!r}")
 
 
 def t_rubber_engine(bench, res):
@@ -2615,14 +2632,14 @@ def t_rubber_stage_label(bench, res):
 
 
 def diag_tools_label(bench):
-    """Run cpu_tools with a stub label setter; return the middle label's text."""
+    """Run cpu_mid with a stub label setter; return the middle label's text."""
     b = bench.b
     got = {}
     b.stub(0x080A3DEC, lambda bb: got.__setitem__(bb.arg(0), bb.cstr(bb.arg(1))))
-    space, text = 0x2001E1A0, b.put_cstr(0x2001E300, "12.3 GB")
-    b.call(bench.sym["cpu_tools"], space, text)
+    mid = 0x2001E100
+    b.call(bench.sym["cpu_mid"], mid)
     b.unstub(0x080A3DEC)
-    return got.get(space - 0xA0), got.get(space)
+    return got.get(mid), "12.3 GB"
 
 
 def t_diag_cpu_meter(bench, res):
@@ -2698,6 +2715,26 @@ def t_diag_vectors(bench, res):
     res.check(vec[4] == bench.sym["wdg_handler"] | 1, f"IRQ 0 -> wdg_handler {vec[4]:#x}")
 
 
+
+def t_diag_tools_gui(bench, res):
+    """tools_thunk (the Tools refresh's free-space query) fills the screen's middle label, then
+    runs the stock query with its arguments intact."""
+    b = bench.b
+    sets, query = [], []
+    b.stub(0x080A3DEC, lambda bb: sets.append((bb.arg(0), bb.cstr(bb.arg(1), 16))))
+    b.stub(0x0809BBF8, lambda bb: query.append((bb.arg(0), bb.arg(1))) or 0)
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    screen = 0x2001D800
+    b.mu.reg_write(bd.A.UC_ARM_REG_R7, screen)
+    b.call(bench.sym["tools_thunk"], 0x1234, 0x5678)
+    res.check([a for a, t in sets] == [screen + 0xD4], f"middle label set ({[(hex(a), t) for a, t in sets]})")
+    res.check(query == [(0x1234, 0x5678)], f"stock query runs with its args {query}")
+    img = b.image
+    off = 0x080C5264 - 0x08040000
+    res.check(img[off:off + 4] != bytes.fromhex("d6f7c8fc"), "0x080C5264 patched")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
@@ -2771,6 +2808,7 @@ def main():
             ("Rubber diag: CPU meter on Tools", t_diag_cpu_meter),
             ("Rubber diag: fault recorder", t_diag_fault_record),
             ("Rubber diag: vectors", t_diag_vectors),
+            ("Rubber diag: real Tools refresh", t_diag_tools_gui),
         ]
     if "mix_tick" in sym:
         cases += [
