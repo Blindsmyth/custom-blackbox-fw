@@ -2310,7 +2310,7 @@ def t_rubber_pair_rejects(bench, res):
     rb_bkp(bench, booting=0x544F4252)  # "RBOT": the last boot died in rubber_boot
     b.watch(bench.sym["rubber_boot"])
     b.call(boot)
-    res.check(rb_state(bench) == 2 and rb_label(bench) == "Rubber!!", f"boot mark: off, {rb_label(bench)!r}")
+    res.check(rb_state(bench) == 4 and rb_label(bench) == "Rubber!!", f"boot mark: broken, off, {rb_label(bench)!r}")
     res.check(b.calls[bench.sym["rubber_boot"] & ~1] == 0, "boot mark: rubber_boot not entered")
 
 
@@ -2518,8 +2518,17 @@ def t_rubber_engine(bench, res):
     b = bench.b
     b.mu.mem_write(RB_B2, bytes(pay))
     rb_bkp(bench)
-    b.call(bench.sym["rb_pair"], limit=2_000_000_000)
-    res.check(rb_state(bench) == 1 and rb_label(bench) == "Rubber", f"paired and booted: {rb_label(bench)!r}")
+    b.call(bench.sym["rb_pair"])
+    res.check(rb_state(bench) == 3 and rb_label(bench) == "Rubber..", f"paired, not started: {rb_label(bench)!r}")
+    sp = []
+    from unicorn import UC_HOOK_CODE
+    h = b.mu.hook_add(UC_HOOK_CODE, lambda mu, a, sz, d: sp.append(mu.reg_read(bd.A.UC_ARM_REG_SP)),
+                      begin=bench.sym["rubber_boot"] & ~1, end=bench.sym["rubber_boot"] & ~1)
+    b.call(bench.sym["rb_load_poll"], limit=2_000_000_000)
+    b.mu.hook_del(h)
+    res.check(rb_state(bench) == 1 and rb_label(bench) == "Rubber", f"started from the disk poll: {rb_label(bench)!r}")
+    res.check(sp and 0x30040000 <= sp[0] <= 0x30048000, f"rubber_boot runs on Rubber's own stack ({sp[0]:#x})" if sp else "rubber_boot ran")
+    res.check(b.u32(RB_BKP + 16) == 0 and b.u32(RB_BKP + 20) == 0, "boot mark and stage cleared after the start")
     if rb_state(bench) != 1:
         return
     sr, n_src = 48000, 48000 * 2
@@ -2567,6 +2576,126 @@ def t_rubber_engine(bench, res):
     hz = ups * sr / max(1, len(tail))
     res.check(205 < hz < 235, f"pitch kept at 0.8x tempo: {hz:.0f} Hz (input 220 Hz)")
 
+
+
+def t_rubber_broken_left_alone(bench, res):
+    """A payload whose start crashed is not rewritten: that turned one crash into one per preset load."""
+    pay = rb_payload(bench)
+    if pay is None:
+        res.check(False, "BBRUBBER payload beside the image")
+        return
+    b = bench.b
+    b.mu.mem_write(RB_B2, bytes(pay))
+    b.mu.mem_write(RB_B2 + 0xC0000, struct.pack("<II", 0x43424252, ~0x43424252 & 0xFFFFFFFF))
+    rb_bkp(bench, booting=0x544F4252)
+    b.call(bench.sym["rb_pair"])
+    res.check(rb_state(bench) == 4, f"broken ({rb_state(bench)})")
+    b.mu.mem_write(0x240021A4 + 0x15, b"\x01")
+    FakeFile(b, "BBRUBBER.BIN", pay)
+    fm = FlashModel(b)
+    b.watch(bench.sym["rubber_boot"])
+    rb_poll(bench)
+    rb_poll(bench)
+    fm.close()
+    res.check(not fm.erased and not fm.words and not fm.reset, "loader leaves it: no erase, no write, no restart")
+    res.check(b.u32(RB_BKP + 16) == 0x544F4252, "boot mark kept")
+    res.check(b.calls[bench.sym["rubber_boot"] & ~1] == 0, "not started")
+
+
+def t_rubber_stage_label(bench, res):
+    """A boot that died mid-stage: the next boot names the stage after the label."""
+    b = bench.b
+    rb_bkp(bench)
+    b.w32(RB_BKP + 20, 0x32)                    # died erasing sector 2
+    b.call(bench.sym["rb_pair"])
+    res.check(rb_label(bench) == "Rubber! 32", f"label {rb_label(bench)!r}")
+    res.check(b.u32(RB_BKP + 20) == 0, "stage cleared")
+    b.call(bench.sym["rb_pair"])
+    res.check(rb_label(bench) == "Rubber!", f"next clean boot: {rb_label(bench)!r}")
+
+
+def diag_tools_label(bench):
+    """Run cpu_tools with a stub label setter; return the middle label's text."""
+    b = bench.b
+    got = {}
+    b.stub(0x080A3DEC, lambda bb: got.__setitem__(bb.arg(0), bb.cstr(bb.arg(1))))
+    space, text = 0x2001E1A0, b.put_cstr(0x2001E300, "12.3 GB")
+    b.call(bench.sym["cpu_tools"], space, text)
+    b.unstub(0x080A3DEC)
+    return got.get(space - 0xA0), got.get(space)
+
+
+def t_diag_cpu_meter(bench, res):
+    b = bench.b
+    clock = [0]
+    b.w32(0xE0001004, 0)
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    period, busy = 2_560_000, 1_000_000
+
+    def receive(bb):
+        clock[0] += period - busy               # idle until the next block
+        bb.w32(0xE0001004, clock[0])
+        return 1
+
+    b.stub(0x08088756, receive)
+    for _ in range(400):
+        b.call(bench.sym["cpu_wait"], 0, 0, 0, 0)
+        clock[0] += busy                        # the render
+        b.w32(0xE0001004, clock[0])
+    mid, space = diag_tools_label(bench)
+    res.check(space == "12.3 GB", f"free space still set ({space!r})")
+    res.check(mid == "39/39%", f"load {mid!r} (1.0M of 2.56M cycles = 39%)")
+    res.check(b.u32(0x50003004) & (1 << 9), "watchdog early wakeup armed")
+
+
+def t_diag_fault_record(bench, res):
+    """A fault: the handler records PC/LR/CFSR and the stage, resets; the next boot shows it on Tools."""
+    b = bench.b
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    b.w32(RB_BKP + 20, 0x11)                    # in rubber_boot
+    frame = 0x2001E000
+    b.mu.mem_write(frame, struct.pack("<8I", 1, 2, 3, 4, 12, 0x08123457, 0x08123456, 0x01000000))
+    b.w32(0xE000ED28, 0x00008200)               # CFSR: precise bus fault, BFAR valid
+    b.w32(0xE000ED38, 0x0C000000)
+    flushed = []
+    from unicorn import UC_HOOK_MEM_WRITE
+    h = b.mu.hook_add(UC_HOOK_MEM_WRITE, lambda mu, acc, a, sz, v, d: flushed.append(v), begin=0xE000EF68, end=0xE000EF6B)
+    stopped = [False]
+
+    def on_aircr(mu, access, addr, size, value, data):
+        if value & 4:
+            stopped[0] = True
+            mu.emu_stop()
+
+    h2 = b.mu.hook_add(UC_HOOK_MEM_WRITE, on_aircr, begin=0xE000ED0C, end=0xE000ED0F)
+    try:
+        b.call(bench.sym["fault_record"], frame, 0xFFFFFFFD)
+    except RuntimeError:
+        pass
+    b.mu.hook_del(h)
+    b.mu.hook_del(h2)
+    r = [b.u32(RB_BKP + 0x40 + 4 * i) for i in range(12)]
+    res.check(r[0] == 0x31544C46 and r[1] == 0x08123456 and r[2] == 0x08123457, f"PC/LR recorded {[hex(x) for x in r[:3]]}")
+    res.check(r[4] == 0x8200 and r[7] == 0x0C000000 and r[11] == 0x11, f"CFSR, BFAR, stage {hex(r[4])} {hex(r[7])} {hex(r[11])}")
+    res.check(stopped[0], "reset requested")
+    res.check(0x38800040 in flushed and 0x38800060 in flushed, "record cleaned out of the data cache before the reset")
+    b.call(bench.sym["rb_pair"])                # the next boot
+    mid, _ = diag_tools_label(bench)
+    res.check(mid == "F08123456", f"Tools shows the fault PC: {mid!r}")
+    res.check(rb_label(bench) == "Rubber! 11", f"Rubber label names the stage: {rb_label(bench)!r}")
+    b.call(bench.sym["rb_pair"])                # and the one after
+    mid, _ = diag_tools_label(bench)
+    res.check(mid != "F08123456", f"gone one boot later: {mid!r}")
+
+
+def t_diag_vectors(bench, res):
+    img = bench.b.image
+    h = bench.sym["fault_handler"] | 1
+    vec = [struct.unpack_from("<I", img, off)[0] for off in (0x0C, 0x10, 0x14, 0x18, 0x40)]
+    res.check(vec[:4] == [h] * 4, f"fault vectors -> fault_handler {[hex(v) for v in vec[:4]]}")
+    res.check(vec[4] == bench.sym["wdg_handler"] | 1, f"IRQ 0 -> wdg_handler {vec[4]:#x}")
 
 
 def main():
@@ -2637,6 +2766,11 @@ def main():
             ("Rubber card loader writes bank 2", t_rubber_loader),
             ("Rubber card loader refuses", t_rubber_loader_refuses),
             ("Rubber engine renders (emu build)", t_rubber_engine),
+            ("Rubber broken start is left alone", t_rubber_broken_left_alone),
+            ("Rubber stage of a dead boot on the label", t_rubber_stage_label),
+            ("Rubber diag: CPU meter on Tools", t_diag_cpu_meter),
+            ("Rubber diag: fault recorder", t_diag_fault_record),
+            ("Rubber diag: vectors", t_diag_vectors),
         ]
     if "mix_tick" in sym:
         cases += [

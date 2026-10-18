@@ -1,7 +1,7 @@
 /* Pairing: is bank 2 the payload this image was linked with, all of it, readable? Runs once per
  * boot from state_init (repitch.S), before the audio engine can reach the Rubber voice. On
- * success it boots bank 2 (rubber_boot) and marks the voice READY; otherwise Rubber plays stock
- * grains and its list label reads "Rubber!". */
+ * success the voice is PAIRED, and rb_start (from the disk task) boots bank 2 and marks it
+ * READY; otherwise Rubber plays stock grains and its list label reads "Rubber!". */
 #include "b2.h"
 
 #define RCC_AHB4ENR (*(volatile uint32_t *)0x580244e0u)
@@ -53,15 +53,39 @@ int rb_b2_intact(void)
     return sum == rb_expect_sum && !(FLASH_SR2 & FLASH_ECC);
 }
 
+void rb_stage(uint32_t stage)
+{
+    rb_bkp_put(RB_BKP_STAGE, stage);
+}
+
+void rb_bkp_flush(void)
+{
+    uint32_t a;
+    for (a = RB_BKP; a < RB_BKP + 0x100u; a += 32u)
+        DCCMVAC = a;
+    __asm__ volatile("dsb\n isb");
+}
+
+static const char hex_digit[] = "0123456789abcdef";
+
+/* "Rubber!" or "Rubber!" plus the stage the boot before died in: "Rubber! 30" = while erasing. */
 static void label(RbVoice *v, const char *s)
 {
+    uint32_t last = rb_bkp_get(RB_BKP_LAST);
     int i = 0;
-    for (; s[i] && i < 15; i++)
+    for (; s[i] && i < 11; i++)
         v->label[i] = s[i];
+    if (last && last < 0x100u) {
+        v->label[i++] = ' ';
+        v->label[i++] = hex_digit[(last >> 4) & 15u];
+        v->label[i++] = hex_digit[last & 15u];
+    }
     v->label[i] = 0;
 }
 
-/* Called by state_init every boot. SRAM4 survives a soft reset, so the voice is reset here. */
+/* Called by state_init every boot, while the app is being built (screen task). SRAM4 survives a
+ * soft reset, so the voice is reset here. This only checks bank 2; rb_start runs it later, from
+ * the disk task, once the unit is up. */
 void rb_pair(void)
 {
     RbVoice *v = (RbVoice *)RB_VOICE;
@@ -73,26 +97,45 @@ void rb_pair(void)
     v->block_done = 0;
     v->prev_active = 0;
     v->avg_cyc = v->peak_cyc = 0;
-    label(v, "Rubber!");
     rb_bkp_enable();
+    diag_boot();                  /* the boot before: crash records, and where it got to */
+    rb_bkp_put(RB_BKP_LAST, rb_bkp_get(RB_BKP_STAGE));
+    rb_stage(0);
+    label(v, "Rubber!");
     if (rb_bkp_get(RB_BKP_MARK) != RB_MARK_SCAN) {
         /* A read of a bad flash word faults; the mark tells the next boot to keep off. */
         rb_bkp_put(RB_BKP_MARK, RB_MARK_SCAN);
+        rb_stage(RB_SG_SCAN);
         ok = rb_b2_intact();
         rb_bkp_put(RB_BKP_MARK, 0);
+        rb_stage(0);
     }
     if (ok && rb_bkp_get(RB_BKP_BOOTING) == RB_MARK_BOOT) {
-        /* The last boot never came back from rubber_boot: keep Rubber off rather than loop.
-         * A new payload (the loader clears the mark after writing one) gets a fresh try. */
+        /* The last start never came back from rubber_boot: keep Rubber off rather than loop.
+         * The payload is intact, so the loader leaves it alone; a different BBRUBBER.BIN
+         * (another build) is what clears this. */
         label(v, "Rubber!!");
-        ok = 0;
-    } else if (ok) {
-        const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
-        rb_bkp_put(RB_BKP_BOOTING, RB_MARK_BOOT);
-        ((rb_boot_fn)h->boot)();
-        rb_bkp_put(RB_BKP_BOOTING, 0);
+        v->state = RB_ST_BROKEN;
+    } else {
+        if (ok)
+            label(v, "Rubber..");   /* intact, starting once the unit is up */
+        v->state = ok ? RB_ST_PAIRED : RB_ST_ABSENT;
     }
-    v->state = ok ? RB_ST_READY : RB_ST_ABSENT;
+}
+
+void rb_start(void)
+{
+    RbVoice *v = (RbVoice *)RB_VOICE;
+    const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
+    if (v->magic != RB_VOICE_MAGIC || (v->state & 0xffu) != RB_ST_PAIRED)
+        return;
+    rb_bkp_put(RB_BKP_BOOTING, RB_MARK_BOOT);
+    rb_stage(RB_SG_BOOT);
+    rb_call_on_stack(h->boot, 0, 0, 0, 0);
+    rb_bkp_put(RB_BKP_BOOTING, 0);
+    rb_stage(0);
+    __asm__ volatile("dsb");
+    v->state = (v->state & ~0xffu) | RB_ST_READY;   /* only now may the audio task render */
 }
 
 /* repitch.S hook_lane: may the Rubber voice render? */
@@ -106,7 +149,7 @@ void rb_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
 {
     const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
     if (rb_ready())
-        ((rb_mix_fn)h->mix)(clip, lane, mix, ctx);
+        rb_call_on_stack(h->mix, clip, lane, mix, ctx);
 }
 
 /* The expectations the build fills in (b2_finish in build_patch.py). In .rodata, so in the cave. */

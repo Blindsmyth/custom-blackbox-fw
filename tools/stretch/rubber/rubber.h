@@ -49,5 +49,12 @@ typedef struct RbVoice {
 #define RB_ST_UNKNOWN  0u
 #define RB_ST_READY    1u             /* paired and booted: hook_lane may render */
 #define RB_ST_ABSENT   2u             /* no valid payload in bank 2: Rubber plays stock grains */
+#define RB_ST_PAIRED   3u             /* payload intact, not started yet (b2pair.c rb_start) */
+#define RB_ST_BROKEN   4u             /* payload intact, but the last start never came back: off */
+
+/* Rubber Band runs on its own stack at the top of SRAM1-3 (rb_call_on_stack, rubber_cave.S),
+ * not on the audio or disk task's: its render needs ~5 KB. rubber.ld keeps .data/.bss below. */
+#define RB_STACK_TOP   0x30048000u
+#define RB_STACK_SIZE  0x00008000u
 
 #endif

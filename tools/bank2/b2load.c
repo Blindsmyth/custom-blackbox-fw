@@ -87,6 +87,7 @@ static int file_ok(void)
     int ok = 0, i;
     if (!src_open(&s))
         return 0;
+    rb_stage(RB_SG_FILE);
     if (src_word(&s, w) && header_ok(w)) {
         len = w[2];
         sum = w[4] + w[5] + w[6] + w[7];
@@ -99,6 +100,7 @@ static int file_ok(void)
         ok = at >= len && sum == rb_expect_sum;
     }
     fw_f_close(s.fil);
+    rb_stage(0);
     return ok;
 }
 
@@ -188,6 +190,7 @@ static int owned(void)
 {
     int ok;
     rb_bkp_put(RB_BKP_MARK, RB_MARK_SCAN);
+    rb_stage(RB_SG_CLAIM);
     ok = claimed();
     if (!ok && virgin()) {
         ok = flash_unlock() && flash_word(RB_B2_CLAIM_AT, claim_word);
@@ -195,6 +198,7 @@ static int owned(void)
         ok = ok && claimed();
     }
     rb_bkp_put(RB_BKP_MARK, 0);
+    rb_stage(0);
     return ok;
 }
 
@@ -209,9 +213,11 @@ static int program(void)
     ok = src_word(&s, first) && header_ok(first) && flash_unlock();
     len = first[2];
     for (sector = 0; ok && sector * RB_B2_SECTOR < len; sector++) {
+        rb_stage(RB_SG_ERASE + sector);
         ok = flash_erase(sector);
         stamp();
     }
+    rb_stage(RB_SG_WRITE);
     for (at = 32u; ok && at < len; at += 32u) {
         ok = src_word(&s, w) && flash_word(at, w);
         if (!(at & 0x1fffu))
@@ -226,6 +232,7 @@ static int program(void)
     ICIALLU = 0;
     __asm__ volatile("dsb\n isb");
     stamp();
+    rb_stage(0);
     return ok;
 }
 
@@ -234,16 +241,26 @@ static uint32_t tries_key(void)
     return rb_expect_id ^ rb_expect_sum ^ 0x54524952u;
 }
 
-/* b2load_thunk calls this from pcmStreamer before each file-command step. */
+/* b2load_thunk calls this from pcmStreamer before each file-command step. It also starts a
+ * paired bank 2 (rb_start): here the unit is fully up, and this task may take its time. */
 void rb_load_poll(void)
 {
     RbVoice *v = (RbVoice *)RB_VOICE;
     uint32_t n;
-    if (v->magic != RB_VOICE_MAGIC || (v->state & RB_ST_LOOKED) || CARD_FOUND != 1u)
+    if (v->magic != RB_VOICE_MAGIC)
+        return;
+    if ((v->state & 0xffu) == RB_ST_PAIRED) {
+        rb_start();
+        return;
+    }
+    if ((v->state & RB_ST_LOOKED) || CARD_FOUND != 1u)
         return;
     if ((v->state & 0xffu) == RB_ST_UNKNOWN)
         return;                       /* pairing has not run yet: ask again next step */
     v->state |= RB_ST_LOOKED;         /* before anything else: one go per boot */
+    /* Only a bank 2 without this image's payload is written. READY, and BROKEN (intact, but its
+     * start crashed), are left alone: rewriting the same payload cannot help, and clearing the
+     * boot mark with it is what turned one crash into a crash on every preset load. */
     if ((v->state & 0xffu) != RB_ST_ABSENT || !file_ok() || !owned())
         return;
     n = rb_bkp_get(RB_BKP_TRIES_ID) == tries_key() ? rb_bkp_get(RB_BKP_TRIES_N) : 0u;
@@ -254,12 +271,16 @@ void rb_load_poll(void)
     if (!program())
         return;
     rb_bkp_put(RB_BKP_MARK, RB_MARK_SCAN);
+    rb_stage(RB_SG_VERIFY);
     n = (uint32_t)rb_b2_intact();
     rb_bkp_put(RB_BKP_MARK, 0);
+    rb_stage(0);
     if (!n)
         return;
     rb_bkp_put(RB_BKP_TRIES_N, 0);
     rb_bkp_put(RB_BKP_BOOTING, 0);        /* a new payload gets a fresh boot */
+    rb_stage(0);
+    rb_bkp_flush();
     __asm__ volatile("dsb");
     AIRCR = (0x5fau << 16) | (1u << 2);   /* SYSRESETREQ: boot again with bank 2 in place */
     for (;;)

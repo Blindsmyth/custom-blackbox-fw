@@ -1,7 +1,7 @@
 /* 3.1.R: one link, two flash banks.
  *
  * CAVE  - bank 1 after the stock image; the SD installer refuses an image past 0x08100000.
- *         Only the cave asm and tools/bank2 go here: bank 1 must run without bank 2.
+ *         Only the cave asm, tools/bank2 and tools/diag go here: bank 1 must run without bank 2.
  * BANK2 - flash bank 2 sectors 0-5 (0x08100000, 768 KB), programmed from BBRUBBER.BIN by the card
  *         loader. Sector 6 holds the loader's claim word, sector 7 is factory calibration: neither
  *         is in this region.
@@ -12,7 +12,7 @@
 MEMORY {
   CAVE  (rx)  : ORIGIN = 0x080F1E80, LENGTH = 0x08100000 - 0x080F1E80
   BANK2 (rx)  : ORIGIN = 0x08100000, LENGTH = 0x000C0000
-  B2RAM (rwx) : ORIGIN = 0x30000000, LENGTH = 0x00048000
+  B2RAM (rwx) : ORIGIN = 0x30000000, LENGTH = 0x00040000   /* top 32 KB: Rubber's stack (rubber.h) */
 }
 ENTRY(hook_register)
 SECTIONS {
@@ -21,6 +21,7 @@ SECTIONS {
     *rubber_cave.o(.rodata .rodata.*)
     KEEP(*b2pair.o(.text .text.* .rodata .rodata.*))
     KEEP(*b2load.o(.text .text.* .rodata .rodata.*))
+    KEEP(*diag.o(.text .text.* .rodata .rodata.*))
   } > CAVE
 
   .b2head : { KEEP(*(.b2head)) } > BANK2

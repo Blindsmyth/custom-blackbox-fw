@@ -24,10 +24,25 @@ The Warp list shows Rubber's state in its label:
 
 | Label | Meaning |
 | --- | --- |
+| `Rubber..` | Bank 2 paired, starting (Rubber Band starts from the disk task once the unit is up, normally before you get to it) |
 | `Rubber` | Bank 2 paired and running |
 | `Rubber 58%` | Same, with the last second's Rubber CPU share of the audio block (after one second of playing) |
 | `Rubber!` | Bank 2 is empty, damaged or from another build: Rubber plays stock Stretch grains |
-| `Rubber!!` | The previous boot never came back from starting bank 2. Rubber stays off until a new `BBRUBBER.BIN` is programmed |
+| `Rubber!!` | A previous boot never came back from starting Rubber Band. Rubber stays off, and the loader leaves bank 2 alone, until a `BBRUBBER.BIN` from another build is programmed |
+| `Rubber! 30` … | Any label with two hex digits after it: the boot before died at that stage. `10` pairing scan, `11` starting Rubber Band, `20` reading the card file, `21` claim, `30`–`35` erasing sector 0–5, `38` writing, `3a` verifying |
+
+## Crash report and CPU meter (Tools bar)
+
+The empty middle label of the Tools screen's bottom bar (left of the free space) shows:
+
+| Text | Meaning |
+| --- | --- |
+| `34/71%` | Audio load since the last look at Tools: average / worst block. Over 100 % = the render did not fit |
+| `34/71%+3` | Same, plus 3 blocks that came more than 1.5× late |
+| `F0810abcd` | The boot before crashed with a fault at that address (shown for one boot only: note it down) |
+| `W0810abcd` | The boot before was reset by the watchdog while running that address |
+
+The fault recorder and meter are ported from blackbox-mod (`reference/blackbox-mod/src/fault.c`, `cpu.c`, MIT, © 2026 Justin Joe) into `tools/diag/diag.c`.
 
 ## Safety
 
@@ -35,12 +50,15 @@ The Warp list shows Rubber's state in its label:
 - Bank 2 is only erased when it is blank or carries our claim. Anything else there is left alone (Rubber then shows `Rubber!`).
 - The whole file is summed before anything is erased. The header is written last, so a cut-off write reads as "no payload".
 - At most two programming attempts per payload (counted in backup SRAM). A boot that faults reading bank 2 leaves a mark, so the next boot keeps off it.
+- A payload whose start crashed is never rewritten (rewriting the same one can't help, and in the first 3.1.R it made every preset load re-flash and restart).
+- Rubber Band runs on its own 32 KB stack at the top of SRAM1–3, not on the audio or disk task's.
 - Bank 1 never calls into bank 2 until the pairing check passed. **Recovery:** flash stock `firmware/bins/3.1.9/BLACKBOX.bin`; bank 2 is then simply unused.
 
 ## Memory
 
 - Rubber Band's heap: the top 1 MB of SDRAM (`0xC3F00000`–`0xC4000000`). The stock sample stack starts below it (patched `0xC4000000` → `0xC3F00000` at `0x08044498` and in `.data` at `0x080F1E08`), so samples get 1 MB less.
-- Bank 2's `.data`/`.bss`: SRAM1 (`0x30000000`).
+- Bank 2's `.data`/`.bss`: SRAM1 (`0x30000000`), below Rubber's stack (`0x30040000`–`0x30048000`).
+- Diagnostics: SRAM4 `0x38007100`, crash records in backup SRAM `0x38800040`–`0x388000DF`.
 - Voice state and label: SRAM4 `0x38007000` (`RbVoice`, `tools/stretch/rubber/rubber.h`).
 
 ## Build

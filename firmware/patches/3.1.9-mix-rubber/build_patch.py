@@ -32,6 +32,7 @@ base = mix.base
 
 RUBBER = ROOT / "tools" / "stretch" / "rubber"
 BANK2 = ROOT / "tools" / "bank2"
+DIAG = ROOT / "tools" / "diag"
 CMSIS = RUBBER / "cmsis"
 RB = RUBBER / "rubberband"
 BUILD = RUBBER / "build"
@@ -84,9 +85,9 @@ def compile_all(rb_id):
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
          "-I", MIX_DIR, "-I", mix.BASE_DIR, "-c", "-o", cave_o, HERE / "rubber_cave.S"])
     objs.append(cave_o)
-    for src in ("b2pair.c", "b2load.c"):
-        o = BUILD / src.replace(".c", ".o")
-        run([GCC, *BANK1_C, "-I", BANK2, "-I", RUBBER, "-c", "-o", o, BANK2 / src])
+    for src in (BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"):
+        o = BUILD / (src.stem + ".o")
+        run([GCC, *BANK1_C, "-I", BANK2, "-I", RUBBER, "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u"]
     inc = ["-I", RUBBER, "-I", RB, "-I", RB / "src", "-I", CMSIS / "Include"]
@@ -109,7 +110,7 @@ def compile_all(rb_id):
 
 def bank1_has_no_ram(objs):
     """Cave code has nowhere to keep .data/.bss: they would land in bank 2's SRAM1 block."""
-    for o in objs[:3]:
+    for o in objs[:4]:
         out = subprocess.check_output([str(T / "arm-none-eabi-size"), "-A", str(o)], text=True)
         for line in out.splitlines():
             parts = line.split()
@@ -189,6 +190,15 @@ def add_rubber_sites(stock):
         *[(va, "b2load_thunk", True, stock_bl(stock, va, 0x08092F5C))
           for va in (0x0807443E, 0x0807446E, 0x080744D8)],     # pcmStreamer file steps: card loader
         (0x08044498, "sdram_top_thunk", False, "4ff04442"),      # sample stack empty: top 0xC3F00000
+        (0x080414E4, "cpu_wait", True, stock_bl(stock, 0x080414E4, 0x08088756)),   # audio wait: CPU meter
+        (0x080C52A4, "cpu_tools", True, stock_bl(stock, 0x080C52A4, 0x080A3DEC)),  # Tools bar: load / crash
+    ])
+    mix.VTABLE.extend([                                           # crash recorder (tools/diag/diag.c)
+        (0x0804000C, "fault_handler", 0x08046267),                # HardFault
+        (0x08040010, "fault_handler", 0x08046269),                # MemManage
+        (0x08040014, "fault_handler", 0x0804626B),                # BusFault
+        (0x08040018, "fault_handler", 0x0804626D),                # UsageFault
+        (0x08040040, "wdg_handler", 0x080402AB),                  # IRQ 0 WWDG1: early wakeup
     ])
     mix.BYTES.append((0x080F1E08, "0000f0c3", "000000c4"))      # .data: sample stack top at boot
 

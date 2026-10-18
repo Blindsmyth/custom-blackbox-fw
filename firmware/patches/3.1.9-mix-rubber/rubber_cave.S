@@ -35,3 +35,26 @@ sdram_top_thunk:
     ldr     r12, =0x0804449D
     bx      r12
 .ltorg
+
+@ rb_call_on_stack(fn, a, b, c, d): fn(a, b, c, d) on Rubber's own stack, the top 32 KB of SRAM1-3
+@ (tools/stretch/rubber/rubber.h RB_STACK_TOP). Rubber Band's render needs ~5 KB of stack, which
+@ the audio task cannot spare on top of the stock render chain it is called from. Thread mode,
+@ so this moves the task's PSP; a preemption saves and restores it like any other. Only one task
+@ is ever in here: the disk task for rubber_boot, then the audio task once the voice is READY.
+.global rb_call_on_stack
+.thumb_func
+rb_call_on_stack:
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    ldr     r5, [sp, #16]               @ d
+    mov     r0, r1
+    mov     r1, r2
+    mov     r2, r3
+    mov     r3, r5
+    mov     r6, sp
+    ldr     r5, =0x30048000
+    mov     sp, r5
+    blx     r4
+    mov     sp, r6
+    pop     {r4, r5, r6, pc}
+.ltorg

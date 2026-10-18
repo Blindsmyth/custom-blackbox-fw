@@ -32,6 +32,29 @@ extern const volatile uint32_t rb_expect_sum;
 #define RB_MARK_BOOT    0x544f4252u   /* "RBOT": a boot that died in bank 2 leaves this */
 #define RB_MAX_TRIES    2u
 
+/* Where the last boot got to (rb_stage). A boot that dies leaves its stage here; the next boot
+ * moves it to RB_BKP_LAST and shows it after the Rubber label ("Rubber!! 11"). 0 = nothing in
+ * flight. */
+#define RB_BKP_STAGE    (RB_BKP + 20u)
+#define RB_BKP_LAST     (RB_BKP + 24u)
+#define RB_SG_SCAN      0x10u   /* b2pair: reading bank 2 for the pairing check */
+#define RB_SG_BOOT      0x11u   /* b2pair: rubber_boot (bank 2) */
+#define RB_SG_FILE      0x20u   /* b2load: reading BBRUBBER.BIN */
+#define RB_SG_CLAIM     0x21u   /* b2load: blank check / claim word */
+#define RB_SG_ERASE     0x30u   /* + sector */
+#define RB_SG_WRITE     0x38u   /* b2load: programming */
+#define RB_SG_VERIFY    0x3au   /* b2load: rescan after programming */
+
+/* Crash records (tools/diag/diag.c), after ours and below 0x38800100. Each has a live copy the
+ * handlers write and a saved copy that rb_pair latches once per boot, so the boot after a crash
+ * can show it (Tools bar) while the running unit never overwrites it. */
+#define RB_BKP_FAULT    (RB_BKP + 0x40u)   /* 12 words: magic, PC, LR, xPSR, CFSR, HFSR, MMFAR, BFAR, EXC_RETURN, SP, frame ok, stage */
+#define RB_BKP_FAULT_SV (RB_BKP + 0x70u)   /* 12 words */
+#define RB_BKP_WDG      (RB_BKP + 0xa0u)   /* 8 words: magic, PC, LR, xPSR, stamp A age, stamp B age, counter, stage */
+#define RB_BKP_WDG_SV   (RB_BKP + 0xc0u)   /* 8 words, ends at RB_BKP + 0xe0 */
+#define RB_FAULT_MAGIC  0x31544c46u        /* "FLT1" */
+#define RB_WDG_MAGIC    0x31474457u        /* "WDG1" */
+
 #define FLASH_KEYR2 (*(volatile uint32_t *)0x52002104u)
 #define FLASH_CR2   (*(volatile uint32_t *)0x5200210cu)
 #define FLASH_SR2   (*(volatile uint32_t *)0x52002110u)
@@ -44,5 +67,16 @@ uint32_t rb_bkp_get(uint32_t at);
 
 /* Read the header and every word of bank 2 under the ECC flags. 1 = intact and ours. */
 int rb_b2_intact(void);
+
+/* Note the stage in backup SRAM (written through to the SRAM, so a crash keeps it). */
+void rb_stage(uint32_t stage);
+/* Clean every cache line of backup SRAM out to the SRAM (before a reset). */
+void rb_bkp_flush(void);
+/* rubber_cave.S: fn(a, b, c, d) on Rubber's own stack (RB_STACK_TOP). */
+void rb_call_on_stack(uint32_t fn, unsigned a, unsigned b, unsigned c, unsigned d);
+/* b2pair.c, from the card loader's poll (pcmStreamer): start bank 2 once pairing found it. */
+void rb_start(void);
+/* diag.c, once per boot from rb_pair: latch the crash records of the boot before. */
+void diag_boot(void);
 
 #endif
