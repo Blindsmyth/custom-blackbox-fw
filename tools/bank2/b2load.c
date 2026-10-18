@@ -50,6 +50,11 @@ typedef int (*f_close_fn)(void *file);
 #define RB_ST_LOOKED 0x100u
 
 static const char RB_FILE[] = "BBRUBBER.BIN";
+/* Opt-in files in the card root. Bank 2 holding someone else's payload (blackbox-mod uses the
+ * same sectors, with its own claim word "BB2C") is left alone unless RB_TAKE is there; RB_FREE
+ * erases ours and leaves bank 2 blank, which blackbox-mod's loader accepts again. */
+static const char RB_TAKE[] = "RBTAKE.TXT";
+static const char RB_FREE[] = "RBFREE.TXT";
 static const uint32_t claim_word[8] = { RB_CLAIM, ~RB_CLAIM, 1u, 0, 0, 0, 0, 0 };
 
 static void stamp(void)
@@ -59,12 +64,26 @@ static void stamp(void)
 
 typedef struct { uint32_t fil[FIL_BYTES / 4]; } Src;
 
-static int src_open(Src *s)
+static int open_named(Src *s, const char *name)
 {
     unsigned i;
     for (i = 0; i < FIL_BYTES / 4; i++)
         s->fil[i] = 0;
-    return fw_f_open(s->fil, RB_FILE, FA_READ) == 0;
+    return fw_f_open(s->fil, name, FA_READ) == 0;
+}
+
+static int src_open(Src *s)
+{
+    return open_named(s, RB_FILE);
+}
+
+static int file_there(const char *name)
+{
+    Src s;
+    if (!open_named(&s, name))
+        return 0;
+    fw_f_close(s.fil);
+    return 1;
 }
 
 static int src_word(Src *s, uint32_t w[8])
@@ -135,10 +154,20 @@ static void flash_lock(void)
     FLASH_CR2 = CR_PSIZE64 | CR_LOCK;
 }
 
+/* Sectors 0-5; sector 6 (the claim word) only when claim_too says so: taking bank 2 over or
+ * giving it back. Sector 7, factory calibration, never. */
+static int flash_erase_in(unsigned sector, int claim_too);
+
 static int flash_erase(unsigned sector)
 {
+    return flash_erase_in(sector, 0);
+}
+
+static int flash_erase_in(unsigned sector, int claim_too)
+{
     int ok;
-    if (sector >= RB_B2_LIMIT / RB_B2_SECTOR || !flash_wait(SPINS_WORD))
+    unsigned limit = (claim_too ? RB_B2_END : RB_B2_LIMIT) / RB_B2_SECTOR;
+    if (sector >= limit || sector >= 7u || !flash_wait(SPINS_WORD))
         return 0;
     FLASH_CR2 = CR_PSIZE64 | CR_SER | (sector << 8);
     FLASH_CR2 = CR_PSIZE64 | CR_SER | (sector << 8) | CR_START;
@@ -186,21 +215,70 @@ static int virgin(void)
     return 1;
 }
 
-/* Is bank 2 ours to erase? Ours = our claim, or blank (then claim it). Anything else is left. */
-static int owned(void)
+/* Erase sectors 0-6: everything a payload and a claim word can be in. */
+static int erase_all(void)
 {
-    int ok;
-    rb_bkp_put(RB_BKP_MARK, RB_MARK_SCAN);
-    rb_stage(RB_SG_CLAIM);
-    ok = claimed();
-    if (!ok && virgin()) {
-        ok = flash_unlock() && flash_word(RB_B2_CLAIM_AT, claim_word);
-        flash_lock();
-        ok = ok && claimed();
+    unsigned sector;
+    int ok = flash_unlock();
+    for (sector = 0; ok && sector * RB_B2_SECTOR < RB_B2_END; sector++) {
+        rb_stage(RB_SG_ERASE + sector);
+        ok = flash_erase_in(sector, 1);
+        stamp();
     }
-    rb_bkp_put(RB_BKP_MARK, 0);
+    flash_lock();
+    for (sector = 0; sector < RB_B2_END; sector += 32u)
+        DCIMVAC = RB_B2_BASE + sector;
     rb_stage(0);
     return ok;
+}
+
+#define OWN_NOT   0   /* someone else's: left alone */
+#define OWN_OURS  1   /* our claim */
+#define OWN_BLANK 2   /* erased: claim it */
+#define OWN_TAKE  3   /* someone else's, and RBTAKE.TXT says take it */
+
+/* Whose is bank 2? Reads only (under the scan mark: a bad word faults). */
+static int probe(void)
+{
+    int own;
+    rb_bkp_put(RB_BKP_MARK, RB_MARK_SCAN);
+    rb_stage(RB_SG_CLAIM);
+    own = claimed() ? OWN_OURS : virgin() ? OWN_BLANK : OWN_NOT;
+    rb_bkp_put(RB_BKP_MARK, 0);
+    rb_stage(0);
+    if (own == OWN_NOT && file_there(RB_TAKE))
+        own = OWN_TAKE;
+    return own;
+}
+
+/* Make bank 2 ours: erase it all first when taking it over, then write the claim word. */
+static int claim(int own)
+{
+    int ok;
+    if (own == OWN_OURS)
+        return 1;
+    if (own == OWN_TAKE && !erase_all())
+        return 0;
+    ok = flash_unlock() && flash_word(RB_B2_CLAIM_AT, claim_word);
+    flash_lock();
+    return ok && claimed();
+}
+
+/* RBFREE.TXT: give bank 2 back. Only ours is erased; the voice stops first. pcmStreamer runs
+ * below the audio task, so no render is under way while this runs, and the next block sees
+ * Rubber off. Returns 1 if the file is there (then nothing else is written this boot). */
+static int release(RbVoice *v)
+{
+    if (!file_there(RB_FREE))
+        return 0;
+    if (!claimed()) {
+        rb_note('f');                     /* already not ours */
+        return 1;
+    }
+    v->state = (v->state & ~0xffu) | RB_ST_ABSENT;
+    __asm__ volatile("dsb");
+    rb_note(erase_all() && virgin() ? 'f' : 'e');
+    return 1;
 }
 
 static int program(void)
@@ -248,6 +326,7 @@ void rb_load_poll(void)
 {
     RbVoice *v = (RbVoice *)RB_VOICE;
     uint32_t n;
+    int own;
     if (v->magic != RB_VOICE_MAGIC)
         return;
     if ((v->state & 0xffu) == RB_ST_PAIRED) {
@@ -259,6 +338,8 @@ void rb_load_poll(void)
     if ((v->state & 0xffu) == RB_ST_UNKNOWN)
         return;                       /* pairing has not run yet: ask again next step */
     v->state |= RB_ST_LOOKED;         /* before anything else: one go per boot */
+    if (release(v))
+        return;
     if ((v->state & 0xffu) == RB_ST_ABSENT)
         rb_note('.');                     /* looked; replaced by the verdict below */
     /* Only a bank 2 without this image's payload is written. READY, and BROKEN (intact, but its
@@ -272,8 +353,9 @@ void rb_load_poll(void)
         rb_note(n ? '?' : '-');           /* '-' no BBRUBBER.BIN, '?' another build's or damaged */
         return;
     }
-    if (!owned()) {
-        rb_note('x');                     /* bank 2 holds something that is not ours: left alone */
+    own = probe();
+    if (own == OWN_NOT) {
+        rb_note('x');                     /* someone else's payload (RBTAKE.TXT to replace it) */
         return;
     }
     n = rb_bkp_get(RB_BKP_TRIES_ID) == tries_key() ? rb_bkp_get(RB_BKP_TRIES_N) : 0u;
@@ -283,6 +365,10 @@ void rb_load_poll(void)
     }
     rb_bkp_put(RB_BKP_TRIES_ID, tries_key());
     rb_bkp_put(RB_BKP_TRIES_N, n + 1u);   /* before the write: one that kills the boot counts */
+    if (!claim(own)) {
+        rb_note('e');
+        return;
+    }
     if (!program()) {
         rb_note('e');                     /* the flash reported an error */
         return;

@@ -2394,7 +2394,8 @@ class FlashModel:
         elif addr == 0x5200210C and (value & 0x84) == 0x84:    # SER | START
             sector = (value >> 8) & 7
             self.erased.append(sector)
-            if sector >= 6:
+            self.sectors6 = getattr(self, "sectors6", 0) + (sector == 6)
+            if sector >= 7:
                 self.bad.append(f"erase of sector {sector}")
             mu.mem_write(RB_B2 + sector * 0x20000, b"\xff" * 0x20000)
             if self.fail:
@@ -2415,13 +2416,16 @@ class FlashModel:
 class FakeFile:
     """f_open/f_read/f_close serving one file from memory."""
 
-    def __init__(self, b, name, data):
+    def __init__(self, b, name, data, others=()):
         self.b, self.name, self.data, self.pos, self.opens = b, name, data, 0, 0
+        self.others = set(others)
         b.stub(0x08086534, self.f_open)
         b.stub(0x08086866, self.f_read)
         b.stub(0x08086D76, lambda bb: 0)
 
     def f_open(self, b):
+        if b.cstr(b.arg(1)) in self.others:
+            return 0
         if b.cstr(b.arg(1)) != self.name or self.data is None:
             return 4                            # FR_NO_FILE
         self.pos, self.opens = 0, self.opens + 1
@@ -2466,6 +2470,7 @@ def t_rubber_loader(bench, res):
     res.check(got == bytes(pay), "bank 2 holds the payload")
     res.check(b.u32(RB_B2 + 0xC0000) == 0x43424252, "claim word written at sector 6")
     res.check(fm.erased == list(range((len(pay) + 0x1FFFF) // 0x20000)), f"erased sectors {fm.erased}")
+    res.check(not getattr(fm, "sectors6", 0), "claim sector 6 not erased on a blank bank")
     res.check(not fm.bad, f"nothing outside bank 2's payload/claim or registers {fm.bad[:3]}")
     hdr = [i for i, w in enumerate(fm.words) if w == 0]
     res.check(hdr and hdr[0] > max(i for i, w in enumerate(fm.words) if w != 0 and w != 0xC0000),
@@ -2735,6 +2740,68 @@ def t_diag_tools_gui(bench, res):
     res.check(img[off:off + 4] != bytes.fromhex("d6f7c8fc"), "0x080C5264 patched")
 
 
+
+def t_rubber_takeover(bench, res):
+    """Bank 2 holds blackbox-mod's payload: left alone, unless RBTAKE.TXT is on the card."""
+    pay = rb_payload(bench)
+    if pay is None:
+        res.check(False, "BBRUBBER payload beside the image")
+        return
+    b = bench.b
+    other = bytes([0x42, 0x42, 0x32, 0x21]) + bytes(range(256)) * 600
+    b.mu.mem_write(RB_B2, other)
+    b.mu.mem_write(RB_B2 + 0xC0000, struct.pack("<II", 0x43324242, ~0x43324242 & 0xFFFFFFFF))   # "BB2C"
+    calib = bytes(range(256)) * 16
+    b.mu.mem_write(0x081E0000, calib)
+    rb_bkp(bench)
+    rb_loader_boot(bench)
+    FakeFile(b, "BBRUBBER.BIN", pay)
+    fm = FlashModel(b)
+    rb_poll(bench)
+    fm.close()
+    res.check(rb_label(bench) == "Rubber! x" and not fm.erased and not fm.words, f"without RBTAKE.TXT: left alone, {rb_label(bench)!r}")
+    rb_loader_boot(bench)
+    FakeFile(b, "BBRUBBER.BIN", pay, others={"RBTAKE.TXT"})
+    fm = FlashModel(b)
+    rb_poll(bench)
+    fm.close()
+    res.check(fm.reset, "with RBTAKE.TXT: written, restart")
+    res.check(bytes(b.mu.mem_read(RB_B2, len(pay))) == bytes(pay), "payload in bank 2")
+    res.check(b.u32(RB_B2 + 0xC0000) == 0x43424252, "our claim replaced theirs")
+    res.check(sorted(set(fm.erased)) == list(range(7)), f"sectors 0-6 erased {sorted(set(fm.erased))}")
+    res.check(bytes(b.mu.mem_read(0x081E0000, len(calib))) == calib and not fm.bad, f"sector 7 untouched {fm.bad[:2]}")
+    b.call(bench.sym["rb_pair"])
+    res.check(rb_state(bench) == 3, f"next boot pairs ({rb_state(bench)})")
+
+
+def t_rubber_release(bench, res):
+    """RBFREE.TXT: bank 2 erased (ours only), Rubber off, nothing written though BBRUBBER.BIN is there."""
+    pay = rb_payload(bench)
+    if pay is None:
+        res.check(False, "BBRUBBER payload beside the image")
+        return
+    b = bench.b
+    b.mu.mem_write(RB_B2, bytes(pay))
+    b.mu.mem_write(RB_B2 + 0xC0000, struct.pack("<II", 0x43424252, ~0x43424252 & 0xFFFFFFFF))
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    b.w32(RB_VOICE + 8, 1)                      # running
+    b.mu.mem_write(0x240021A4 + 0x15, b"\x01")
+    FakeFile(b, "BBRUBBER.BIN", pay, others={"RBFREE.TXT"})
+    fm = FlashModel(b)
+    rb_poll(bench)
+    fm.close()
+    res.check(rb_state(bench) == 2 and rb_label(bench).endswith(" f"), f"Rubber off, {rb_label(bench)!r}")
+    res.check(bytes(b.mu.mem_read(RB_B2, 0xE0000)) == b"\xff" * 0xE0000, "sectors 0-6 blank (blackbox-mod's loader takes it)")
+    res.check(not fm.words and not fm.reset and not fm.bad, "nothing written, no restart")
+    rb_loader_boot(bench)
+    FakeFile(b, "BBRUBBER.BIN", pay, others={"RBFREE.TXT"})
+    fm = FlashModel(b)
+    rb_poll(bench)
+    fm.close()
+    res.check(not fm.erased and not fm.words, "next boot with RBFREE.TXT still there: stays blank")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
@@ -2804,6 +2871,8 @@ def main():
             ("Rubber card loader refuses", t_rubber_loader_refuses),
             ("Rubber engine renders (emu build)", t_rubber_engine),
             ("Rubber broken start is left alone", t_rubber_broken_left_alone),
+            ("Rubber takes over bank 2 only with RBTAKE.TXT", t_rubber_takeover),
+            ("Rubber gives bank 2 back with RBFREE.TXT", t_rubber_release),
             ("Rubber stage of a dead boot on the label", t_rubber_stage_label),
             ("Rubber diag: CPU meter on Tools", t_diag_cpu_meter),
             ("Rubber diag: fault recorder", t_diag_fault_record),
