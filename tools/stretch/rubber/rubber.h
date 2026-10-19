@@ -45,7 +45,7 @@ typedef struct RbVoice {
     int32_t prev_active;  /* 28 */
     char label[16];       /* 32 the Warp list label: "Rubber", "Rubber!", "Rubber 54%" */
     uint32_t cyc_avg;     /* 48 rb_mix's cycles per block, smoothed over ~16 blocks (b2pair.c) */
-    uint32_t over_n;      /* 52 blocks in a row over RB_GUARD_CYC */
+    uint32_t over_n;      /* 52 blocks in a row with cyc_avg over RB_GUARD_CYC or the audio task over RB_GUARD_LOAD */
     uint32_t cyc_peak;    /* 56 worst rb_mix block since the Tools bar last showed it (diag.c) */
 } RbVoice;
 
@@ -58,10 +58,12 @@ typedef struct RbVoice {
 
 /* The CPU guard (b2pair.c rb_mix): a 256-frame block is 2,560,000 cycles at 480 MHz. A render
  * that keeps the audio task busy past its block starves every other task until the watchdog
- * resets the unit, so Rubber turns itself off after RB_GUARD_N blocks in a row over this. */
+ * resets the unit, so the leaf turns itself off after RB_GUARD_N blocks in a row with its smoothed
+ * cost over this, or with the whole audio task over RB_GUARD_LOAD (b2pair.c rb_mix). */
 #define RB_BLOCK_CYC   2560000u
 #define RB_GUARD_CYC   (RB_BLOCK_CYC / 4u * 3u)
 #define RB_GUARD_N     32u
+#define RB_GUARD_LOAD  950u           /* per mille: the whole audio task (diag.c diag_load) */
 
 /* Rubber Band runs on its own stack at the top of SRAM1-3 (rb_call_on_stack, rubber_cave.S),
  * not on the audio or disk task's: its render needs ~5 KB. rubber.ld keeps .data/.bss and the

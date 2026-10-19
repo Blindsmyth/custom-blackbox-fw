@@ -181,7 +181,10 @@ void rb_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     v->cyc_avg = v->cyc_avg - (v->cyc_avg >> 4) + (c >> 4);
     if (c > v->cyc_peak)
         v->cyc_peak = c;
-    if (c <= RB_GUARD_CYC) {
+    /* Smoothed, not per block: Bungee alternates a lighter and a heavier block (one half-grain
+     * each), so a raw per-block test never saw RB_GUARD_N in a row and the watchdog came first.
+     * And the whole audio task, not only the leaf's share: the unit reset with Tools at 159 %. */
+    if (v->cyc_avg <= RB_GUARD_CYC && diag_load() <= RB_GUARD_LOAD) {
         v->over_n = 0;
     } else if (++v->over_n >= RB_GUARD_N) {
         /* Off before the watchdog: the Clip plays stock grains from the next block. */

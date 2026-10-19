@@ -3,6 +3,7 @@
 # the Blackbox change (bungee-blackbox.patch):
 #   - BUNGEE_FIXED_PITCH: no input/output resampling buffers (pitch 1, 48 kHz in and out; 65 KB), and
 #     partial lists sized to the bins (48 KB)
+#   - BUNGEE_FAST_PHASE: polynomial atan2 and int16 phasor in Stretcher (src/FastPhase.h), no libm per bin
 # The FFT back-end is Fourier_cmsis.cpp next to this script (CMSIS-DSP, built instead of src/Fourier.cpp).
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)

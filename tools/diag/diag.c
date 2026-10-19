@@ -62,6 +62,7 @@ struct diag_state {
     uint16_t win_n, wakes;
     uint16_t avg_shown, peak_shown;
     uint8_t armed, status, late, pad;
+    uint32_t load_ema;           /* per-mille load, smoothed over ~16 blocks (the bank-2 leaf's guard) */
 };
 #define DIAG       ((volatile struct diag_state *)0x38007100u)   /* SRAM4, after RbVoice */
 #define DIAG_MAGIC 0x31474144u   /* "DAG1" */
@@ -89,6 +90,15 @@ static void start(void)
 }
 
 /* Replaces the audio task's queue wait (bl 0x08088756 at 0x080414E4). */
+/* The audio task's whole load, per mille of a block, smoothed over ~16 blocks; 0 until the
+ * nominal block is known (~1 s after boot). For the bank-2 leaf's guard (b2pair.c rb_mix): the
+ * leaf's own share can be under its limit while the block as a whole is not. */
+uint32_t diag_load(void)
+{
+    volatile struct diag_state *m = DIAG;
+    return m->magic == DIAG_MAGIC && m->nom ? m->load_ema : 0u;
+}
+
 int cpu_wait(void *queue, void *item, uint32_t ticks, int peek)
 {
     volatile struct diag_state *m = DIAG;
@@ -120,6 +130,7 @@ int cpu_wait(void *queue, void *item, uint32_t ticks, int peek)
         }
         m->sum += load;
         m->n++;
+        m->load_ema = m->load_ema - (m->load_ema >> 4) + (load >> 4);
         if (load > m->peak)
             m->peak = (uint16_t)load;
         if (++m->win_n >= BLOCKS_PER_REPORT) {

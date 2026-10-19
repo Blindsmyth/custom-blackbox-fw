@@ -69,6 +69,7 @@ B2_SOURCES = [RUBBER / "rubber.h"] + [BUNGEE / f for f in ("bungee.cpp", "rt.c",
 BANK1_DEFS = ['-DRB_LABEL="Bungee"', '-DRB_PAYLOAD_FILE="BBBUNGEE.BIN"']
 BUNGEE_CXX = ["-std=c++20", "-fwrapv", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
               "-DBUNGEE_VISIBILITY=", "-DBUNGEE_SELF_TEST=0", "-DBUNGEE_NO_LOG", "-DBUNGEE_FIXED_PITCH",
+              *([] if os.environ.get("BG_EXACT_PHASE") else ["-DBUNGEE_FAST_PHASE"]),
               "-Deigen_assert=BUNGEE_ASSERT1", "-DEIGEN_DONT_PARALLELIZE=1", "-DEIGEN_NO_IO",
               '-DBUNGEE_VERSION="b2"']
 

@@ -2577,6 +2577,12 @@ def t_rubber_engine(bench, res):
         return
     import math
     b = bench.b
+    # Bank 2 and ITCM code executed, in bytes, for the mono / stereo comparison. Added before
+    # anything runs: Unicorn does not call a block hook for code it translated before the hook.
+    from unicorn import UC_HOOK_BLOCK
+    work = [0]
+    b.mu.hook_add(UC_HOOK_BLOCK, lambda mu, a, sz, d: work.__setitem__(0, work[0] + sz), begin=RB_B2, end=0x081FFFFF)
+    b.mu.hook_add(UC_HOOK_BLOCK, lambda mu, a, sz, d: work.__setitem__(0, work[0] + sz), begin=0x1000, end=0xFFFF)
     b.mu.mem_write(RB_B2, bytes(pay))
     rb_bkp(bench)
     b.call(bench.sym["rb_pair"])
@@ -2595,6 +2601,7 @@ def t_rubber_engine(bench, res):
     sr, n_src = 48000, 48000 * 2
     src = [0.4 * math.sin(2 * math.pi * 220 * i / sr) * (1.0 if (i // 6000) % 2 == 0 else 0.3) for i in range(n_src)]
     sample, clip, mixbuf, ctx, scratch = 0x2001C000, 0x2001C800, 0x2001E000, 0x2001E100, 0x2001E200
+    stereo = [1]
     planes = (0x2001E400, 0x2001E800)          # not in SRAM1-3: that is the leaf's heap
     out = []
 
@@ -2614,7 +2621,7 @@ def t_rubber_engine(bench, res):
     def buf_mix(bb):
         out.extend(struct.unpack("<256f", bytes(bb.mu.mem_read(planes[0], 1024))))
 
-    for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: 1),
+    for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: stereo[0]),
                      (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, buf_clear), (0x0804D8E8, lambda bb: 256),
                      (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
                      (0x0804DA6C, buf_mix)):
@@ -2626,6 +2633,8 @@ def t_rubber_engine(bench, res):
     b.w32(RB_VOICE + 20, 1)                     # launch
     for _ in range(60):
         b.call(bench.sym["rb_mix"], clip, clip + 0x260, mixbuf, ctx, limit=400_000_000)
+    if os.environ.get("RB_DUMP"):                 # a render for comparing two builds (bungee README)
+        Path(os.environ["RB_DUMP"]).write_text("\n".join(f"{x:.9g}" for x in out))
     finite = all(math.isfinite(x) for x in out)
     silent = next((i for i, x in enumerate(out) if abs(x) > 1e-4), len(out))
     tail = out[20 * 256:]
@@ -2652,6 +2661,31 @@ def t_rubber_engine(bench, res):
         res.check(0 < peak and free >= 0 and itcm_free >= 4096,
                   f"heap {peak} bytes from {heap0:#x} ({free} left below the stack) + {itcm} in ITCM "
                   f"({itcm_free} left)")
+        # A mono Clip: the next launch rebuilds the stretcher on one channel (heap rewound to its
+        # boot mark), plays the Clip raw one sub-block longer, and costs less per block.
+
+        def blocks(k):
+            cost = []
+            for _ in range(k):
+                work[0] = 0
+                b.call(bench.sym["rb_mix"], clip, clip + 0x260, mixbuf, ctx, limit=400_000_000)
+                cost.append(work[0])
+            return cost
+        stereo_cost = blocks(20)
+        stereo[0] = 0
+        out.clear()
+        b.w32(RB_VOICE + 20, 1)                 # launch the (now mono) Clip
+        mono_cost = blocks(60)
+        raw = struct.unpack("<2304f", struct.pack("<2304f", *src[:2304]))
+        res.check(rb_label(bench) == "Bungee" and not b.u32(bench.sym["rb_heap_failed"]),
+                  f"mono: stretcher rebuilt on one channel ({rb_label(bench)!r})")
+        res.check(max(abs(x - y) for x, y in zip(out[:2304], raw)) == 0.0, "mono: launch plays the Clip itself for 2304 frames")
+        tail = out[20 * 256:]
+        ups = sum(1 for i in range(1, len(tail)) if tail[i - 1] < 0 <= tail[i])
+        hz = ups * sr / max(1, len(tail))
+        res.check(205 < hz < 235 and all(math.isfinite(x) for x in out), f"mono: pitch kept at 0.8x, {hz:.0f} Hz")
+        sc, mc = sum(stereo_cost) / len(stereo_cost), sum(mono_cost[20:]) / len(mono_cost[20:])
+        res.check(mc < 0.7 * sc, f"mono: {mc / 1e6:.2f}M per block against stereo {sc / 1e6:.2f}M")
     n_itcm = bench.sym["__itcm_end"] - bench.sym["__itcm_start"]
     load = RB_B2 + 32                           # .itcm's image follows the 32-byte header (rubber.ld)
     res.check(n_itcm > 8192 and bytes(b.mu.mem_read(bench.sym["__itcm_start"], n_itcm)) == bytes(b.mu.mem_read(load, n_itcm)),
@@ -2891,12 +2925,37 @@ def t_rubber_cpu_guard(bench, res):
     for _ in range(100):
         b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
     res.check(rb_state(bench) == 1, f"39 % per block: keeps running ({rb_state(bench)})")
-    cost[0] = 2_300_000                         # 90 %
-    for i in range(31):
-        b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
-    res.check(rb_state(bench) == 1, "31 slow blocks: still on")
-    b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
-    res.check(rb_state(bench) == 5 and rb_label(bench) == rb_name(bench) + "! cpu", f"32nd: off, {rb_label(bench)!r}")
+
+    def run_until_off(costs, limit):
+        for i in range(limit):
+            cost[0] = costs[i % len(costs)]
+            b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
+            if rb_state(bench) != 1:
+                return i + 1
+        return None
+
+    def fresh():
+        b.w32(RB_VOICE + 8, 1)
+        b.w32(RB_VOICE + 48, 1_000_000)          # cyc_avg as after the 39 % blocks
+        b.w32(RB_VOICE + 52, 0)                  # over_n
+
+    # 90 % every block: off once the smoothed cost has been over 75 % for 32 blocks.
+    n = run_until_off([2_300_000], 120)
+    res.check(n is not None and 32 < n <= 70, f"90 % blocks: off after {n} blocks")
+    res.check(rb_state(bench) == 5 and rb_label(bench) == rb_name(bench) + "! cpu", f"off, {rb_label(bench)!r}")
+    # Bungee's pattern: a lighter and a heavier block in turn (one half-grain each). 60 / 95 %
+    # averages 77 %: a per-block test never saw 32 in a row over 75 %; the smoothed one does.
+    fresh()
+    n = run_until_off([1_540_000, 2_430_000], 200)
+    res.check(n is not None, f"alternating 60/95 % blocks: off after {n} blocks")
+    # The leaf cheap (30 %), the audio task as a whole over budget (diag_load 150 %): off too.
+    fresh()
+    b.w32(0x38007100, 0x31474144)                # diag magic "DAG1"
+    b.w32(0x38007100 + 12, 2_560_000)            # nominal block known
+    b.w32(0x38007100 + 36, 1500)                 # load_ema, per mille
+    n = run_until_off([770_000], 60)
+    res.check(n == 32, f"leaf at 30 %, audio task at 150 %: off after {n} blocks")
+    b.w32(0x38007100 + 36, 400)
     b.watch(fake_mix)
     b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
     res.check(b.calls[fake_mix & ~1] == 0, "no render after that")
@@ -2909,7 +2968,7 @@ def t_rubber_cpu_guard(bench, res):
     mid, _ = diag_tools_label(bench)
     import re
     m = re.search(r"R(\d+)/\d+$", mid or "")
-    res.check(m is not None and 70 <= int(m.group(1)) <= 90, f"cost still on Tools: {mid!r}")
+    res.check(m is not None and 25 <= int(m.group(1)) <= 40, f"cost still on Tools (the last, 30 % leaf): {mid!r}")
 
 
 
@@ -2986,10 +3045,11 @@ def t_rubber_cost_flat(bench, res):
                 per.append(work[0])
         rate = (reads[0] - start_reads) / (79 * 256)
         if rb_name(bench) == "Bungee":
-            # Bungee reads a 4096-frame window per 512 output frames, so source frames read say
-            # nothing about tempo; the window's step through the clip does (input hop = ratio x 512).
-            # The run may start short of 4096 where the window began before frame 0 (zeros).
-            starts = [p for p, c, _ in grains[-60:] if c >= 2048]
+            # The window slides (bungee.cpp fill_window): each clip frame is read once, so frames
+            # read per output frame is the tempo too (it was ~8 when every grain read its 4096).
+            res.check(abs(rate - ratio) < 0.03 * ratio + 0.01, f"{ratio}x: clip frames read per output frame {rate:.3f}")
+            # The tempo itself from the window's step through the clip (input hop = ratio x 512).
+            starts = [p for p, c, _ in grains[-60:] if c >= 64]
             steps = sorted((b2 - a2) % n_src for a2, b2 in zip(starts, starts[1:]))
             rate = steps[len(steps) // 2] / 512 if steps else 0.0
         mean = sum(per) / len(per)
@@ -2998,7 +3058,11 @@ def t_rubber_cost_flat(bench, res):
         res.check(abs(rate - ratio) < 0.03 * ratio + 0.01, f"{ratio}x: tempo {rate:.3f}")
     off_unity = [v for k, v in means.items() if k != 1.0]   # exactly 1.0x is cheaper (R2's unity path)
     spread = max(off_unity) / min(off_unity)
-    res.check(spread <= 1.2 and means[1.0] <= max(off_unity), f"same cost at every tempo (max/min {spread:.2f}, " +
+    unity_ok = means[1.0] <= max(off_unity)
+    if rb_name(bench) == "Bungee":                          # no unity shortcut: 1.0x is just one more tempo
+        spread = max(means.values()) / min(means.values())
+        unity_ok = True
+    res.check(spread <= 1.2 and unity_ok, f"same cost at every tempo (max/min {spread:.2f}, " +
               ", ".join(f"{k}x {v / 1e6:.2f}M" for k, v in means.items()) + ")")
 
 

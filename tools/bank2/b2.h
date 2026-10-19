@@ -80,5 +80,6 @@ void rb_start(void);
 void rb_note(char c);
 /* diag.c, once per boot from rb_pair: latch the crash records of the boot before. */
 void diag_boot(void);
+uint32_t diag_load(void);       /* diag.c: whole audio-task load, per mille, smoothed; 0 = not known yet */
 
 #endif

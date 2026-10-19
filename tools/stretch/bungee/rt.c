@@ -63,6 +63,30 @@ static void *take(size_t n)
     return h;
 }
 
+/* The leaf rebuilds its stretcher when a launch changes the channel count (mono Clips run on one
+ * channel). Everything Bungee allocates comes after this mark, so a rebuild rewinds the heap to
+ * it instead of freeing piece by piece: no fragmentation, nothing left behind. */
+static uint32_t mark_fast, mark_itcm, mark_used;
+static Head *mark_freed;
+
+void rb_heap_mark(void)
+{
+    if (!fast_at)
+        (void)take(0);
+    mark_fast = fast_at;
+    mark_itcm = itcm_at;
+    mark_used = rb_fast_used;
+    mark_freed = freed;
+}
+
+void rb_heap_release(void)
+{
+    fast_at = mark_fast;
+    itcm_at = mark_itcm;
+    rb_fast_used = mark_used;
+    freed = mark_freed;
+}
+
 void *malloc(size_t n) { return take(n); }
 void free(void *p)
 {
