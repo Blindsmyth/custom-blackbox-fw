@@ -2636,8 +2636,12 @@ def t_rubber_engine(bench, res):
     b.mu.mem_write(clip + 0xBB4, struct.pack("<f", 0.8))
     b.mu.mem_write(clip + 0x260, b"\x01")
     b.w32(RB_VOICE + 20, 1)                     # launch
+    if "rb_work" in bench.sym:                  # stack depth of each side: paint, render, look
+        b.mu.mem_write(0x30045000, b"\xa5" * 0x3000)
     for _ in range(60):
         b.call(bench.sym["rb_mix"], clip, clip + 0x260, mixbuf, ctx, limit=400_000_000)
+        if "rb_work" in bench.sym:              # the leaf task's wake, after the block
+            b.call(bench.sym["rb_work"], limit=400_000_000)
     if os.environ.get("RB_DUMP"):                 # a render for comparing two builds (bungee README)
         Path(os.environ["RB_DUMP"]).write_text("\n".join(f"{x:.9g}" for x in out))
     finite = all(math.isfinite(x) for x in out)
@@ -2651,8 +2655,16 @@ def t_rubber_engine(bench, res):
     hz = ups * sr / max(1, len(tail))
     res.check(205 < hz < 235, f"pitch kept at 0.8x tempo: {hz:.0f} Hz (input 220 Hz)")
     used = b.u32(bench.sym["rb_fast_used"])
-    res.check(0 < used <= 0x30045000 - 0x30000000 and not b.u32(bench.sym["rb_heap_failed"]),
-              f"heap all in SRAM1 ({used} bytes), nothing in SDRAM")
+    limit = 0x30045000 - 0x30000000 + (0x10000 if rb_name(bench) == "Bungee" else 0)   # + ITCM pool
+    res.check(0 < used <= limit and not b.u32(bench.sym["rb_heap_failed"]),
+              f"heap all in internal RAM ({used} bytes), nothing in SDRAM")
+    if "rb_work" in bench.sym:
+        st = bytes(b.mu.mem_read(0x30045000, 0x3000))
+        task_low = next((k for k in range(0, 0x2000) if st[k] != 0xa5), 0x2000)
+        audio_low = next((k for k in range(0x2000, 0x3000) if st[k] != 0xa5), 0x3000)
+        task_used, audio_used = 0x2000 - task_low, 0x3000 - audio_low
+        res.check(task_used <= 0x1800 and audio_used <= 0xC00,
+                  f"stacks: leaf task {task_used} of 8192 bytes, audio side {audio_used} of 4096")
     if rb_name(bench) == "Bungee":
         # 3.1.B: a launch plays the Clip itself for the 8 priming blocks, then crossfades into
         # Bungee (tools/stretch/bungee/bungee.cpp); the heap must leave room below the stack.
@@ -2674,6 +2686,8 @@ def t_rubber_engine(bench, res):
             for _ in range(k):
                 work[0] = 0
                 b.call(bench.sym["rb_mix"], clip, clip + 0x260, mixbuf, ctx, limit=400_000_000)
+                if "rb_work" in bench.sym:              # the leaf task's wake, after the block
+                    b.call(bench.sym["rb_work"], limit=400_000_000)
                 cost.append(work[0])
             return cost
         stereo_cost = blocks(20)
@@ -2681,10 +2695,10 @@ def t_rubber_engine(bench, res):
         out.clear()
         b.w32(RB_VOICE + 20, 1)                 # launch the (now mono) Clip
         mono_cost = blocks(60)
-        raw = struct.unpack("<2304f", struct.pack("<2304f", *src[:2304]))
+        raw = struct.unpack("<2048f", struct.pack("<2048f", *src[:2048]))
         res.check(rb_label(bench) == "Bungee" and not b.u32(bench.sym["rb_heap_failed"]),
                   f"mono: stretcher rebuilt on one channel ({rb_label(bench)!r})")
-        res.check(max(abs(x - y) for x, y in zip(out[:2304], raw)) == 0.0, "mono: launch plays the Clip itself for 2304 frames")
+        res.check(max(abs(x - y) for x, y in zip(out[:2048], raw)) == 0.0, "mono: launch plays the Clip itself for 2048 frames")
         tail = out[20 * 256:]
         ups = sum(1 for i in range(1, len(tail)) if tail[i - 1] < 0 <= tail[i])
         hz = ups * sr / max(1, len(tail))
@@ -2763,6 +2777,8 @@ def t_bungee_voice_end(bench, res):
     def mix(k):
         for _ in range(k):
             b.call(bench.sym["rb_mix"], clip, lane_a, mixbuf, ctx, limit=400_000_000)
+            if "rb_work" in bench.sym:              # the leaf task's wake, after the block
+                b.call(bench.sym["rb_work"], limit=400_000_000)
 
     b.mu.mem_write(clip, b"\x00" * 0xC00)
     b.w32(clip + 0x24, sample)
@@ -3158,15 +3174,21 @@ def t_rubber_cost_flat(bench, res):
         b.mu.mem_write(clip + 0xBB4, struct.pack("<f", ratio))
         b.w32(RB_VOICE + 20, 1)                 # relaunch
         grains.clear()
-        per = []
+        per, task = [], []
         for i in range(140):
             work[0] = 0
             r0 = reads[0]
             b.call(bench.sym["rb_mix"], clip, clip + 0x260, mixbuf, ctx, limit=200_000_000)
+            audio = work[0]
+            if "rb_work" in bench.sym:              # the leaf task's wake, after the block
+                b.call(bench.sym["rb_work"], limit=200_000_000)
             if i == 60:
                 start_reads = reads[0]
             if i >= 60:
-                per.append(work[0])
+                # Bungee (3.1.B) renders in its own task: the audio block's cost is rb_mix alone,
+                # flat; the task's grains land in whichever wake has ring space.
+                per.append(audio if "rb_work" in bench.sym else work[0])
+                task.append(work[0])
         rate = (reads[0] - start_reads) / (79 * 256)
         if rb_name(bench) == "Bungee":
             # The window slides (bungee.cpp fill_window): each clip frame is read once, so frames
@@ -3177,7 +3199,7 @@ def t_rubber_cost_flat(bench, res):
             steps = sorted((b2 - a2) % n_src for a2, b2 in zip(starts, starts[1:]))
             rate = steps[len(steps) // 2] / 512 if steps else 0.0
         mean = sum(per) / len(per)
-        means[ratio] = mean
+        means[ratio] = sum(task) / len(task)
         res.check(max(per) <= 1.35 * mean, f"{ratio}x: flat, peak/mean {max(per) / mean:.2f}")
         res.check(abs(rate - ratio) < 0.03 * ratio + 0.01, f"{ratio}x: tempo {rate:.3f}")
     off_unity = [v for k, v in means.items() if k != 1.0]   # exactly 1.0x is cheaper (R2's unity path)

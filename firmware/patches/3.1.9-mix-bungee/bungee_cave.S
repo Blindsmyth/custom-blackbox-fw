@@ -48,6 +48,20 @@ rb_call_on_stack:
     pop     {r4, r5, r6, pc}
 .ltorg
 
+@ rb_call_at(fn, stack_top): fn() on the stack that ends at stack_top. The leaf's background task
+@ (tools/bank2/b2pair.c rb_task) runs the leaf's work there, below the part rb_call_on_stack uses,
+@ so the audio task preempting it never writes over its frames.
+.global rb_call_at
+.thumb_func
+rb_call_at:
+    push    {r4, r6, r7, lr}
+    mov     r4, r0
+    mov     r6, sp
+    mov     sp, r1
+    blx     r4
+    mov     sp, r6
+    pop     {r4, r6, r7, pc}
+
 @ Tools refresh FUN_080C5180, its free-space query (bl 0x0809BBF8 at 0x080C5264): first fill the
 @ bar's middle label with the CPU load or the last crash (tools/diag/diag.c cpu_mid). r7 is the
 @ screen; the free-space label is r7 + 0x174 and the middle one sits 0xA0 before it.

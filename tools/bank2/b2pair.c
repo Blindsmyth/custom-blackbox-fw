@@ -142,6 +142,42 @@ void rb_pair(void)
     }
 }
 
+/* FreeRTOS v9 in stock 3.1.9 (docs/re-notes.md): xTaskCreate, a binary semaphore as a 1-item
+ * queue of size 0, give with xQueueGenericSend, take with xQueueGenericReceive (timeout in 1 ms
+ * ticks). No vTaskDelay is linked, so the leaf task sleeps on the semaphore. */
+typedef int (*task_create_fn)(void (*)(void *), const char *, unsigned, void *, unsigned, void **);
+typedef void *(*queue_create_fn)(unsigned, unsigned, unsigned);
+typedef int (*queue_send_fn)(void *, const void *, unsigned, int);
+typedef int (*queue_recv_fn)(void *, void *, unsigned, int);
+#define FR_TASK_CREATE  ((task_create_fn)0x08088AD9u)
+#define FR_QUEUE_CREATE ((queue_create_fn)0x080883BFu)
+#define FR_QUEUE_SEND   ((queue_send_fn)0x08088403u)
+#define FR_QUEUE_RECV   ((queue_recv_fn)0x08088757u)
+
+/* One wake of the leaf's background task, on its own stack (rubber.h RB_TASK_STACK_TOP). Also
+ * what the bench calls in place of the task. */
+void rb_work(void)
+{
+    const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
+    if (rb_ready() && h->work)
+        rb_call_at(h->work, RB_TASK_STACK_TOP);
+}
+
+/* The leaf task (Bungee): render ahead of the audio task into the leaf's ring, woken once per
+ * audio block by rb_mix. The timeout keeps it going (and its stage stamps fresh) if the audio
+ * task stops giving, e.g. with no Bungee Clip playing: it then finds nothing to do. */
+static void rb_task(void *arg)
+{
+    RbVoice *v = (RbVoice *)RB_VOICE;
+    (void)arg;
+    for (;;) {
+        FR_QUEUE_RECV(v->bg_sem, 0, 20u, 0);
+        rb_work();
+    }
+}
+
+static const char rb_task_name[] = "leaf";
+
 void rb_start(void)
 {
     RbVoice *v = (RbVoice *)RB_VOICE;
@@ -155,6 +191,19 @@ void rb_start(void)
     rb_bkp_put(RB_BKP_BOOTING, 0);
     rb_stage(0);
     __asm__ volatile("dsb");
+    /* A leaf that renders in the background gets its task now, before the audio task may use it.
+     * Its FreeRTOS stack only has to hold the switch to its own stack: the RTOS heap is nearly
+     * full in stock (idle task's stack trimmed by 1 KB in the build for this). */
+    v->bg_sem = 0;
+    v->bg_task = 0;
+    if (ok == 1u && h->work) {
+        v->bg_sem = FR_QUEUE_CREATE(1u, 0u, 3u);
+        if (!v->bg_sem || FR_TASK_CREATE(rb_task, rb_task_name, RB_TASK_WORDS, 0, RB_TASK_PRIO,
+                                         &v->bg_task) != 1) {
+            label(v, RB_LABEL "! task");
+            ok = 0;
+        }
+    }
     /* Only now may the audio task render. A start that ran out of memory left "Rubber! mem". */
     v->state = (v->state & ~0xffu) | (ok == 1u ? RB_ST_READY : RB_ST_ABSENT);
 }
@@ -177,6 +226,8 @@ void rb_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         return;
     t0 = DWT_CYCCNT;
     rb_call_on_stack(h->mix, clip, lane, mix, ctx);
+    if (v->bg_sem)
+        FR_QUEUE_SEND(v->bg_sem, 0, 0u, 0);   /* the leaf task renders ahead from here */
     c = DWT_CYCCNT - t0;
     v->cyc_avg = v->cyc_avg - (v->cyc_avg >> 4) + (c >> 4);
     if (c > v->cyc_peak)

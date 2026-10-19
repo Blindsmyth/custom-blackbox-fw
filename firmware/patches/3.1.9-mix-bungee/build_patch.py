@@ -200,6 +200,9 @@ def add_rubber_sites(stock):
         (0x080414E4, "cpu_wait", True, stock_bl(stock, 0x080414E4, 0x08088756)),   # audio wait: CPU meter
         (0x080C5264, "tools_thunk", True, stock_bl(stock, 0x080C5264, 0x0809BBF8)),  # Tools bar: load / crash
     ])
+    # The leaf task (b2pair.c rb_task) needs ~0.7 KB of FreeRTOS heap, which stock leaves ~0.35 KB
+    # of (heap_4, 36 KB, all stacks): the idle task's stack 0x400 -> 0x300 words (it runs no hook).
+    mix.BYTES.append((0x08088C98, "4ff44072", "4ff48062"))   # vTaskStartScheduler: mov.w r2,#0x300
     mix.VTABLE.extend([                                           # crash recorder (tools/diag/diag.c)
         (0x0804000C, "fault_handler", 0x08046267),                # HardFault
         (0x08040010, "fault_handler", 0x08046269),                # MemManage

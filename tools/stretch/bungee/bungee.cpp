@@ -1,19 +1,23 @@
 // Warp "Bungee": Bungee Basic (MPL-2.0) rendering one Clip, in flash bank 2.
 //
-// Same ABI as Warp Rubber (tools/stretch/rubber/rubber.h): bank 1 calls rubber_boot() once per
-// power-up, after b2pair.c has checked the payload, and rubber_mix() from the per-lane render hook
-// (repitch.S hook_lane) for the one Clip that owns the voice, both on the leaf's own stack.
-// Everything allocated comes from SRAM1-3 (rt.c); .data and .bss live there too (bungee.ld).
+// Same ABI as Warp Rubber (tools/stretch/rubber/rubber.h), plus a background task: bank 1 calls
+// rubber_boot() once per power-up, after b2pair.c has checked the payload; rubber_mix() from the
+// per-lane render hook (repitch.S hook_lane) in the audio task, every block, for the one Clip that
+// owns the voice; and rubber_work() from the leaf's own FreeRTOS task (b2pair.c rb_task, priority
+// 5: under audio, over UI/disk/USB), woken by every rubber_mix. Each on its own stack.
 //
-// Bungee works in grains of 4096 frames with a fixed 512-frame output hop, so its cost per output
-// frame is the same at every tempo. Each grain is split over two 256-frame blocks: specifyGrain +
-// analyseGrain in one, synthesiseGrain in the next, so no block pays for a whole grain.
+// Why a task: on the unit Bungee costs ~40% of every audio block, and with the rest of the
+// firmware's spikes on top the audio block overran (crackle). Now the audio task only does what
+// has to happen in the block: the Clip's raw launch, copying Bungee's output from a ring, the
+// stock lane's envelope / filter / end of voice. rubber_work renders whole grains into the ring
+// when it gets the CPU, up to RING frames (~43 ms) ahead, so the stock spikes and Bungee's work no
+// longer have to fit in the same 5.3 ms.
 //
 // A launch is instant: Bungee's first output frame comes out of its fourth grain (output trails by
-// two grains, plus the preroll grain), eight half-grain blocks (~43 ms). Meanwhile the Clip plays
-// unstretched from frame 0, and Bungee primes from frame START, where that raw playback will be
-// when priming is done. The preroll hop runs at speed 1, so at START Bungee's phases match the
-// clip; a short linear crossfade hands over, and from there Bungee runs at the Clip's ratio.
+// two grains, plus the preroll grain). Meanwhile the Clip plays unstretched from frame 0, and
+// Bungee primes from frame START, where that raw playback will be at the handoff. The preroll hop
+// runs at speed 1, so at START Bungee's phases match the clip; a short linear crossfade hands over,
+// and from there Bungee runs at the Clip's ratio.
 #include "rubber.h"
 
 #include "bungee/Bungee.h"
@@ -24,17 +28,16 @@
 #define RB_MIN_RATIO 0.5f
 #define RB_MAX_RATIO 2.0f
 #define RB_BLOCKS_SEC 188    /* 48000 / 256: stats period */
-#define SUB          256     /* frames per sub-block: one half-grain of work each */
+#define SUB          256     /* frames per audio block */
 #define HOP          512     /* Bungee's output hop at 48 kHz */
 #define GRAIN_IN     4096    /* input frames per grain at pitch 1 (the analysis window) */
-#define PEND_MAX     (SUB + HOP)
-#define PRIME_HALVES 8
-#define START        (PRIME_HALVES * SUB)   /* clip frame of the raw -> Bungee handoff */
-                                            /* (one SUB later when the launch rebuilt the stretcher) */
+#define RING         2048    /* frames rendered ahead (~43 ms) */
+#define START        2048    /* clip frame of the raw -> Bungee handoff (Bungee's ring frame 0) */
 #define XF           128     /* crossfade frames at the handoff */
+#define WAKE_GRAINS  3       /* grains per task wake at most: the UI and disk tasks get the CPU */
 /* The grain input buffer (4096 frames x 2 channels, 32 KB) in SRAM4's top half, which nothing else
  * uses on this line (folders, Warp flags, Mix, looper end below 0x38006400; RbVoice and diag at
- * 0x38007000-0x38007140). SRAM1-3 holds Bungee's own ~0.25 MB and cannot spare it. */
+ * 0x38007000-0x38007148). SRAM1-3 holds Bungee's own ~0.25 MB and cannot spare it. */
 #define IN_BUF       ((float *)0x38008000u)
 
 extern "C" {
@@ -45,6 +48,7 @@ extern void (*__b2_init_array_start[])(void);
 extern void (*__b2_init_array_end[])(void);
 int rubber_boot(void);
 void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);
+void rubber_work(void);
 }
 
 // The header bank 1 checks and calls through (rubber.h RbHeader, same layout). Length and sum
@@ -53,10 +57,11 @@ struct RbHeaderInit {
     uint32_t magic, id, length, sum;
     rb_boot_fn boot;
     rb_mix_fn mix;
-    uint32_t reserved[2];
+    rb_work_fn work;
+    uint32_t reserved;
 };
 extern "C" __attribute__((used, section(".b2head")))
-const RbHeaderInit rb_header = { RB_MAGIC, RB_ID, 0, 0, rubber_boot, rubber_mix, { 0, 0 } };
+const RbHeaderInit rb_header = { RB_MAGIC, RB_ID, 0, 0, rubber_boot, rubber_mix, rubber_work, 0 };
 
 // Stock 3.1.9 functions, as used by Warp Rubber / Capi.
 typedef int (*pcm_read_fn)(void *, float *, int, int, int);
@@ -96,34 +101,59 @@ typedef void (*obj_fn)(void *);
 #define L16(l, o)  (*(volatile uint16_t *)((l) + (o)))
 #define L32(l, o)  (*(volatile int32_t *)((l) + (o)))
 
+// The stock reader is not safe from two tasks (it bumps the stream cache's LRU counter and
+// request ring without a lock; stock calls it from the audio task only). The leaf task suspends
+// the scheduler around each call: the audio task cannot run in between, interrupts still can.
+typedef void (*rtos_fn)(void);
+typedef int (*rtos_ret_fn)(void);
+#define FR_SUSPEND_ALL ((rtos_fn)0x08088D11u)
+#define FR_RESUME_ALL  ((rtos_ret_fn)0x08088E7Du)
+
 #define DEMCR      (*(volatile uint32_t *)0xE000EDFCu)
 #define DWT_CTRL   (*(volatile uint32_t *)0xE0001000u)
 #define DWT_CYCCNT (*(volatile uint32_t *)0xE0001004u)
+#define DMB()      __asm__ volatile("dmb" ::: "memory")
 
+#ifndef BG_PROFILE
+#define BG_PROFILE 1   /* Warp label "B40a19s19u0": task CPU %, analysis, synthesis, underruns */
+#endif
+
+// ---- shared between the audio task (rubber_mix) and the leaf task (rubber_work) -------------
+// The audio task asks for a launch by publishing its parameters and then a new req_seq; the leaf
+// task answers by building the stretcher for it and publishing ring_seq = req_seq. Ring frames
+// count from START (ring frame 0 is output frame START of the launch); the leaf task advances
+// w_frames, the audio task r_frames. Each side writes only its own counters.
+static float *ring_l, *ring_r;
+static volatile uint32_t req_seq, ring_seq;
+static volatile uint32_t w_frames, r_frames;
+static volatile bool req_stop;              /* the voice ended: render nothing */
+static void *volatile l_sample;              /* the launch's Clip */
+static volatile int l_length, l_stereo;
+static volatile float cur_ratio = 1.f;       /* the Clip's ratio, every block */
+static volatile uint32_t task_cyc, task_an, task_syn, underruns;   /* stats, for the label */
+
+// ---- leaf task state ----------------------------------------------------------------------
 static Bungee::Stretcher<Bungee::Basic> *bg;
 static Bungee::Request req;
 static float *const in_buf = IN_BUF;  /* planar grain input: [0, GRAIN_IN) left, then right */
 static int win_begin;          /* clip frame (unwrapped) of in_buf[0], when win_ok */
 static bool win_ok;            /* in_buf holds [win_begin, win_begin + GRAIN_IN) */
-static float *pend_l, *pend_r; /* synthesised frames not yet played */
-static int pend_n;
-static bool analysed;          /* next grain analysed, not yet synthesised */
-static bool primed;            /* Bungee has output on hand: the handoff can happen */
-static bool launch;            /* playing the raw Clip while Bungee primes */
 static bool unity_hop;         /* the preroll grain's hop runs at speed 1 */
-static bool started;           /* a launch has set the request up */
-static double speed;           /* the Clip's ratio, applied from the handoff on */
-static int raw_pos;            /* raw Clip frames played since the launch */
-static float xf_l[XF], xf_r[XF];
-static uint32_t acc_cyc, peak_cyc, n_blocks;
-#ifndef BG_PROFILE
-#define BG_PROFILE 1   /* Warp label "B74 r22a20s28": total, clip reads, analysis, synthesis (% of block) */
-#endif
-static uint32_t acc_read, acc_an, acc_syn;   /* cycles per stage since the last label */
+static bool active;            /* rendering a launch */
+static uint32_t cur_seq;       /* the launch the task is on */
+static int bg_channels;        /* the stretcher's channel count: 2, or 1 for a mono Clip */
+static void *t_sample;         /* the task's copy of the launch parameters */
+static int t_length, t_stereo;
 
-// The Clip being rendered, for the reads Bungee asks for.
-static void *cur_sample;
-static int cur_length, cur_stereo;
+// ---- audio task state ---------------------------------------------------------------------
+static uint32_t my_seq;        /* the launch the audio side plays */
+static bool launching;         /* raw Clip until the handoff */
+static bool playing;           /* a voice is on */
+static int raw_pos;            /* raw Clip frames played since the launch */
+static void *a_sample;         /* the Clip the audio side reads (raw launch, crossfade) */
+static int a_length, a_stereo;
+static float xf_l[XF], xf_r[XF];
+static uint32_t lbl_blocks, lbl_t0;
 
 static RbVoice *voice() { return (RbVoice *)RB_VOICE; }
 
@@ -148,21 +178,19 @@ static char *put_pct(char *p, uint32_t pct)
     return p;
 }
 
-// "B74 r22a20s28": the share of the block for the whole render and for the clip reads, Bungee's
-// analysis (without its reads) and synthesis. What the unit spends where; the emulator has no
-// caches or wait states.
-static void label_profile(uint32_t total, uint32_t rd, uint32_t an, uint32_t syn)
+// "B40a19s19u0": the leaf task's share of the CPU over the last second, of which analysis and
+// synthesis, and the audio blocks it was late for (underruns: those frames played silent).
+static void label_profile(uint32_t total, uint32_t an, uint32_t syn, uint32_t under)
 {
     char s[16], *p = s;
     *p++ = 'B';
     p = put_pct(p, total);
-    *p++ = ' ';
-    *p++ = 'r';
-    p = put_pct(p, rd);
     *p++ = 'a';
     p = put_pct(p, an);
     *p++ = 's';
     p = put_pct(p, syn);
+    *p++ = 'u';
+    p = put_pct(p, under);
     *p = 0;
     set_label(s);
 }
@@ -186,10 +214,6 @@ static void label_load(uint32_t pct)
 
 extern "C" int rb_heap_failed;   /* rt.c: an allocation did not fit */
 extern "C" void rb_heap_mark(void), rb_heap_release(void);
-
-static int bg_channels;        /* the stretcher's channel count: 2, or 1 for a mono Clip */
-static int start_pos;          /* this launch's handoff frame */
-static bool skip_step;         /* the launch rebuilt the stretcher: that block did no half-step */
 
 // The stretcher for `channels`. The heap is rewound to the mark taken at boot first, so the
 // previous one's memory is simply reused (rt.c). 2 channels is the largest and fits (boot).
@@ -220,14 +244,15 @@ int rubber_boot(void)
         *d++ = 0;
     for (void (**f)(void) = __b2_init_array_start; f < __b2_init_array_end; f++)
         (*f)();
+    cur_ratio = 1.f;
 
     DEMCR |= 1u << 24;   // TRCENA: DWT for the load figure
     DWT_CTRL |= 1u;      // CYCCNTENA
 
-    pend_l = new float[2 * PEND_MAX];
-    pend_r = pend_l + PEND_MAX;
+    ring_l = new float[2 * RING];
+    ring_r = ring_l + RING;
     rb_heap_mark();
-    if (rb_heap_failed || !pend_l || !build(2)) {
+    if (rb_heap_failed || !ring_l || !build(2)) {
         // Constructed on null pointers somewhere: never use it.
         bg = nullptr;
         set_label("Bungee! mem");
@@ -237,9 +262,12 @@ int rubber_boot(void)
     return 1;
 }
 
+// ---- clip reads -----------------------------------------------------------------------------
+
 // Clip frames [pos, pos + n) of one channel: silence before frame 0 (a launch must not pull in
-// the loop's tail), wrapping past the end (the Clip loops).
-static void read_chan(int pos, int n, float *dest, int chan)
+// the loop's tail), wrapping past the end (the Clip loops). `locked`: from the leaf task, with
+// the scheduler suspended around each stock read.
+static void read_chan(void *sample, int length, int pos, int n, float *dest, int chan, bool locked)
 {
     int i = 0;
     while (i < n) {
@@ -250,26 +278,31 @@ static void read_chan(int pos, int n, float *dest, int chan)
                 dest[i++] = 0.f;
             continue;
         }
-        p %= cur_length;
-        k = cur_length - p;
+        p %= length;
+        k = length - p;
         if (k > n - i)
             k = n - i;
-        FW_PCM_READ(cur_sample, dest + i, k, p, chan);
+        if (locked)
+            FR_SUSPEND_ALL();
+        FW_PCM_READ(sample, dest + i, k, p, chan);
+        if (locked)
+            FR_RESUME_ALL();
         i += k;
     }
 }
 
-static void read_clip(int pos, int n, float *l, float *r)
+// The audio side's raw Clip (launch and crossfade): the audio task, as stock reads.
+static void read_raw(int pos, int n, float *l, float *r)
 {
-    uint32_t t0 = DWT_CYCCNT;
-    read_chan(pos, n, l, 0);
-    if (cur_stereo)
-        read_chan(pos, n, r, 1);
+    read_chan(a_sample, a_length, pos, n, l, 0, false);
+    if (a_stereo)
+        read_chan(a_sample, a_length, pos, n, r, 1, false);
     else
         for (int i = 0; i < n; i++)
             r[i] = l[i];
-    acc_read += DWT_CYCCNT - t0;
 }
+
+// ---- leaf task: Bungee -------------------------------------------------------------------------
 
 // The grain's input window into in_buf. Consecutive grains overlap by GRAIN_IN minus the input
 // hop (~512 x ratio), so the frames already there move down and only the new ones are read: each
@@ -286,34 +319,32 @@ static void fill_window(int begin, int k)
                 in_buf[c * GRAIN_IN + i] = in_buf[c * GRAIN_IN + shift + i];
     }
     if (keep < k) {
-        if (bg_channels == 1) {    // a mono Clip on a one-channel stretcher
-            uint32_t t0 = DWT_CYCCNT;
-            read_chan(begin + keep, k - keep, in_buf + keep, 0);
-            acc_read += DWT_CYCCNT - t0;
-        } else {
-            read_clip(begin + keep, k - keep, in_buf + keep, in_buf + GRAIN_IN + keep);
+        read_chan(t_sample, t_length, begin + keep, k - keep, in_buf + keep, 0, true);
+        if (bg_channels == 2) {
+            if (t_stereo)
+                read_chan(t_sample, t_length, begin + keep, k - keep, in_buf + GRAIN_IN + keep, 1, true);
+            else
+                for (int i = keep; i < k; i++)
+                    in_buf[GRAIN_IN + i] = in_buf[i];
         }
     }
     win_begin = begin;
     win_ok = k == GRAIN_IN;
 }
 
-static void analyse()
+// One grain: analysis, synthesis, and its output (from START on) into the ring.
+static void grain()
 {
-    uint32_t t0 = DWT_CYCCNT, r0 = acc_read;
+    uint32_t t0 = DWT_CYCCNT;
     Bungee::InputChunk c = bg->specifyGrain(req);
     int k = c.end - c.begin;
     if (k > GRAIN_IN)
         k = GRAIN_IN;
     fill_window(c.begin, k);
     bg->analyseGrain(in_buf, GRAIN_IN);
-    analysed = true;
-    acc_an += DWT_CYCCNT - t0 - (acc_read - r0);
-}
+    uint32_t t1 = DWT_CYCCNT;
+    task_an += t1 - t0;
 
-static void synthesise()
-{
-    uint32_t t0 = DWT_CYCCNT;
     Bungee::OutputChunk o;
     bg->synthesiseGrain(o);
     if (unity_hop) {
@@ -321,125 +352,75 @@ static void synthesise()
         req.speed = 1.;
         bg->next(req);
     } else {
-        req.speed = speed;
+        req.speed = cur_ratio;
         bg->next(req);
     }
-    req.speed = speed;
-    analysed = false;
-    acc_syn += DWT_CYCCNT - t0;
+    req.speed = cur_ratio;
+    task_syn += DWT_CYCCNT - t1;
+
     double p0 = o.request[Bungee::OutputChunk::begin]->position;
-    if (std::isnan(p0) || p0 < start_pos)
+    if (std::isnan(p0) || p0 < START)
         return;   // preroll and the grains before the handoff
-    int n = o.frameCount;
-    if (n > PEND_MAX - pend_n)
-        n = PEND_MAX - pend_n;
     const float *r = bg_channels == 2 ? o.data + o.channelStride : o.data;
-    for (int i = 0; i < n; i++) {
-        pend_l[pend_n + i] = o.data[i];
-        pend_r[pend_n + i] = r[i];
+    uint32_t w = w_frames;
+    for (int i = 0; i < o.frameCount; i++) {
+        ring_l[(w + i) % RING] = o.data[i];
+        ring_r[(w + i) % RING] = r[i];
     }
-    pend_n += n;
+    DMB();
+    w_frames = w + (uint32_t)o.frameCount;
 }
 
-static void half_step()
+// A new launch: the stretcher for its channel count, Bungee primed from START with its first
+// hop at speed 1 (phases match the raw Clip at the handoff).
+static void start_launch()
 {
-    if (!analysed)
-        analyse();
-    else if (pend_n < SUB)
-        synthesise();
-}
-
-static void start_launch(float ratio)
-{
-    int channels = cur_stereo ? 2 : 1;
-    skip_step = false;
-    if (channels != bg_channels) {
-        // ~0.5M instructions: this launch's first block does it instead of a half-step, and
-        // the handoff moves one sub-block later to stay in step with the raw Clip.
-        if (!build(channels))
-            return;
-        skip_step = true;
+    t_sample = l_sample;
+    t_length = l_length;
+    t_stereo = l_stereo;
+    int channels = t_stereo ? 2 : 1;
+    if (channels != bg_channels && !build(channels)) {
+        active = false;
+        return;
     }
-    start_pos = START + (skip_step ? SUB : 0);
     req = {};
-    req.position = start_pos;
-    req.speed = 1.;          // the preroll hop at speed 1: phases match the clip at START
+    req.position = START;
+    req.speed = 1.;
     req.pitch = 1.;
     req.reset = true;
     req.resampleMode = resampleMode_autoOut;
     bg->preroll(req);
-    speed = ratio;
     unity_hop = true;
-    pend_n = 0;
-    analysed = false;
-    primed = false;
-    win_ok = false;          /* a new Clip, or the same from the start: read the window afresh */
-    launch = true;
-    raw_pos = 0;
+    win_ok = false;
+    w_frames = 0;
+    active = true;
 }
 
-// One sub-block (n <= SUB) into l/r: at most one half-grain of Bungee's work.
-static void render(float *l, float *r, int n)
+void rubber_work(void)
 {
-    int i, m;
-    bool stepped = false;
-    bool handoff = false;
-    if (launch) {
-        // The raw Clip plays while Bungee primes, and on until it reaches start_pos, where the
-        // handoff happens, inside this sub-block if need be (a launch can start mid-block).
-        if (!primed) {
-            if (skip_step)
-                skip_step = false;
-            else
-                half_step();
-            stepped = true;
-            primed = pend_n >= SUB;
-        }
-        m = primed ? start_pos - raw_pos : n;
-        if (m > n)
-            m = n;
-        if (m < 0)
-            m = 0;
-        if (m > 0) {
-            read_clip(raw_pos, m, l, r);
-            raw_pos += m;
-        }
-        if (m == n)
-            return;
-        l += m;
-        r += m;
-        n -= m;
-        handoff = true;
+    uint32_t t0 = DWT_CYCCNT;
+    uint32_t seq = req_seq;
+    DMB();
+    if (seq != cur_seq) {
+        cur_seq = seq;
+        if (req_stop || !l_sample || !bg)
+            active = false;
+        else
+            start_launch();
+        DMB();
+        ring_seq = seq;
     }
-    while (pend_n < n) {   // only if Bungee ever fell behind
-        if (!analysed)
-            analyse();
-        synthesise();
+    for (int g = 0; active && bg && g < WAKE_GRAINS; g++) {
+        if (w_frames - r_frames > (uint32_t)(RING - HOP))
+            break;   // a grain's output would overwrite frames not played yet
+        if (req_seq != cur_seq)
+            break;   // a new launch came in: next wake
+        grain();
     }
-    for (i = 0; i < n; i++) {
-        l[i] = pend_l[i];
-        r[i] = pend_r[i];
-    }
-    if (handoff) {
-        // The handoff: the raw Clip carries on under Bungee's first XF frames. They are in phase
-        // here (unity preroll hop), so a linear fade keeps the level.
-        int k = n < XF ? n : XF;
-        read_clip(raw_pos, k, xf_l, xf_r);
-        for (i = 0; i < k; i++) {
-            float a = (i + 0.5f) / XF;
-            l[i] = a * l[i] + (1.f - a) * xf_l[i];
-            r[i] = a * r[i] + (1.f - a) * xf_r[i];
-        }
-        launch = false;
-    }
-    pend_n -= n;
-    for (i = 0; i < pend_n; i++) {
-        pend_l[i] = pend_l[n + i];
-        pend_r[i] = pend_r[n + i];
-    }
-    if (!stepped)
-        half_step();
+    task_cyc += DWT_CYCCNT - t0;
 }
+
+// ---- audio task: the Clip's lanes, launch, ring --------------------------------------------
 
 static bool lane_on(unsigned lane) { return L8(lane, 0) && !L8(lane, 0x148); }
 
@@ -503,10 +484,92 @@ static unsigned pick_lane(unsigned clip)
     return on_a ? a : on_b ? b : 0;
 }
 
+// One block's Bungee audio, n frames into l/r.
+static void play(float *l, float *r, int n)
+{
+    int i, m;
+    if (launching) {
+        // The raw Clip plays until START, then on until Bungee's ring has that frame (if the leaf
+        // task is late, its first frames are dropped to stay in time; the phases then match a
+        // little less well at the crossfade).
+        m = START - raw_pos;
+        if (m > n)
+            m = n;
+        if (m > 0) {
+            read_raw(raw_pos, m, l, r);
+            raw_pos += m;
+            l += m;
+            r += m;
+            n -= m;
+        }
+        if (n == 0)
+            return;
+        uint32_t skip = (uint32_t)(raw_pos - START);
+        if (ring_seq != my_seq || w_frames < skip + (uint32_t)n) {
+            read_raw(raw_pos, n, l, r);
+            raw_pos += n;
+            return;
+        }
+        r_frames = skip;
+        launching = false;
+        int k = n < XF ? n : XF;
+        read_raw(raw_pos, k, xf_l, xf_r);
+        for (i = 0; i < n; i++) {
+            l[i] = ring_l[(skip + i) % RING];
+            r[i] = ring_r[(skip + i) % RING];
+        }
+        for (i = 0; i < k; i++) {
+            float a = (i + 0.5f) / XF;
+            l[i] = a * l[i] + (1.f - a) * xf_l[i];
+            r[i] = a * r[i] + (1.f - a) * xf_r[i];
+        }
+        DMB();
+        r_frames = skip + (uint32_t)n;
+        return;
+    }
+    uint32_t rd = r_frames, avail = ring_seq == my_seq ? w_frames - rd : 0;
+    m = avail < (uint32_t)n ? (int)avail : n;
+    DMB();
+    for (i = 0; i < m; i++) {
+        l[i] = ring_l[(rd + i) % RING];
+        r[i] = ring_r[(rd + i) % RING];
+    }
+    for (; i < n; i++)
+        l[i] = r[i] = 0.f;   // the leaf task was late: silence, counted
+    if (m < n)
+        underruns++;
+    DMB();
+    r_frames = rd + (uint32_t)m;
+}
+
+static void launch_voice(void *sample, int length, int stereo)
+{
+    a_sample = sample;
+    a_length = length;
+    a_stereo = stereo;
+    l_sample = sample;
+    l_length = length;
+    l_stereo = stereo;
+    req_stop = false;
+    raw_pos = 0;
+    r_frames = 0;
+    launching = true;
+    playing = true;
+    DMB();
+    req_seq = ++my_seq;
+}
+
+static void stop_voice()
+{
+    playing = false;
+    req_stop = true;
+    DMB();
+    req_seq = ++my_seq;
+}
+
 void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
 {
     RbVoice *v = voice();
-    uint32_t t0 = DWT_CYCCNT;
     if (!bg || !clip || !lane || !mix || !ctx)
         return;
     lane = pick_lane(clip);
@@ -533,15 +596,13 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     FW_BUF_PLANES(scratch, &dl, &dr);
     if (!dl)
         return;
-    cur_sample = sample;
-    cur_length = length;
-    cur_stereo = stereo;
 
     float ratio = *(float *)(clip + 0xBB4);   // tempo / clip tempo (repitch.S hook_rate)
     if (!(ratio >= RB_MIN_RATIO))
         ratio = RB_MIN_RATIO;
     if (ratio > RB_MAX_RATIO)
         ratio = RB_MAX_RATIO;
+    cur_ratio = ratio;
 
     int reset = v->reset_req;
     v->reset_req = 0;
@@ -549,18 +610,11 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     if ((a0 || a1) && !v->prev_active)
         reset = 1;
     v->prev_active = (a0 || a1) ? 1 : 0;
-    if (reset || !started || (cur_stereo ? 2 : 1) != bg_channels)
-        start_launch(ratio);
-    started = true;
-    if (!bg)
-        return;   // a rebuild that did not fit ("Bungee! mem"): this Clip stays silent
-    speed = ratio;
-    if (!unity_hop)
-        req.speed = speed;
+    if (reset || !playing || sample != a_sample || stereo != a_stereo)
+        launch_voice(sample, length, stereo);
 
     // Launch pre-delay (lane+0x138: where in the block the note starts): silence before it.
-    static float mono_r[SUB];
-    float *rr = dr ? dr : 0;
+    static float mono_r[SUB];   /* a buffer without a right plane: play() still writes one */
     int d = L32(lane, 0x138);
     if (d < 0)
         d = 0;
@@ -568,12 +622,13 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     L32(lane, 0x138) = d > n ? d - n : 0;
     for (int at = from; at < n; at += SUB) {
         int k = n - at < SUB ? n - at : SUB;
-        render(dl + at, rr ? rr + at : mono_r, k);
+        play(dl + at, dr ? dr + at : mono_r, k);
     }
 
-    // As stock: the amp envelope once the pre-delay is over, then the pad filter, then the mix.
+    // As stock: the amp envelope once the pre-delay is over (R as the buffer has it, as stock
+    // passes it), then the pad filter, then the mix.
     if (!L32(lane, 0x138))
-        FW_ENV_APPLY((void *)(lane + 0x258), dl, rr ? rr : mono_r, n);
+        FW_ENV_APPLY((void *)(lane + 0x258), dl, dr, n);
     FW_BUF_ENV((void *)(lane + 0x14c), scratch);
     FW_BUF_MIX((void *)mix, scratch);
 
@@ -602,28 +657,30 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         }
     }
     if (ended) {
-        started = false;
-        acc_cyc = peak_cyc = n_blocks = 0;
-        acc_read = acc_an = acc_syn = 0;
+        stop_voice();
         set_label("Bungee");
+        lbl_blocks = 0;
         return;
     }
 
-    uint32_t cyc = DWT_CYCCNT - t0;
-    acc_cyc += cyc;
-    if (cyc > peak_cyc)
-        peak_cyc = cyc;
-    if (++n_blocks >= RB_BLOCKS_SEC) {
-        v->avg_cyc = acc_cyc / n_blocks;
-        v->peak_cyc = peak_cyc;
-        // 480 MHz / 48 kHz = 10000 cycles per frame: % = cycles * 100 / (n * 10000).
-        uint32_t per = (uint32_t)n * 100u * n_blocks;
+    // The label, once a second: the leaf task's CPU share (DWT cycles over wall time).
+    if (lbl_blocks == 0) {
+        lbl_t0 = DWT_CYCCNT;
+        task_cyc = task_an = task_syn = underruns = 0;
+    }
+    if (++lbl_blocks > RB_BLOCKS_SEC) {
+        uint32_t wall = DWT_CYCCNT - lbl_t0, per = wall / 100u + 1u;
 #if BG_PROFILE
-        label_profile(acc_cyc / per, acc_read / per, acc_an / per, acc_syn / per);
+        label_profile(task_cyc / per, task_an / per, task_syn / per, underruns);
 #else
-        label_load(acc_cyc / per);
+        label_load(task_cyc / per);
 #endif
-        acc_cyc = peak_cyc = n_blocks = 0;
-        acc_read = acc_an = acc_syn = 0;
+        if (underruns > RB_BLOCKS_SEC / 8u) {
+            // Late for more than an eighth of the blocks: too slow for this unit's load. Off, as
+            // the CPU guard would (stock grains from the next block).
+            v->state = (v->state & ~0xffu) | RB_ST_SLOW;
+            set_label("Bungee! cpu");
+        }
+        lbl_blocks = 0;
     }
 }

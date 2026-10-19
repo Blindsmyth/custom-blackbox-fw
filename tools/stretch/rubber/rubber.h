@@ -19,6 +19,7 @@
 
 typedef int (*rb_boot_fn)(void);   /* 1 = started, 0 = not (out of memory) */
 typedef void (*rb_mix_fn)(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);
+typedef void (*rb_work_fn)(void);  /* the leaf's background task body, one wake (Bungee) */
 
 /* The first 32 bytes of bank 2 (one flash word). The loader writes it last. */
 typedef struct RbHeader {
@@ -28,7 +29,8 @@ typedef struct RbHeader {
     uint32_t sum;         /* sum of the 32-bit words from offset 16 to length */
     uint32_t boot;        /* rb_boot_fn | 1 */
     uint32_t mix;         /* rb_mix_fn | 1 */
-    uint32_t reserved[2];
+    uint32_t work;        /* rb_work_fn | 1, or 0: the leaf has no background task (Rubber) */
+    uint32_t reserved;
 } RbHeader;
 
 /* Voice header, SRAM4 (free on main; Capi used the same slot on warp-capi). */
@@ -47,6 +49,9 @@ typedef struct RbVoice {
     uint32_t cyc_avg;     /* 48 rb_mix's cycles per block, smoothed over ~16 blocks (b2pair.c) */
     uint32_t over_n;      /* 52 blocks in a row with cyc_avg over RB_GUARD_CYC or the audio task over RB_GUARD_LOAD */
     uint32_t cyc_peak;    /* 56 worst rb_mix block since the Tools bar last showed it (diag.c) */
+    uint32_t pad60;       /* 60 */
+    void *bg_sem;         /* 64 the leaf's task waits on this; rb_mix gives it every block */
+    void *bg_task;        /* 68 its FreeRTOS handle */
 } RbVoice;
 
 #define RB_ST_UNKNOWN  0u
@@ -70,5 +75,10 @@ typedef struct RbVoice {
  * heap (rt.c) below. */
 #define RB_STACK_TOP   0x30048000u
 #define RB_STACK_SIZE  0x00003000u    /* 12 KB: the render needs 5.2 KB (bench) */
+/* A leaf with a background task (Bungee): rubber_boot and the audio-side mix use the top part,
+ * the task the bottom part, so the audio task preempting the leaf task never shares a stack. */
+#define RB_TASK_STACK_TOP  0x30047000u   /* 0x30045000-0x30047000: 8 KB for the task */
+#define RB_TASK_PRIO       5u            /* FreeRTOS: UI and disk 3, USB host 4, audio 6 */
+#define RB_TASK_WORDS      128u          /* its FreeRTOS stack: the switch to its own stack only */
 
 #endif

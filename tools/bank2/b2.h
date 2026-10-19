@@ -74,6 +74,9 @@ void rb_stage(uint32_t stage);
 void rb_bkp_flush(void);
 /* rubber_cave.S: fn(a, b, c, d) on Rubber's own stack (RB_STACK_TOP). */
 uint32_t rb_call_on_stack(uint32_t fn, unsigned a, unsigned b, unsigned c, unsigned d);   /* fn's r0 */
+void rb_call_at(uint32_t fn, uint32_t stack_top);   /* fn() on the stack ending at stack_top (cave asm) */
+void rb_work(void);                                 /* b2pair.c: one wake of the leaf's task */
+int rb_ready(void);                                 /* b2pair.c: may the leaf render */
 /* b2pair.c, from the card loader's poll (pcmStreamer): start bank 2 once pairing found it. */
 void rb_start(void);
 /* b2pair.c: append the loader's one-character verdict to the Rubber label. */
