@@ -203,6 +203,8 @@ def stock_bl(stock, va, dest):
 def add_rubber_sites(stock):
     mix.SITES.extend([
         (0x080667B8, "hook_lane", False, "2de9f04f"),            # per-lane render: Rubber renders
+        (0x080B10E0, "warp_count", True, stock_bl(stock, 0x080B10E0, 0x0808E2A4)),  # Warp list per pad
+        (0x08071472, "sd_read_retry", True, stock_bl(stock, 0x08071472, 0x0807714C)),  # sample block read
         *[(va, "b2load_thunk", True, stock_bl(stock, va, 0x08092F5C))
           for va in (0x0807443E, 0x0807446E, 0x080744D8)],     # pcmStreamer file steps: card loader
         (0x080414E4, "cpu_wait", True, stock_bl(stock, 0x080414E4, 0x08088756)),   # audio wait: CPU meter

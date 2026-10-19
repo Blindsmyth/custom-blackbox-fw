@@ -248,3 +248,70 @@ void rb_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
 /* The expectations the build fills in (b2_finish in build_patch.py). In .rodata, so in the cave. */
 __attribute__((used)) const volatile uint32_t rb_expect_id = 0xffffffffu;
 __attribute__((used)) const volatile uint32_t rb_expect_sum = 0xffffffffu;
+
+/* ---- Warp list per pad: Bungee only within one choke group ------------------------------------
+ * The leaf is one voice (repitch.S hook_main_rate: the latest launch takes it), so it is offered
+ * only where switching between pads is a choke switch: on a pad that already has it, or in the
+ * same Excl Group (param 0xC4, 0 = none) as the pad(s) that have it. Everywhere else the Warp
+ * row lists one entry fewer; the leaf is the last entry in both lists (repitch.S labels_repitch).
+ * The pad page copies an enum's value count into its widget when it builds (bl 0x0808E2A4 at
+ * 0x080B10E0 in FUN_080B1084), and rebuilds on every pad selection and param change. UI task. */
+typedef unsigned (*count_fn)(unsigned id);
+typedef int (*param_get_fn)(void *bag, unsigned id);
+#define FW_PARAM_COUNT ((count_fn)0x0808E2A5u)
+#define FW_PARAM_GET   ((param_get_fn)0x08093E9Du)
+#define ID_WARP        0x19Cu
+#define ID_CHOKE       0xC4u
+#define ID_CELLMODE    0x8Bu             /* 1 Clip, 2 Slicer */
+#define PAD_VIEW_PTR   0x24002E6Cu       /* UI root; the pad edit view is at +0x732D8 */
+#define PAD_VIEW_KEY   (0x732D8u + 0xD814u)   /* u16: row << 4 | col of the pad being edited */
+#define PAD_BAGS       (0x24020088u + 0x1840u) /* app session: bag = + row * 0xF0 + col * 0x30 */
+
+extern const uint32_t warp_leaf_v;      /* repitch.S: the leaf's Warp value */
+
+static void *pad_bag(unsigned row, unsigned col)
+{
+    return (void *)(PAD_BAGS + row * 0xF0u + col * 0x30u);
+}
+
+static int pad_has_leaf(void *bag)
+{
+    return FW_PARAM_GET(bag, ID_CELLMODE) == 1 && (uint32_t)FW_PARAM_GET(bag, ID_WARP) == warp_leaf_v;
+}
+
+unsigned warp_count(unsigned id)
+{
+    unsigned n = FW_PARAM_COUNT(id);
+    uint32_t root;
+    unsigned key, prow, pcol, row, col;
+    int pgroup, leaf_group = -1;
+    if (id != ID_WARP || n < 2)
+        return n;
+    root = *(volatile uint32_t *)PAD_VIEW_PTR;
+    if (!root)
+        return n;
+    key = *(volatile uint16_t *)(root + PAD_VIEW_KEY);
+    prow = (key >> 4) & 0xFu;
+    pcol = key & 0xFu;
+    if (prow >= 4 || pcol >= 5)
+        return n;
+    if (pad_has_leaf(pad_bag(prow, pcol)))
+        return n;                   /* it has it: keep it selectable */
+    pgroup = FW_PARAM_GET(pad_bag(prow, pcol), ID_CHOKE);
+    for (row = 0; row < 4; row++)
+        for (col = 0; col < 5; col++) {
+            void *bag = pad_bag(row, col);
+            if ((row == prow && col == pcol) || !pad_has_leaf(bag))
+                continue;
+            int g = FW_PARAM_GET(bag, ID_CHOKE);
+            if (leaf_group < 0)
+                leaf_group = g;
+            else if (g != leaf_group)
+                leaf_group = 0;     /* (only a preset from before this rule) */
+        }
+    if (leaf_group < 0)
+        return n;                   /* no pad has it yet: free to choose */
+    if (pgroup != 0 && pgroup == leaf_group)
+        return n;                   /* same choke group */
+    return n - 1;
+}

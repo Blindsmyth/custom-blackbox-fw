@@ -3015,6 +3015,92 @@ def t_bungee_clock_feedback_switch(bench, res):
     res.check(b.u8(clip_b + 0x260) == 0, "loop off: lane ended at the end of the file")
 
 
+def t_warp_list_per_pad(bench, res):
+    """3.1.B: the leaf is offered only on a pad that has it or in its pad's Excl Group (the Warp
+    row's count, b2pair.c warp_count at the pad page's bl 0x0808E2A4)."""
+    if "warp_count" not in bench.sym:
+        res.check(True, "not in this image (skipped)")
+        return
+    b = bench.b
+    if b.u32(REG_PTR) == 0:
+        b.call(PARAM_REGISTER_ALL, 0)
+    full = b.call(0x0808E2A5, 0x19C)
+    leaf = leaf_v(bench)
+    res.check(full == leaf + 1, f"Warp list has {full} entries, the leaf last ({leaf})")
+    params = {}
+
+    def bag(row, col):
+        return 0x24020088 + 0x1840 + row * 0xF0 + col * 0x30
+
+    b.stub(0x08093E9C, lambda bb: params.get((bb.arg(0), bb.arg(1)), 0))
+    root = 0x2406F000 - (0x732D8 + 0xD814)            # so the pad key lands in mapped RAM
+    b.w32(0x24002E6C, root)
+
+    def count_for(row, col):
+        b.mu.mem_write(root + 0x732D8 + 0xD814, struct.pack("<H", row << 4 | col))
+        return b.call(bench.sym["warp_count"], 0x19C)
+
+    def pad(row, col, warp, group, mode=1):
+        params[(bag(row, col), 0x19C)] = warp
+        params[(bag(row, col), 0xC4)] = group
+        params[(bag(row, col), 0x8B)] = mode
+
+    res.check(count_for(0, 0) == full and b.call(bench.sym["warp_count"], 0x8B) == b.call(0x0808E2A5, 0x8B),
+              f"no leaf anywhere: full list ({full}); other params untouched")
+    pad(0, 0, leaf, 1)                               # pad A1: leaf, Excl A
+    pad(0, 1, 0, 1)                                  # same group
+    pad(0, 2, 0, 2)                                  # other group
+    pad(0, 3, 0, 0)                                  # no group
+    res.check(count_for(0, 0) == full, "the leaf's own pad keeps it")
+    res.check(count_for(0, 1) == full, "same Excl Group: offered")
+    res.check(count_for(0, 2) == full - 1, "other Excl Group: not offered")
+    res.check(count_for(0, 3) == full - 1, "no Excl Group: not offered")
+    pad(0, 0, leaf, 0)                               # the leaf's pad in no group
+    res.check(count_for(0, 1) == full - 1, "leaf pad without a group: nowhere else")
+    pad(0, 0, leaf, 1)
+    pad(0, 0 + 4, 0, 1, mode=2)
+    res.check(count_for(0, 4) == full, "count is per pad, not per mode (the Slicer row is not changed)")
+
+
+def t_sd_read_retry(bench, res):
+    """A failed sample block read is retried after clearing FatFs's sticky error and seeking back
+    (stock zero-fills it, marks it valid, and every later block of the sample then fails too)."""
+    if "sd_read_retry" not in bench.sym:
+        res.check(True, "not in this image (skipped)")
+        return
+    b = bench.b
+    wave, fil, dest = 0x2001F000, 0x2001F100, 0x2001F200
+    b.mu.mem_write(wave, b"\x00" * 0x40)
+    b.mu.mem_write(fil, b"\x00" * 0x40)
+    b.w32(wave + 4, fil)
+    b.mu.mem_write(wave + 0x28, b"\x01")
+    b.w32(wave + 0xC, 0x123400)
+    b.w32(0x38007100, 0x31474144)                    # diag running
+    b.w32(0x38007100 + 40, 0)
+    fails, seeks = [0], []
+
+    def read(bb):
+        if fails[0] > 0:
+            fails[0] -= 1
+            bb.mu.mem_write(fil + 0x31, b"\x01")    # f_read failed: the error sticks
+            return 0
+        return 1 if bb.u8(fil + 0x31) == 0 else 0
+
+    b.stub(0x0807714C, read)
+    b.stub(0x08086D96, lambda bb: seeks.append((bb.arg(0), bb.arg(2))) or 0)
+    fails[0] = 0
+    res.check(b.call(bench.sym["sd_read_retry"], wave, dest, 0xC000) == 1 and not seeks, "a good read: no retry")
+    fails[0] = 2
+    ok = b.call(bench.sym["sd_read_retry"], wave, dest, 0xC000)
+    res.check(ok == 1 and seeks == [(fil, 0x123400), (fil, 0x123400)] and b.u8(fil + 0x31) == 0,
+              f"two failures: error cleared, seek back, third try reads ({ok}, {seeks})")
+    seeks.clear()
+    fails[0] = 9
+    ok = b.call(bench.sym["sd_read_retry"], wave, dest, 0xC000)
+    res.check(ok == 0 and len(seeks) == 3, f"a card that keeps failing: three retries, then failure ({len(seeks)})")
+    res.check(b.u16(0x38007100 + 40) == 2 and b.u16(0x38007100 + 42) == 1, "counted: 2 retried, 1 still failed")
+
+
 def t_rubber_broken_left_alone(bench, res):
     """A payload whose start crashed is not rewritten: that turned one crash into one per preset load."""
     pay = rb_payload(bench)
@@ -3468,6 +3554,8 @@ def main():
             ("Rubber CPU guard", t_rubber_cpu_guard),
             ("Rubber/Bungee voice ends like a stock lane (emu build)", t_bungee_voice_end),
             ("Rubber/Bungee clock lock, pad feedback, pad switch (emu build)", t_bungee_clock_feedback_switch),
+            ("Rubber/Bungee Warp list per pad (choke group)", t_warp_list_per_pad),
+            ("Rubber/Bungee sample read retry", t_sd_read_retry),
             ("Rubber cost flat over tempo (emu build)", t_rubber_cost_flat),
             ("Rubber takes over bank 2 only with RBTAKE.TXT", t_rubber_takeover),
             ("Rubber gives bank 2 back with RBFREE.TXT", t_rubber_release),

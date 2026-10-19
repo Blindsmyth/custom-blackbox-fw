@@ -63,6 +63,8 @@ struct diag_state {
     uint16_t avg_shown, peak_shown;
     uint8_t armed, status, late, pad;
     uint32_t load_ema;           /* per-mille load, smoothed over ~16 blocks (the bank-2 leaf's guard) */
+    uint16_t sd_retried;         /* sample block reads that failed and were retried (sd_read_retry) */
+    uint16_t sd_failed;          /* ... and still failed after the retries */
 };
 #define DIAG       ((volatile struct diag_state *)0x38007100u)   /* SRAM4, after RbVoice */
 #define DIAG_MAGIC 0x31474144u   /* "DAG1" */
@@ -86,10 +88,10 @@ static void start(void)
     m->late = 0;
     m->n = m->peak = m->win_n = m->wakes = 0;
     m->avg_shown = m->peak_shown = 0;
+    m->sd_retried = m->sd_failed = 0;
     m->magic = DIAG_MAGIC;
 }
 
-/* Replaces the audio task's queue wait (bl 0x08088756 at 0x080414E4). */
 /* The audio task's whole load, per mille of a block, smoothed over ~16 blocks; 0 until the
  * nominal block is known (~1 s after boot). For the bank-2 leaf's guard (b2pair.c rb_mix): the
  * leaf's own share can be under its limit while the block as a whole is not. */
@@ -99,6 +101,7 @@ uint32_t diag_load(void)
     return m->magic == DIAG_MAGIC && m->nom ? m->load_ema : 0u;
 }
 
+/* Replaces the audio task's queue wait (bl 0x08088756 at 0x080414E4). */
 int cpu_wait(void *queue, void *item, uint32_t ticks, int peek)
 {
     volatile struct diag_state *m = DIAG;
@@ -222,6 +225,13 @@ static void compose(char *buf)
     }
     if (!crash)
         p = rubber_share(buf, p);
+    if (m->magic == DIAG_MAGIC && (m->sd_retried || m->sd_failed)) {
+        *p++ = ' ';
+        *p++ = 'E';                /* card reads: retried / still failed, since boot */
+        p = put_uint(p, m->sd_retried);
+        *p++ = '/';
+        p = put_uint(p, m->sd_failed);
+    }
     *p = 0;
 }
 
@@ -232,7 +242,7 @@ static void compose(char *buf)
 void cpu_mid(uint8_t *label)
 {
     volatile struct diag_state *m = DIAG;
-    char buf[32];                /* "999/999%+99 R999/999" at most */
+    char buf[40];                /* "999/999%+99 R999/999 E9999/9999" at most */
     if (m->magic == DIAG_MAGIC && m->n) {
         m->avg_shown = (uint16_t)(m->sum / m->n);
         m->peak_shown = m->peak;
@@ -350,4 +360,35 @@ void diag_boot(void)
     NVIC_IPR0 = 0;               /* highest: it must preempt whatever is spinning */
     NVIC_ISER0 = 1u;             /* IRQ 0 = WWDG1 (write-one-to-set) */
     WWDG_CFR |= WWDG_EWI;
+}
+
+/* Sample block reads (pcmStreamer, FUN_080713BC: bl 0x0807714C at 0x08071472). Stock zero-fills
+ * the block when f_read fails, still marks it fully valid, and FatFs keeps the error on the file
+ * (FIL+0x31), so every later block of that sample loads as zeros too: "the waveform is only
+ * partly loaded" until the sample is reloaded. Here a failed read clears that error, seeks back to
+ * where the read started (wave+0xC, which a failed read leaves alone) and tries again. */
+typedef int (*wave_read_fn)(void *wave, void *dest, unsigned bytes);
+typedef int (*lseek_fn)(void *fil, unsigned unused, uint32_t lo, uint32_t hi);
+#define FW_WAVE_READ ((wave_read_fn)0x0807714Du)
+#define FW_F_LSEEK   ((lseek_fn)0x08086D97u)       /* f_lseek(FIL, FSIZE_t): 64-bit offset in r2:r3 */
+#define SD_TRIES     3
+
+int sd_read_retry(void *wave, void *dest, unsigned bytes)
+{
+    volatile struct diag_state *m = DIAG;
+    int ok = FW_WAVE_READ(wave, dest, bytes);
+    for (int k = 0; !ok && k < SD_TRIES; k++) {
+        volatile uint8_t *w = (volatile uint8_t *)wave;
+        volatile uint8_t *fil = *(uint8_t *volatile *)(w + 4);
+        if (!w[0x28] || !fil)
+            break;                 /* not open: nothing to retry */
+        if (k == 0 && m->magic == DIAG_MAGIC && m->sd_retried < 0xffffu)
+            m->sd_retried++;
+        fil[0x31] = 0;             /* FatFs's sticky error */
+        FW_F_LSEEK((void *)fil, 0, *(volatile uint32_t *)(w + 0xC), 0);
+        ok = FW_WAVE_READ(wave, dest, bytes);
+    }
+    if (!ok && m->magic == DIAG_MAGIC && m->sd_failed < 0xffffu)
+        m->sd_failed++;
+    return ok;
 }
