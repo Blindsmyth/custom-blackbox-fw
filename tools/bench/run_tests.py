@@ -2267,6 +2267,10 @@ def t_master_gui(bench, res):
 
 RB_VOICE = 0x38007000
 RB_B2 = 0x08100000
+# The stock lane's envelope, aux and filter resets (the leaf runs them as the stock lane render does;
+# tools/stretch/bungee/bungee.cpp). In the render cases: unity gain, nothing to reset.
+LANE_STUBS = ((0x0806A6C0, lambda bb: 0), (0x0806A63C, lambda bb: 0), (0x0806A698, lambda bb: 0),
+              (0x0806A5D8, lambda bb: 0), (0x0806EF38, lambda bb: 0), (0x08076704, lambda bb: 0))
 RB_BKP = 0x38800000
 FLASH2_REGS = (0x52002104, 0x5200210C, 0x52002110, 0x52002114)   # KEYR2 CR2 SR2 CCR2
 FLASH1_REGS = (0x52002004, 0x5200200C, 0x52002010, 0x52002014)   # KEYR1 CR1 SR1 CCR1
@@ -2624,7 +2628,8 @@ def t_rubber_engine(bench, res):
     for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: stereo[0]),
                      (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, buf_clear), (0x0804D8E8, lambda bb: 256),
                      (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
-                     (0x0804DA6C, buf_mix)):
+                     (0x0804DA6C, buf_mix),
+                     *LANE_STUBS):
         b.stub(addr, fn)
     b.mu.mem_write(clip, b"\x00" * 0xC00)
     b.w32(clip + 0x24, sample)
@@ -2691,6 +2696,124 @@ def t_rubber_engine(bench, res):
     res.check(n_itcm > 8192 and bytes(b.mu.mem_read(bench.sym["__itcm_start"], n_itcm)) == bytes(b.mu.mem_read(load, n_itcm)),
               f"hot code copied into ITCM ({n_itcm} bytes)")
 
+
+
+def t_bungee_voice_end(bench, res):
+    """3.1.B: the leaf does what the stock lane render does around its grains, so a Bungee Clip
+    stops: amp envelope every block, end of voice when it finishes (STOP, note-off, mute arm it),
+    the quantised release, stopped grains, the launch pre-delay, one lane at a time."""
+    pay = rb_payload(bench)
+    if pay is None or "_emu" not in bench.image_path or rb_name(bench) != "Bungee":
+        res.check(True, "Bungee emu build only (skipped)")
+        return
+    import math
+    b = bench.b
+    b.mu.mem_write(RB_B2, bytes(pay))
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    b.call(bench.sym["rb_load_poll"], limit=2_000_000_000)
+    if rb_state(bench) != 1:
+        res.check(False, f"Bungee running ({rb_label(bench)!r})")
+        return
+    n_src = 48000
+    src = [0.3 * math.sin(2 * math.pi * 220 * i / 48000) for i in range(n_src)]
+    sample, clip, mixbuf, ctx, scratch = 0x2001C000, 0x2001C800, 0x2001E000, 0x2001E100, 0x2001E200
+    planes = (0x2001E400, 0x2001E800)
+    lane_a, lane_b = clip + 0x260, clip + 0x670
+    out, calls = [], []
+
+    def pcm_read(bb):
+        dest, count, pos = bb.arg(1), bb.arg(2), bb.arg(3)
+        bb.mu.mem_write(dest, struct.pack(f"<{count}f", *[src[(pos + i) % n_src] for i in range(count)]))
+        return count
+
+    def buf_planes(bb):
+        bb.w32(bb.arg(1), planes[0])
+        bb.w32(bb.arg(2), planes[1])
+
+    def buf_clear(bb):
+        bb.mu.mem_write(planes[0], b"\0" * 1024)
+        bb.mu.mem_write(planes[1], b"\0" * 1024)
+
+    for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: 1),
+                     (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, buf_clear), (0x0804D8E8, lambda bb: 256),
+                     (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
+                     (0x0804DA6C, lambda bb: out.extend(struct.unpack("<256f", bytes(bb.mu.mem_read(planes[0], 1024))))),
+                     (0x0806A6C0, lambda bb: calls.append(("env", bb.arg(0)))),
+                     (0x0806A63C, lambda bb: calls.append(("release", bb.arg(0)))),
+                     (0x0806A698, lambda bb: calls.append(("fast", bb.arg(0)))),
+                     (0x0806A5D8, lambda bb: calls.append(("env_reset", bb.arg(0)))),
+                     (0x0806EF38, lambda bb: calls.append(("aux_reset", bb.arg(0)))),
+                     (0x08076704, lambda bb: calls.append(("filt_reset", bb.arg(0))))):
+        b.stub(addr, fn)
+
+    def launch(lane, tick, predelay=0):
+        b.mu.mem_write(lane, b"\x00" * 0x260)
+        b.mu.mem_write(lane, b"\x01")             # active
+        b.w32(lane + 0xD8, 1)                        # one stock grain in the list: slot 2
+        b.w32(lane + 0xC8, 2)
+        for o in (0xCC, 0xD0, 0xD4):
+            b.w32(lane + o, 0xFFFFFFFF)
+        b.mu.mem_write(clip + 2 * 0x70 + 0x30, b"\x01\x00")
+        b.mu.mem_write(lane + 0xE0, struct.pack("<q", tick))
+        b.w32(lane + 0x138, predelay)
+        b.mu.mem_write(lane + 0x25C, b"\x03")       # envelope in sustain
+        b.w32(RB_VOICE + 20, 1)                      # the grain hook's reset request
+
+    def mix(k):
+        for _ in range(k):
+            b.call(bench.sym["rb_mix"], clip, lane_a, mixbuf, ctx, limit=400_000_000)
+
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    b.w32(clip + 0x24, sample)
+    b.mu.mem_write(clip + 0xBB4, struct.pack("<f", 0.8))
+    launch(lane_a, 1000, predelay=100)
+    mix(12)
+    raw = struct.unpack("<1948f", struct.pack("<1948f", *src[:1948]))
+    res.check(not any(out[:100]) and max(abs(x - y) for x, y in zip(out[100:2048], raw)) == 0.0,
+              "pre-delay: 100 silent frames, then the raw launch from frame 0")
+    envs = [a for n_, a in calls if n_ == "env"]
+    res.check(len(envs) >= 11 and all(a == lane_a + 0x258 for a in envs), f"amp envelope every block ({len(envs)})")
+    # A quantised release: 600 frames to go, released in the block where fewer than 256 remain.
+    calls.clear()
+    b.mu.mem_write(lane_a + 0x134, b"\x01\x00")
+    b.w32(lane_a + 0x130, 600)
+    mix(2)
+    res.check([c for c in calls if c[0] == "release"] == [], "release not before it is due")
+    mix(1)
+    rel = [c for c in calls if c[0] in ("release", "fast")]
+    res.check(len(rel) == 2 and rel[0][1] == lane_a + 0x258 and b.u8(lane_a + 0x134) == 0,
+              f"release when due, flag cleared ({rel})")
+    # The envelope finished (STOP / note-off / mute): the lane ends as stock ends it.
+    calls.clear()
+    b.mu.mem_write(lane_a + 0x25C, b"\x05")
+    mix(1)
+    names = [c[0] for c in calls]
+    res.check(b.u8(lane_a) == 0 and b.u32(lane_a + 0xD8) == 0 and b.u32(lane_a + 0xC8) == 0xFFFFFFFF,
+              "envelope done: lane off, grain list empty")
+    res.check(b.u16(clip + 2 * 0x70 + 0x30) == 0, "its stock grain slot freed")
+    res.check(("env_reset", lane_a + 0x258) in calls and ("aux_reset", lane_a + 0xF0) in calls
+              and ("filt_reset", lane_a + 0x14C) in calls, f"envelope, aux and filter reset ({names})")
+    res.check(rb_label(bench) == "Bungee", f"label back to plain ({rb_label(bench)!r})")
+    k = len(out)
+    mix(3)
+    res.check(len(out) == k, "nothing mixed once the voice ended")
+    # Grains stopped (Clip_StopGrains: lane[9], empty list): ends too.
+    launch(lane_a, 2000)
+    mix(4)
+    b.mu.mem_write(lane_a + 9, b"\x01")
+    b.w32(lane_a + 0xD8, 0)
+    mix(1)
+    res.check(b.u8(lane_a) == 0, "grains stopped: lane off")
+    # A relaunch on the other lane while the first still sounds: the old lane ends, the new renders.
+    launch(lane_a, 3000)
+    mix(3)
+    calls.clear()
+    launch(lane_b, 4000)
+    mix(2)
+    res.check(b.u8(lane_a) == 0 and b.u8(lane_b) == 1, "relaunch: old lane ended, new lane on")
+    envs = [a for n_, a in calls if n_ == "env"]
+    res.check(envs and all(a == lane_b + 0x258 for a in envs), "relaunch: the new lane's envelope runs")
 
 
 def t_rubber_broken_left_alone(bench, res):
@@ -3022,7 +3145,8 @@ def t_rubber_cost_flat(bench, res):
     for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: 1),
                      (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, lambda bb: 0), (0x0804D8E8, lambda bb: 256),
                      (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
-                     (0x0804DA6C, lambda bb: 0)):
+                     (0x0804DA6C, lambda bb: 0),
+                     *LANE_STUBS):
         b.stub(addr, fn)
     b.mu.hook_add(UC_HOOK_BLOCK, lambda mu, a, sz, d: work.__setitem__(0, work[0] + sz), begin=0, end=0xFFFF)
     b.mu.hook_add(UC_HOOK_BLOCK, lambda mu, a, sz, d: work.__setitem__(0, work[0] + sz), begin=RB_B2, end=0x081FFFFF)
@@ -3136,6 +3260,7 @@ def main():
             ("Rubber engine renders (emu build)", t_rubber_engine),
             ("Rubber broken start is left alone", t_rubber_broken_left_alone),
             ("Rubber CPU guard", t_rubber_cpu_guard),
+            ("Rubber/Bungee voice ends like a stock lane (emu build)", t_bungee_voice_end),
             ("Rubber cost flat over tempo (emu build)", t_rubber_cost_flat),
             ("Rubber takes over bank 2 only with RBTAKE.TXT", t_rubber_takeover),
             ("Rubber gives bank 2 back with RBFREE.TXT", t_rubber_release),

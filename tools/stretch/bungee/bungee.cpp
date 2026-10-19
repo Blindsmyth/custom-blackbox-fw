@@ -79,6 +79,22 @@ typedef void (*buf_mix_fn)(void *, void *);
 #define FW_BUF_PLANES ((buf_planes_fn)0x0804d9c1u)
 #define FW_BUF_ENV    ((buf_env_fn)0x080762d9u)
 #define FW_BUF_MIX    ((buf_mix_fn)0x0804da6du)
+// The stock Clip lane's voice: what FUN_080667B8 (the per-lane render our hook replaces) does around
+// its grains. STOP, note-off and mute only arm a release or stop the grains; the lane render runs
+// the amp envelope, sees it finish, and deactivates the lane. Without this a Bungee Clip played on.
+typedef void (*env_apply_fn)(void *, float *, float *, int);
+typedef void (*obj_fn)(void *);
+#define FW_ENV_APPLY  ((env_apply_fn)0x0806a6c1u)   /* (lane+0x258, L, R, n): gains in place, advances stages */
+#define FW_ENV_REL    ((obj_fn)0x0806a63du)         /* release (stages 1-3 -> 4) */
+#define FW_ENV_FAST   ((obj_fn)0x0806a699u)         /* fast release, 256 samples */
+#define FW_ENV_RESET  ((obj_fn)0x0806a5d9u)
+#define FW_AUX_RESET  ((obj_fn)0x0806ef39u)         /* lane+0xF0 */
+#define FW_FILT_RESET ((obj_fn)0x08076705u)         /* lane+0x14C, the pad filter */
+#define LANE_A        0x260u                        /* clip+0x260 and clip+0x670: a Clip's two lanes */
+#define LANE_B        0x670u
+#define L8(l, o)   (*(volatile uint8_t *)((l) + (o)))
+#define L16(l, o)  (*(volatile uint16_t *)((l) + (o)))
+#define L32(l, o)  (*(volatile int32_t *)((l) + (o)))
 
 #define DEMCR      (*(volatile uint32_t *)0xE000EDFCu)
 #define DWT_CTRL   (*(volatile uint32_t *)0xE0001000u)
@@ -362,21 +378,38 @@ static void start_launch(float ratio)
     raw_pos = 0;
 }
 
-// One 256-frame sub-block (n <= SUB) into l/r: at most one half-grain of Bungee's work.
+// One sub-block (n <= SUB) into l/r: at most one half-grain of Bungee's work.
 static void render(float *l, float *r, int n)
 {
-    int i;
-    if (!primed) {
-        // Priming: the raw Clip plays; the block that finishes priming plays raw too, or it would
-        // also owe the next grain's analysis.
-        if (skip_step)
-            skip_step = false;
-        else
-            half_step();
-        primed = pend_n >= SUB;
-        read_clip(raw_pos, n, l, r);
-        raw_pos += n;
-        return;
+    int i, m;
+    bool stepped = false;
+    bool handoff = false;
+    if (launch) {
+        // The raw Clip plays while Bungee primes, and on until it reaches start_pos, where the
+        // handoff happens, inside this sub-block if need be (a launch can start mid-block).
+        if (!primed) {
+            if (skip_step)
+                skip_step = false;
+            else
+                half_step();
+            stepped = true;
+            primed = pend_n >= SUB;
+        }
+        m = primed ? start_pos - raw_pos : n;
+        if (m > n)
+            m = n;
+        if (m < 0)
+            m = 0;
+        if (m > 0) {
+            read_clip(raw_pos, m, l, r);
+            raw_pos += m;
+        }
+        if (m == n)
+            return;
+        l += m;
+        r += m;
+        n -= m;
+        handoff = true;
     }
     while (pend_n < n) {   // only if Bungee ever fell behind
         if (!analysed)
@@ -387,7 +420,7 @@ static void render(float *l, float *r, int n)
         l[i] = pend_l[i];
         r[i] = pend_r[i];
     }
-    if (launch) {
+    if (handoff) {
         // The handoff: the raw Clip carries on under Bungee's first XF frames. They are in phase
         // here (unity preroll hop), so a linear fade keeps the level.
         int k = n < XF ? n : XF;
@@ -404,7 +437,70 @@ static void render(float *l, float *r, int n)
         pend_l[i] = pend_l[n + i];
         pend_r[i] = pend_r[n + i];
     }
-    half_step();
+    if (!stepped)
+        half_step();
+}
+
+static bool lane_on(unsigned lane) { return L8(lane, 0) && !L8(lane, 0x148); }
+
+// Stock's lane deactivate (FUN_080667B8 0x08066D2A-0x08066E78): the grains in the lane's list go
+// back to the Clip's four slots, the lane's fields clear, its envelope, aux and filter reset.
+static void lane_end(unsigned clip, unsigned lane, bool free_grains)
+{
+    if (free_grains) {
+        int count = L32(lane, 0xD8);
+        for (int g = 0; g < count && g < 4; g++) {
+            int idx = L32(lane, 0xC8 + 4 * g);
+            if (idx < 0 || idx > 3)
+                continue;
+            unsigned gr = clip + (unsigned)idx * 0x70u;
+            L16(gr, 0x30) = 0;
+            L32(gr, 0x68) = 0;
+            L8(gr, 0x6C) = 0;
+            *(volatile float *)(gr + 0x48) = 1.f;
+            L32(gr, 0x4C) = 0;
+            L32(gr, 0x50) = 0;
+            L32(gr, 0x54) = 0x100;
+            L32(gr, 0x58) = -1;
+            L32(gr, 0x5C) = 0x100;
+            L32(gr, 0x60) = 0;
+            L32(gr, 0x64) = 0;
+            for (int o = 0x38; o < 0x48; o += 4)
+                L32(gr, o) = 0;
+        }
+        L32(lane, 0xD8) = 0;
+    }
+    L8(lane, 0) = 0;
+    L32(lane, 4) = 0;
+    L16(lane, 8) = 0;
+    for (int o = 0xC8; o <= 0xD4; o += 4)
+        L32(lane, o) = -1;
+    L32(lane, 0x130) = 0;
+    L16(lane, 0x134) = 0;
+    L8(lane, 0x148) = 0;
+    for (int o = 0xE0; o < 0xF0; o += 4)
+        L32(lane, o) = 0;
+    for (int o = 0x138; o < 0x148; o += 4)
+        L32(lane, o) = 0;
+    FW_ENV_RESET((void *)(lane + 0x258));
+    FW_AUX_RESET((void *)(lane + 0xF0));
+    FW_FILT_RESET((void *)(lane + 0x14C));
+}
+
+// The lane Bungee renders: the newest active one (largest start tick, lane+0xE0). A relaunch
+// starts the new note on the other lane while the old one releases; Bungee is one voice, so the
+// old lane ends at once instead of hanging on unrendered.
+static unsigned pick_lane(unsigned clip)
+{
+    unsigned a = clip + LANE_A, b = clip + LANE_B;
+    bool on_a = lane_on(a), on_b = lane_on(b);
+    if (on_a && on_b) {
+        int64_t ta = *(volatile int64_t *)(a + 0xE0), tb = *(volatile int64_t *)(b + 0xE0);
+        unsigned old = ta >= tb ? b : a;
+        lane_end(clip, old, true);
+        return old == a ? b : a;
+    }
+    return on_a ? a : on_b ? b : 0;
 }
 
 void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
@@ -412,6 +508,9 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     RbVoice *v = voice();
     uint32_t t0 = DWT_CYCCNT;
     if (!bg || !clip || !lane || !mix || !ctx)
+        return;
+    lane = pick_lane(clip);
+    if (!lane)
         return;
     void *sample = *(void **)(clip + 0x24);
     if (!sample)
@@ -459,14 +558,56 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     if (!unity_hop)
         req.speed = speed;
 
+    // Launch pre-delay (lane+0x138: where in the block the note starts): silence before it.
     static float mono_r[SUB];
-    for (int at = 0; at < n; at += SUB) {
+    float *rr = dr ? dr : 0;
+    int d = L32(lane, 0x138);
+    if (d < 0)
+        d = 0;
+    int from = d < n ? d : n;
+    L32(lane, 0x138) = d > n ? d - n : 0;
+    for (int at = from; at < n; at += SUB) {
         int k = n - at < SUB ? n - at : SUB;
-        render(dl + at, dr ? dr + at : mono_r, k);
+        render(dl + at, rr ? rr + at : mono_r, k);
     }
 
+    // As stock: the amp envelope once the pre-delay is over, then the pad filter, then the mix.
+    if (!L32(lane, 0x138))
+        FW_ENV_APPLY((void *)(lane + 0x258), dl, rr ? rr : mono_r, n);
     FW_BUF_ENV((void *)(lane + 0x14c), scratch);
     FW_BUF_MIX((void *)mix, scratch);
+
+    // End of voice, as stock: the envelope finished (stop, note-off, mute), a quantised release
+    // came due, or the grains were stopped.
+    bool ended = false;
+    if (L8(lane, 0x25C) == 5) {
+        lane_end(clip, lane, true);
+        ended = true;
+    } else {
+        if (L8(lane, 0x134)) {
+            if (L32(lane, 0x130) >= n) {
+                L32(lane, 0x130) -= n;
+            } else {
+                if (L8(lane, 0x135))
+                    FW_ENV_FAST((void *)(lane + 0x258));
+                else
+                    FW_ENV_REL((void *)(lane + 0x258));
+                FW_ENV_REL((void *)(lane + 0x258));
+                L8(lane, 0x134) = 0;
+            }
+        }
+        if (L8(lane, 9) && L32(lane, 0xD8) == 0) {
+            lane_end(clip, lane, false);
+            ended = true;
+        }
+    }
+    if (ended) {
+        started = false;
+        acc_cyc = peak_cyc = n_blocks = 0;
+        acc_read = acc_an = acc_syn = 0;
+        set_label("Bungee");
+        return;
+    }
 
     uint32_t cyc = DWT_CYCCNT - t0;
     acc_cyc += cyc;
