@@ -49,7 +49,10 @@ typedef int (*f_close_fn)(void *file);
 /* RbVoice.state bit: the loader has had its one go this boot. */
 #define RB_ST_LOOKED 0x100u
 
-static const char RB_FILE[] = "BBRUBBER.BIN";
+#ifndef RB_PAYLOAD_FILE
+#define RB_PAYLOAD_FILE "BBRUBBER.BIN"   /* the Bungee build: "BBBUNGEE.BIN" */
+#endif
+static const char RB_FILE[] = RB_PAYLOAD_FILE;
 /* Opt-in files in the card root. Bank 2 holding someone else's payload (blackbox-mod uses the
  * same sectors, with its own claim word "BB2C") is left alone unless RB_TAKE is there; RB_FREE
  * erases ours and leaves bank 2 blank, which blackbox-mod's loader accepts again. */

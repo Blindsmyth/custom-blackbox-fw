@@ -851,7 +851,7 @@ def t_mix_hooks(bench, res):
                             (0x080F0F44, "mix_on_event", 0x080B5C71)):
         word = struct.unpack_from("<I", img, va - bd.BASE)[0]
         res.check(word == bench.sym[name] | 1, f"Mix vtable {va:#x} -> {name} ({word:#x}, stock {stock:#x})")
-    res.check(img[VERSION_OFF] in (ord("Q"), ord("R")), f"menu letter is {chr(img[VERSION_OFF])}")
+    res.check(img[VERSION_OFF] in (ord("Q"), ord("R"), ord("B")), f"menu letter is {chr(img[VERSION_OFF])}")
 
 
 def t_mix_pads(bench, res):
@@ -2272,10 +2272,27 @@ FLASH2_REGS = (0x52002104, 0x5200210C, 0x52002110, 0x52002114)   # KEYR2 CR2 SR2
 FLASH1_REGS = (0x52002004, 0x5200200C, 0x52002010, 0x52002014)   # KEYR1 CR1 SR1 CCR1
 
 
-def rb_payload(bench):
-    """The BBRUBBER payload built with this image (BBRUBBER.BIN / BBRUBBER_emu.BIN beside it)."""
+def rb_leaf(bench):
+    """Which bank-2 leaf this image was built with: ("Bungee", "BBBUNGEE") for 3.1.B, else Warp
+    Rubber's ("Rubber", "BBRUBBER"). Same machinery, so the same tests; the names differ."""
     img = Path(bench.image_path)
-    p = img.with_name(img.name.replace("BLACKBOX", "BBRUBBER"))
+    if img.with_name(img.name.replace("BLACKBOX", "BBBUNGEE")).exists():
+        return "Bungee", "BBBUNGEE"
+    return "Rubber", "BBRUBBER"
+
+
+def rb_name(bench):
+    return rb_leaf(bench)[0]
+
+
+def rb_file(bench):
+    return rb_leaf(bench)[1] + ".BIN"
+
+
+def rb_payload(bench):
+    """The bank-2 payload built with this image (BBRUBBER.BIN / BBBUNGEE.BIN, or the _emu one, beside it)."""
+    img = Path(bench.image_path)
+    p = img.with_name(img.name.replace("BLACKBOX", rb_leaf(bench)[1]))
     return bytearray(p.read_bytes()) if p.exists() else None
 
 
@@ -2299,11 +2316,11 @@ def t_rubber_absent(bench, res):
     b = bench.b
     b.call(bench.sym["state_init"])
     res.check(rb_state(bench) == 2, f"voice state {rb_state(bench)} (2 = absent)")
-    res.check(rb_label(bench) == "Rubber!", f"label {rb_label(bench)!r}")
+    res.check(rb_label(bench) == rb_name(bench) + "!", f"label {rb_label(bench)!r}")
     res.check(b.call(bench.sym["rb_ready"]) == 0, "rb_ready is 0")
     labels = bench.sym["labels_repitch"]
     got = [b.cstr(b.u32(labels + 4 * i)) for i in range(2)]
-    res.check(got == ["Stretch", "Rubber!"], f"Warp labels {got}")
+    res.check(got == ["Stretch", rb_name(bench) + "!"], f"Warp labels {got}")
     reg = bench.sym["hook_register"] & ~1
     code = bytes(b.mu.mem_read(reg, 0x40))
     res.check(b"\x02\x24" in code, "Warp enum has 2 values (movs r4, #2)")
@@ -2330,7 +2347,7 @@ def t_rubber_pair_rejects(bench, res):
         b.mu.mem_write(RB_B2, bytes(p))
         rb_bkp(bench)
         b.call(boot)
-        res.check(rb_state(bench) == 2 and rb_label(bench) == "Rubber!", f"{what}: absent ({rb_state(bench)})")
+        res.check(rb_state(bench) == 2 and rb_label(bench) == rb_name(bench) + "!", f"{what}: absent ({rb_state(bench)})")
     from unicorn import UC_HOOK_MEM_READ
     b.mu.mem_write(RB_B2, bytes(pay))
     rb_bkp(bench, mark=0x4E435352)     # "RSCN": the last scan never came back
@@ -2342,7 +2359,7 @@ def t_rubber_pair_rejects(bench, res):
     rb_bkp(bench, booting=0x544F4252)  # "RBOT": the last boot died in rubber_boot
     b.watch(bench.sym["rubber_boot"])
     b.call(boot)
-    res.check(rb_state(bench) == 4 and rb_label(bench) == "Rubber!!", f"boot mark: broken, off, {rb_label(bench)!r}")
+    res.check(rb_state(bench) == 4 and rb_label(bench) == rb_name(bench) + "!!", f"boot mark: broken, off, {rb_label(bench)!r}")
     res.check(b.calls[bench.sym["rubber_boot"] & ~1] == 0, "boot mark: rubber_boot not entered")
 
 
@@ -2484,7 +2501,7 @@ def t_rubber_loader(bench, res):
     b = bench.b
     rb_bkp(bench)
     rb_loader_boot(bench)
-    FakeFile(b, "BBRUBBER.BIN", pay)
+    FakeFile(b, rb_file(bench), pay)
     fm = FlashModel(b)
     rb_poll(bench)
     fm.close()
@@ -2516,40 +2533,40 @@ def t_rubber_loader_refuses(bench, res):
     b.mu.mem_write(RB_B2 + 0x50000, b"\x12\x34\x56\x78")
     rb_bkp(bench)
     rb_loader_boot(bench)
-    FakeFile(b, "BBRUBBER.BIN", pay)
+    FakeFile(b, rb_file(bench), pay)
     fm = FlashModel(b)
     rb_poll(bench)
     fm.close()
     res.check(not fm.erased and not fm.words, "foreign bank 2: no erase, no write")
     res.check(b.u32(RB_B2 + 0x50000) == 0x78563412, "foreign data untouched")
-    res.check(rb_label(bench) == "Rubber! x", f"foreign bank 2 named: {rb_label(bench)!r}")
+    res.check(rb_label(bench) == rb_name(bench) + "! x", f"foreign bank 2 named: {rb_label(bench)!r}")
     rb_loader_boot(bench)
-    FakeFile(b, "BBRUBBER.BIN", None)
+    FakeFile(b, rb_file(bench), None)
     rb_poll(bench)
-    res.check(rb_label(bench) == "Rubber! -", f"no file named: {rb_label(bench)!r}")
+    res.check(rb_label(bench) == rb_name(bench) + "! -", f"no file named: {rb_label(bench)!r}")
     # A damaged file is never written.
     b.mu.mem_write(RB_B2, b"\xff" * 0x100000)
     bad = bytearray(pay)
     bad[len(bad) // 3] ^= 0x40
     rb_loader_boot(bench)
-    FakeFile(b, "BBRUBBER.BIN", bad)
+    FakeFile(b, rb_file(bench), bad)
     fm = FlashModel(b)
     rb_poll(bench)
     fm.close()
     res.check(not fm.erased, "damaged file: nothing erased")
-    res.check(rb_label(bench) == "Rubber! ?", f"damaged file named: {rb_label(bench)!r}")
+    res.check(rb_label(bench) == rb_name(bench) + "! ?", f"damaged file named: {rb_label(bench)!r}")
     # Failing flash: two tries, then no more.
     b.mu.mem_write(RB_B2, b"\xff" * 0x100000)
     attempts = []
     for _ in range(3):
         rb_loader_boot(bench)
-        FakeFile(b, "BBRUBBER.BIN", pay)
+        FakeFile(b, rb_file(bench), pay)
         fm = FlashModel(b, fail=True)
         rb_poll(bench)
         fm.close()
         attempts.append(len(fm.erased))
     res.check(attempts[0] > 0 and attempts[1] > 0 and attempts[2] == 0, f"tries per boot {attempts}")
-    res.check(rb_label(bench) == "Rubber! t", f"tries used up: {rb_label(bench)!r}")
+    res.check(rb_label(bench) == rb_name(bench) + "! t", f"tries used up: {rb_label(bench)!r}")
 
 
 def t_rubber_engine(bench, res):
@@ -2563,14 +2580,14 @@ def t_rubber_engine(bench, res):
     b.mu.mem_write(RB_B2, bytes(pay))
     rb_bkp(bench)
     b.call(bench.sym["rb_pair"])
-    res.check(rb_state(bench) == 3 and rb_label(bench) == "Rubber..", f"paired, not started: {rb_label(bench)!r}")
+    res.check(rb_state(bench) == 3 and rb_label(bench) == rb_name(bench) + "..", f"paired, not started: {rb_label(bench)!r}")
     sp = []
     from unicorn import UC_HOOK_CODE
     h = b.mu.hook_add(UC_HOOK_CODE, lambda mu, a, sz, d: sp.append(mu.reg_read(bd.A.UC_ARM_REG_SP)),
                       begin=bench.sym["rubber_boot"] & ~1, end=bench.sym["rubber_boot"] & ~1)
     b.call(bench.sym["rb_load_poll"], limit=2_000_000_000)
     b.mu.hook_del(h)
-    res.check(rb_state(bench) == 1 and rb_label(bench) == "Rubber", f"started from the disk poll: {rb_label(bench)!r}")
+    res.check(rb_state(bench) == 1 and rb_label(bench) == rb_name(bench) + "", f"started from the disk poll: {rb_label(bench)!r}")
     res.check(sp and 0x30040000 <= sp[0] <= 0x30048000, f"rubber_boot runs on Rubber's own stack ({sp[0]:#x})" if sp else "rubber_boot ran")
     res.check(b.u32(RB_BKP + 16) == 0 and b.u32(RB_BKP + 20) == 0, "boot mark and stage cleared after the start")
     if rb_state(bench) != 1:
@@ -2578,7 +2595,7 @@ def t_rubber_engine(bench, res):
     sr, n_src = 48000, 48000 * 2
     src = [0.4 * math.sin(2 * math.pi * 220 * i / sr) * (1.0 if (i // 6000) % 2 == 0 else 0.3) for i in range(n_src)]
     sample, clip, mixbuf, ctx, scratch = 0x2001C000, 0x2001C800, 0x2001E000, 0x2001E100, 0x2001E200
-    planes = (0x30040000, 0x30041000)
+    planes = (0x2001E400, 0x2001E800)          # not in SRAM1-3: that is the leaf's heap
     out = []
 
     def pcm_read(bb):
@@ -2622,6 +2639,19 @@ def t_rubber_engine(bench, res):
     used = b.u32(bench.sym["rb_fast_used"])
     res.check(0 < used <= 0x30045000 - 0x30000000 and not b.u32(bench.sym["rb_heap_failed"]),
               f"heap all in SRAM1 ({used} bytes), nothing in SDRAM")
+    if rb_name(bench) == "Bungee":
+        # 3.1.B: a launch plays the Clip itself for the 8 priming blocks, then crossfades into
+        # Bungee (tools/stretch/bungee/bungee.cpp); the heap must leave room below the stack.
+        raw = struct.unpack("<2048f", struct.pack("<2048f", *src[:2048]))
+        res.check(max(abs(x - y) for x, y in zip(out[:2048], raw)) == 0.0, "launch plays the Clip itself for 2048 frames")
+        peak = b.u32(bench.sym["rb_fast_peak"])
+        heap0 = (bench.sym["__b2_bss_end"] + 15) & ~15
+        free = 0x30045000 - heap0 - peak
+        itcm = b.u32(bench.sym["rb_itcm_used"])
+        itcm_free = 0x10000 - ((bench.sym["__itcm_end"] + 15) & ~15) - itcm
+        res.check(0 < peak and free >= 0 and itcm_free >= 4096,
+                  f"heap {peak} bytes from {heap0:#x} ({free} left below the stack) + {itcm} in ITCM "
+                  f"({itcm_free} left)")
     n_itcm = bench.sym["__itcm_end"] - bench.sym["__itcm_start"]
     load = RB_B2 + 32                           # .itcm's image follows the 32-byte header (rubber.ld)
     res.check(n_itcm > 8192 and bytes(b.mu.mem_read(bench.sym["__itcm_start"], n_itcm)) == bytes(b.mu.mem_read(load, n_itcm)),
@@ -2642,7 +2672,7 @@ def t_rubber_broken_left_alone(bench, res):
     b.call(bench.sym["rb_pair"])
     res.check(rb_state(bench) == 4, f"broken ({rb_state(bench)})")
     b.mu.mem_write(0x240021A4 + 0x15, b"\x01")
-    FakeFile(b, "BBRUBBER.BIN", pay)
+    FakeFile(b, rb_file(bench), pay)
     fm = FlashModel(b)
     b.watch(bench.sym["rubber_boot"])
     rb_poll(bench)
@@ -2659,10 +2689,10 @@ def t_rubber_stage_label(bench, res):
     rb_bkp(bench)
     b.w32(RB_BKP + 20, 0x32)                    # died erasing sector 2
     b.call(bench.sym["rb_pair"])
-    res.check(rb_label(bench) == "Rubber! 32", f"label {rb_label(bench)!r}")
+    res.check(rb_label(bench) == rb_name(bench) + "! 32", f"label {rb_label(bench)!r}")
     res.check(b.u32(RB_BKP + 20) == 0, "stage cleared")
     b.call(bench.sym["rb_pair"])
-    res.check(rb_label(bench) == "Rubber!", f"next clean boot: {rb_label(bench)!r}")
+    res.check(rb_label(bench) == rb_name(bench) + "!", f"next clean boot: {rb_label(bench)!r}")
 
 
 def diag_tools_label(bench):
@@ -2746,7 +2776,7 @@ def t_diag_fault_record(bench, res):
     b.call(bench.sym["rb_pair"])                # the next boot
     mid, _ = diag_tools_label(bench)
     res.check(mid == "F08123456", f"Tools shows the fault PC: {mid!r}")
-    res.check(rb_label(bench) == "Rubber! 11", f"Rubber label names the stage: {rb_label(bench)!r}")
+    res.check(rb_label(bench) == rb_name(bench) + "! 11", f"Rubber label names the stage: {rb_label(bench)!r}")
     b.call(bench.sym["rb_pair"])                # and the one after
     mid, _ = diag_tools_label(bench)
     res.check(mid != "F08123456", f"gone one boot later: {mid!r}")
@@ -2795,13 +2825,13 @@ def t_rubber_takeover(bench, res):
     b.mu.mem_write(0x081E0000, calib)
     rb_bkp(bench)
     rb_loader_boot(bench)
-    FakeFile(b, "BBRUBBER.BIN", pay)
+    FakeFile(b, rb_file(bench), pay)
     fm = FlashModel(b)
     rb_poll(bench)
     fm.close()
-    res.check(rb_label(bench) == "Rubber! x" and not fm.erased and not fm.words, f"without RBTAKE.TXT: left alone, {rb_label(bench)!r}")
+    res.check(rb_label(bench) == rb_name(bench) + "! x" and not fm.erased and not fm.words, f"without RBTAKE.TXT: left alone, {rb_label(bench)!r}")
     rb_loader_boot(bench)
-    FakeFile(b, "BBRUBBER.BIN", pay, others={"RBTAKE.TXT"})
+    FakeFile(b, rb_file(bench), pay, others={"RBTAKE.TXT"})
     fm = FlashModel(b)
     rb_poll(bench)
     fm.close()
@@ -2827,7 +2857,7 @@ def t_rubber_release(bench, res):
     b.call(bench.sym["rb_pair"])
     b.w32(RB_VOICE + 8, 1)                      # running
     b.mu.mem_write(0x240021A4 + 0x15, b"\x01")
-    FakeFile(b, "BBRUBBER.BIN", pay, others={"RBFREE.TXT"})
+    FakeFile(b, rb_file(bench), pay, others={"RBFREE.TXT"})
     fm = FlashModel(b)
     rb_poll(bench)
     fm.close()
@@ -2835,7 +2865,7 @@ def t_rubber_release(bench, res):
     res.check(bytes(b.mu.mem_read(RB_B2, 0xE0000)) == b"\xff" * 0xE0000, "sectors 0-6 blank (blackbox-mod's loader takes it)")
     res.check(not fm.words and not fm.reset and not fm.bad, "nothing written, no restart")
     rb_loader_boot(bench)
-    FakeFile(b, "BBRUBBER.BIN", pay, others={"RBFREE.TXT"})
+    FakeFile(b, rb_file(bench), pay, others={"RBFREE.TXT"})
     fm = FlashModel(b)
     rb_poll(bench)
     fm.close()
@@ -2866,7 +2896,7 @@ def t_rubber_cpu_guard(bench, res):
         b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
     res.check(rb_state(bench) == 1, "31 slow blocks: still on")
     b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
-    res.check(rb_state(bench) == 5 and rb_label(bench) == "Rubber! cpu", f"32nd: off, {rb_label(bench)!r}")
+    res.check(rb_state(bench) == 5 and rb_label(bench) == rb_name(bench) + "! cpu", f"32nd: off, {rb_label(bench)!r}")
     b.watch(fake_mix)
     b.call(bench.sym["rb_mix"], 1, 2, 3, 4)
     res.check(b.calls[fake_mix & ~1] == 0, "no render after that")
@@ -2905,11 +2935,18 @@ def t_rubber_cost_flat(bench, res):
     planes = (0x2001A000, 0x2001B000)
     reads = [0]
     work = [0]
+    grains = []      # Bungee: (clip position, frames) of each left-channel read run, one per grain
 
     def pcm_read(bb):
         dest, count, pos, ch = bb.arg(1), bb.arg(2), bb.arg(3), bb.arg(4)
         if ch == 0:
             reads[0] += count
+            if grains and grains[-1][2] and (grains[-1][0] + grains[-1][1]) % n_src == pos:
+                grains[-1] = (grains[-1][0], grains[-1][1] + count, True)   # same run, past the wrap
+            else:
+                grains.append((pos, count, True))
+        elif grains:
+            grains[-1] = (grains[-1][0], grains[-1][1], False)
         bb.mu.mem_write(dest, struct.pack(f"<{count}f", *[drums(pos + i) for i in range(count)]))
         return count
 
@@ -2937,6 +2974,7 @@ def t_rubber_cost_flat(bench, res):
     for ratio in (1.0, 0.5, 2.0, 0.8, 1.25):
         b.mu.mem_write(clip + 0xBB4, struct.pack("<f", ratio))
         b.w32(RB_VOICE + 20, 1)                 # relaunch
+        grains.clear()
         per = []
         for i in range(140):
             work[0] = 0
@@ -2947,6 +2985,13 @@ def t_rubber_cost_flat(bench, res):
             if i >= 60:
                 per.append(work[0])
         rate = (reads[0] - start_reads) / (79 * 256)
+        if rb_name(bench) == "Bungee":
+            # Bungee reads a 4096-frame window per 512 output frames, so source frames read say
+            # nothing about tempo; the window's step through the clip does (input hop = ratio x 512).
+            # The run may start short of 4096 where the window began before frame 0 (zeros).
+            starts = [p for p, c, _ in grains[-60:] if c >= 2048]
+            steps = sorted((b2 - a2) % n_src for a2, b2 in zip(starts, starts[1:]))
+            rate = steps[len(steps) // 2] / 512 if steps else 0.0
         mean = sum(per) / len(per)
         means[ratio] = mean
         res.check(max(per) <= 1.35 * mean, f"{ratio}x: flat, peak/mean {max(per) / mean:.2f}")

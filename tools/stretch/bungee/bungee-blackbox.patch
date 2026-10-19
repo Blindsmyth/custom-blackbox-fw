@@ -1,0 +1,74 @@
+diff --git a/src/Grain.cpp b/src/Grain.cpp
+index 8b120ef..09c9639 100644
+--- a/src/Grain.cpp
++++ b/src/Grain.cpp
+@@ -21,7 +21,13 @@ Grain::Grain(int log2SynthesisHop, int channelCount) :
+ 	request.pitch = 1.;
+ 	Fourier::resize<true>(log2TransformLength, 1, energy);
+ 	Fourier::resize<true>(log2TransformLength, 1, rotation);
++#ifdef BUNGEE_FIXED_PITCH
++	// Blackbox: a partial spans at least two bins (Partials::enumerate), so a 2^k transform's
++	// 2^(k-1)+1 bins hold at most 2^(k-2)+1 of them. 1026 entries, not 4096 (12 KB per grain).
++	partials.reserve((1 << (log2TransformLength - 2)) + 2);
++#else
+ 	partials.reserve(1 << log2TransformLength);
++#endif
+ }
+ 
+ InputChunk Grain::specify(const Request &r, Grain &previous, SampleRates sampleRates, int log2SynthesisHop, double bufferStartPosition, Internal::Instrumentation &instrumentation)
+diff --git a/src/Grains.cpp b/src/Grains.cpp
+index fe428b3..f430b36 100644
+--- a/src/Grains.cpp
++++ b/src/Grains.cpp
+@@ -26,8 +26,13 @@ void Grains::prepare()
+ 	Fourier::resize<true>(log2TransformLength, 1, (*this)[1].energy);
+ 	Fourier::resize<true>(log2TransformLength, 1, (*this)[0].rotation);
+ 	Fourier::resize<true>(log2TransformLength, 1, (*this)[1].rotation);
++#ifdef BUNGEE_FIXED_PITCH
++	(*this)[0].partials.reserve((1 << (log2TransformLength - 2)) + 2); // see Grain::Grain
++	(*this)[1].partials.reserve((1 << (log2TransformLength - 2)) + 2);
++#else
+ 	(*this)[0].partials.reserve(1 << log2TransformLength);
+ 	(*this)[1].partials.reserve(1 << log2TransformLength);
++#endif
+ }
+ 
+ void Grains::rotate()
+diff --git a/src/Input.cpp b/src/Input.cpp
+index 3d4bda0..31d5467 100644
+--- a/src/Input.cpp
++++ b/src/Input.cpp
+@@ -20,11 +20,17 @@ static constexpr float gain = (3 * pi) / (3 * pi + 8);
+ Input::Input(int log2SynthesisHop, int channelCount, Fourier::Transforms &transforms) :
+ 	window(Window::fromFrequencyDomainCoefficients(transforms, log2SynthesisHop + 3, gain / (8 << log2SynthesisHop), {1.f, 0.5f})),
+ 	windowedInput{8 << log2SynthesisHop, channelCount},
++#ifdef BUNGEE_FIXED_PITCH
++	resampled(0, channelCount) // Blackbox: pitch 1, equal rates - input resampling never runs (33 KB)
++#else
+ 	resampled(8 << log2SynthesisHop, channelCount)
++#endif
+ {
+ 	windowedInput.setZero();
+ 	transforms.prepareForward(log2SynthesisHop + 3);
++#ifndef BUNGEE_FIXED_PITCH
+ 	resampled.frameCount = 8 << log2SynthesisHop;
++#endif
+ }
+ 
+ int Input::applyAnalysisWindow(const Eigen::Ref<const Eigen::ArrayXXf> &input, int muteFrameCountHead, int muteFrameCountTail)
+diff --git a/src/Output.cpp b/src/Output.cpp
+index bf6d022..4939e16 100644
+--- a/src/Output.cpp
++++ b/src/Output.cpp
+@@ -10,7 +10,11 @@ namespace Bungee {
+ Output::Output(Fourier::Transforms &transforms, int log2SynthesisHop, int channelCount, int maxOutputChunkSize, float windowGain, std::initializer_list<float> windowCoefficients) :
+ 	synthesisWindow{Window::fromFrequencyDomainCoefficients(transforms, log2SynthesisHop + 2, windowGain, windowCoefficients)},
+ 	inverseTransformed(8 << log2SynthesisHop, channelCount),
++#ifdef BUNGEE_FIXED_PITCH
++	bufferResampled(0, channelCount), // Blackbox: pitch 1 - output resampling never runs (32 KB)
++#else
+ 	bufferResampled(maxOutputChunkSize, channelCount),
++#endif
+ 	lappedSynthesisBuffer(1 << (log2SynthesisHop + 3), channelCount)
+ {
+ 	transforms.prepareInverse(log2SynthesisHop + 3);

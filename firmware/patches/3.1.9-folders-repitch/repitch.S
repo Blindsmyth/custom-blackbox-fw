@@ -19,10 +19,11 @@
 .equ CLIP_FLAG,   0xBB1
 .equ CLIP_SCALE,  0xBB4
 
-@ Warp Rubber (3.1.R only: 3.1.9-mix-rubber/rubber_cave.S sets WARP_RUBBER). Value 2 hands a
-@ Clip's per-lane render to Rubber Band in flash bank 2 (tools/stretch/rubber, tools/bank2).
+@ Warp Rubber (3.1.R only: 3.1.9-mix-rubber/rubber_cave.S sets WARP_RUBBER).
+@ List is Stretch / Rubber only (no Repitch/Smooth/…). Value 1 hands a Clip's per-lane
+@ render to Rubber Band in flash bank 2 (tools/stretch/rubber, tools/bank2).
 .ifdef WARP_RUBBER
-.equ WARP_RUBBER_V, 2
+.equ WARP_RUBBER_V, 1
 .equ SM_BASE,     0x38007000        @ RbVoice (tools/stretch/rubber/rubber.h)
 .equ SM_OWNER,    4
 .equ SM_RESET,    20
@@ -62,9 +63,9 @@ hook_register:
     adr     r2, title_repitch
     adr     r3, labels_repitch
 .ifdef WARP_RUBBER
-    movs    r4, #3
+    movs    r4, #2                  @ Stretch, Rubber
 .else
-    movs    r4, #2
+    movs    r4, #2                  @ Stretch, Repitch
 .endif
     adr     r5, xml_repitch
     str     r4, [sp]
@@ -334,6 +335,10 @@ grain_after:
     cmp     r0, #0
     blt     1f
     ldrb    r2, [r1, #CLIP_FLAG]
+.ifdef WARP_RUBBER
+    cmp     r2, #WARP_RUBBER_V      @ Rubber on Slicer: stock grains, unscaled
+    beq     1f
+.endif
     cmp     r2, #1
     bne     1f
     movs    r2, #0x70
@@ -496,12 +501,15 @@ xml_repitch:
 str_stretch:
     .asciz  "Stretch"
 .align 2
+.ifndef WARP_RUBBER
 str_repitch:
     .asciz  "Repitch"
+.endif
 .align 2
 labels_repitch:
     .word   str_stretch
-    .word   str_repitch
 .ifdef WARP_RUBBER
     .word   SM_BASE + SM_LABEL          @ RAM: "Rubber", "Rubber!" (bank 2 missing) or "Rubber 54%"
+.else
+    .word   str_repitch
 .endif

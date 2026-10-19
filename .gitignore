@@ -20,4 +20,8 @@ Blackbox-User-Manual*
 # Rubber Band checkout for the Rubber Warp (fetch_rubberband.sh)
 tools/stretch/rubber/rubberband/
 tools/stretch/rubber/build/
+# Bungee checkout for the Bungee Warp (fetch_bungee.sh)
+tools/stretch/bungee/bungee/
+tools/stretch/bungee/build/
 firmware/patches/*/BBRUBBER.BIN
+firmware/patches/*/BBBUNGEE.BIN

@@ -4,6 +4,10 @@
  * READY; otherwise Rubber plays stock grains and its list label reads "Rubber!". */
 #include "b2.h"
 
+#ifndef RB_LABEL
+#define RB_LABEL "Rubber"   /* the Warp list name; the Bungee build: "Bungee" */
+#endif
+
 #define RCC_AHB4ENR (*(volatile uint32_t *)0x580244e0u)
 #define PWR_CR1     (*(volatile uint32_t *)0x58024800u)
 #define DCCMVAC     (*(volatile uint32_t *)0xe000ef68u)
@@ -116,7 +120,7 @@ void rb_pair(void)
     diag_boot();                  /* the boot before: crash records, and where it got to */
     rb_bkp_put(RB_BKP_LAST, rb_bkp_get(RB_BKP_STAGE));
     rb_stage(0);
-    label(v, "Rubber!");
+    label(v, RB_LABEL "!");
     if (rb_bkp_get(RB_BKP_MARK) != RB_MARK_SCAN) {
         /* A read of a bad flash word faults; the mark tells the next boot to keep off. */
         rb_bkp_put(RB_BKP_MARK, RB_MARK_SCAN);
@@ -129,11 +133,11 @@ void rb_pair(void)
         /* The last start never came back from rubber_boot: keep Rubber off rather than loop.
          * The payload is intact, so the loader leaves it alone; a different BBRUBBER.BIN
          * (another build) is what clears this. */
-        label(v, "Rubber!!");
+        label(v, RB_LABEL "!!");
         v->state = RB_ST_BROKEN;
     } else {
         if (ok)
-            label(v, "Rubber..");   /* intact, starting once the unit is up */
+            label(v, RB_LABEL "..");   /* intact, starting once the unit is up */
         v->state = ok ? RB_ST_PAIRED : RB_ST_ABSENT;
     }
 }
@@ -182,7 +186,7 @@ void rb_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     } else if (++v->over_n >= RB_GUARD_N) {
         /* Off before the watchdog: the Clip plays stock grains from the next block. */
         v->state = (v->state & ~0xffu) | RB_ST_SLOW;
-        label(v, "Rubber! cpu");
+        label(v, RB_LABEL "! cpu");
     }
 }
 
