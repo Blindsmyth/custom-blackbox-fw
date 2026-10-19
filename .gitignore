@@ -25,3 +25,5 @@ tools/stretch/bungee/bungee/
 tools/stretch/bungee/build/
 firmware/patches/*/BBRUBBER.BIN
 firmware/patches/*/BBBUNGEE.BIN
+firmware/patches/3.1.9-mix-bungee/repitch/BLACKBOX.BIN
+firmware/patches/3.1.9-mix-bungee/repitch/BBBUNGEE.BIN

@@ -52,6 +52,8 @@ typedef struct RbVoice {
     uint32_t pad60;       /* 60 */
     void *bg_sem;         /* 64 the leaf's task waits on this; rb_mix gives it every block */
     void *bg_task;        /* 68 its FreeRTOS handle */
+    uint32_t prev_owner;  /* 72 the Clip a launch took the voice from (repitch.S SM_PREV); the
+                             leaf ends its lanes and clears this */
 } RbVoice;
 
 #define RB_ST_UNKNOWN  0u

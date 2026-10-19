@@ -11,6 +11,11 @@ This is 3.1.R (Warp Rubber, `../3.1.9-mix-rubber`) with Bungee in place of Rubbe
 
 The claim word is the same too, so a unit that has run 3.1.R treats bank 2 as its own and switches between the two builds without a takeover file.
 
+## Two builds
+
+- **`BLACKBOX.BIN` + `BBBUNGEE.BIN`** here: Warp **Stretch / Bungee**.
+- **`repitch/`** (`build_patch.py --with-repitch`): Warp **Stretch / Repitch / Bungee**, with Bungee at value 2. The bank-2 payload is the same.
+
 ## Install
 
 1. Put `BLACKBOX.BIN` and `BBBUNGEE.BIN` from this folder in the card root.
@@ -23,7 +28,10 @@ The claim word is the same too, so a unit that has run 3.1.R treats bank 2 as it
 - Clip → Pos → **Warp: Bungee**. Slicer Clips keep stock grains.
 - The tempo ratio is clamped to **0.5×–2×** of the Clip's own tempo. The cost per block is the same at every ratio.
 - **Launches are instant.** Bungee's first output comes out of its fourth grain. While its task primes, the Clip plays unstretched from frame 0, then hands over to Bungee at frame 2048 (~43 ms) with a 128-frame crossfade. If the task is late, the handoff waits and drops the frames it missed. Bungee primes from that frame with its first hop at speed 1, so both signals are in phase at the handoff. The first 43 ms plays at the Clip's own tempo, ≤ 11 ms off the target.
-- One Clip at a time renders through Bungee. The first one playing owns it, and a second plays stock Stretch grains until the first stops.
+- One Clip at a time renders through Bungee, and **the latest launch takes it**. Switching between pads (a choke group over sections of one mixdown, say) has no gap: the new pad plays at once, and the old one ends as a choke's fast release would. Two Bungee voices at once don't fit: one stereo stretcher fills the leaf's internal RAM.
+- **In time with the clock.** While the transport runs, each block compares Bungee's position in the file with where the clock says it should be. That's the transport's tempo map from the launch, 960 ticks a beat, against the Clip's length in beats. The speed is nudged by up to 2%; it's a tempo change, not pitch, so it's inaudible. The nudge is a PI loop (bench: 0.3% off settles to 2 frames in ~2 s). An error over 100 ms (a locate, an external clock jump) relaunches at the right place.
+- **Loop off / Trigger:** the voice ends at the end of the file, as stock does.
+- **Pad feedback:** the voice posts what stock's lane render posts, so the pads view and the waveform show it playing, with progress: the playhead message `0x4A` every block, and "started" (`0x1D`) when a quantised launch's delay is over.
 - A mono Clip runs on a one-channel stretcher (~60% of the stereo cost). The launch that switches between mono and stereo rebuilds the stretcher, in the task.
 
 The Warp list label reports Bungee's state, as 3.1.R's does for Rubber:

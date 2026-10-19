@@ -23,12 +23,17 @@
 @ List is Stretch / Rubber only (no Repitch/Smooth/…). Value 1 hands a Clip's per-lane
 @ render to Rubber Band in flash bank 2 (tools/stretch/rubber, tools/bank2).
 .ifdef WARP_RUBBER
+.ifdef WARP_KEEP_REPITCH
+.equ WARP_RUBBER_V, 2               @ Stretch / Repitch / leaf (the Bungee build with --with-repitch)
+.else
 .equ WARP_RUBBER_V, 1
+.endif
 .equ SM_BASE,     0x38007000        @ RbVoice (tools/stretch/rubber/rubber.h)
 .equ SM_OWNER,    4
 .equ SM_RESET,    20
 .equ SM_BLOCK,    24
 .equ SM_LABEL,    32
+.equ SM_PREV,     72                @ RbVoice.prev_owner: the Clip a launch took the voice from
 .equ SM_AGE,      RP_STATE + 0x110  @ lane calls since the voice owner last mixed
 .equ LANE0,       0x260
 .equ LANE_STRIDE, 0x410
@@ -63,7 +68,11 @@ hook_register:
     adr     r2, title_repitch
     adr     r3, labels_repitch
 .ifdef WARP_RUBBER
+.ifdef WARP_KEEP_REPITCH
+    movs    r4, #3                  @ Stretch, Repitch, leaf
+.else
     movs    r4, #2                  @ Stretch, Rubber
+.endif
 .else
     movs    r4, #2                  @ Stretch, Repitch
 .endif
@@ -296,11 +305,18 @@ hook_main_rate:
     ldrb    r0, [r4, #CLIP_FLAG]
 .ifdef WARP_RUBBER
     @ Rubber: a new grain is a new launch, so the voice restarts (rubber.cpp reset).
+    @ The latest launch takes the voice at once, so a choke switch between two leaf Clips has
+    @ no gap: the leaf ends the previous owner's lanes on its next mix (SM_PREV).
     cmp     r0, #WARP_RUBBER_V
     bne     1f
     ldr     r1, =SM_BASE
     movs    r0, #1
     str     r0, [r1, #SM_RESET]
+    ldr     r0, [r1, #SM_OWNER]
+    cmp     r0, r4
+    beq     2f
+    str     r0, [r1, #SM_PREV]
+    str     r4, [r1, #SM_OWNER]
     b       2f
 1:
 .endif
@@ -406,6 +422,9 @@ hook_lane:
     ldr     r3, [r1, #SM_OWNER]
     cmp     r3, r4
     beq     4f
+    ldr     r0, [r1, #SM_PREV]
+    cmp     r0, r4
+    beq     8f                          @ lost the voice to a later launch: silent until ended
     cmp     r3, #0
     beq     12f
     ldr     r0, =SM_AGE
@@ -501,15 +520,22 @@ xml_repitch:
 str_stretch:
     .asciz  "Stretch"
 .align 2
-.ifndef WARP_RUBBER
 str_repitch:
     .asciz  "Repitch"
-.endif
 .align 2
 labels_repitch:
     .word   str_stretch
 .ifdef WARP_RUBBER
+.ifdef WARP_KEEP_REPITCH
+    .word   str_repitch
+.endif
     .word   SM_BASE + SM_LABEL          @ RAM: "Rubber", "Rubber!" (bank 2 missing) or "Rubber 54%"
 .else
     .word   str_repitch
+.endif
+.ifdef WARP_RUBBER
+.align 2
+.global warp_leaf_v
+warp_leaf_v:                            @ the leaf's Warp value, for the bench
+    .word   WARP_RUBBER_V
 .endif

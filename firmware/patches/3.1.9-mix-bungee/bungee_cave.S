@@ -2,7 +2,10 @@
 @ Built with -I ../3.1.9-folders-repitch-mix -I ../3.1.9-folders-repitch.
 @ Bungee itself lives in flash bank 2 (tools/stretch/bungee); bank 1 holds only the hooks,
 @ the pairing check and the card loader (tools/bank2), linked into this cave.
-.set WARP_RUBBER, 1                     @ repitch.S: Warp Stretch/Rubber only (value 1), hook_lane
+.set WARP_RUBBER, 1
+#ifdef WITH_REPITCH
+.set WARP_KEEP_REPITCH, 1               @ build_patch.py --with-repitch: Stretch / Repitch / Bungee
+#endif                     @ repitch.S: Warp Stretch/Rubber only (value 1), hook_lane
 .include "mix_cave.S"
 
 .align 2

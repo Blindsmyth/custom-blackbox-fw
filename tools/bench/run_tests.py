@@ -398,12 +398,25 @@ def t_repitch_main_rate_preserves_r3(bench, res):
     r3 = b.mu.reg_read(A.UC_ARM_REG_R3)
     stored = b.u32(grain + 0x48)
     res.check(r3 == grain, f"r3 clobbered on repitch {r3:#x}")
-    if "rb_pair" in bench.sym:
+    if "rb_pair" in bench.sym and leaf_v(bench) == 1:
         # 3.1.R: the list is Stretch / Rubber, so value 1 is Rubber: grain rate unscaled, voice reset
         res.check(stored == 0x40000000, f"rubber leaves the rate {stored:#x}")
         res.check(b.u32(0x38007000 + 20) == 1, "rubber: a new grain asks the voice to reset")
     else:
         res.check(stored == 0x3F800000, f"repitch rate {stored:#x}")
+    if "rb_pair" in bench.sym and leaf_v(bench) == 2:
+        # 3.1.B --with-repitch: value 2 is the leaf: rate unscaled, voice reset, the voice taken
+        b.w32(0x38007000 + 20, 0)
+        b.mu.mem_write(clip + 0xBB1, b"\x02")
+        b.mu.reg_write(A.UC_ARM_REG_R3, grain)
+        b.mu.reg_write(A.UC_ARM_REG_R4, clip)
+        b.mu.reg_write(A.UC_ARM_REG_S15, 0x40000000)
+        b.mu.reg_write(A.UC_ARM_REG_SP, bd.BENCH_SP)
+        b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
+        b.mu.emu_start(bench.sym["hook_main_rate"] | 1, bd.STOP, count=200)
+        res.check(b.u32(grain + 0x48) == 0x40000000 and b.u32(0x38007000 + 20) == 1,
+                  "leaf at value 2: rate unscaled, a new grain asks the voice to reset")
+        res.check(b.u32(0x38007000 + 4) == clip, "leaf at value 2: the launch takes the voice")
 
 
 CLIP_GRAIN = 0x08065290
@@ -462,7 +475,7 @@ def t_repitch_slicer_grain_stack(bench, res):
     b.mu.reg_write(A.UC_ARM_REG_SP, sp)
     b.mu.reg_write(A.UC_ARM_REG_LR, bd.STOP | 1)
     b.mu.emu_start(bench.sym["hook_grain"] | 1, bd.STOP, count=400)
-    if "rb_pair" in bench.sym:
+    if "rb_pair" in bench.sym and leaf_v(bench) == 1:
         # 3.1.R: value 1 is Rubber; on a Slicer it plays stock grains, unscaled
         res.check(b.u32(clip + 0xE0 + 0x48) == 0x40000000, "rubber leaves grain rate")
         res.check(b.u32(clip + 0xE0 + 0x60) == 0x12345678, "rubber leaves stretch pad")
@@ -2267,10 +2280,30 @@ def t_master_gui(bench, res):
 
 RB_VOICE = 0x38007000
 RB_B2 = 0x08100000
+
+
+def leaf_v(bench):
+    """The bank-2 leaf's Warp value: 1 on Stretch / leaf, 2 on Stretch / Repitch / leaf (3.1.B
+    --with-repitch). 3.1.R's cave predates the warp_leaf_v word: 1."""
+    if "warp_leaf_v" in bench.sym:
+        return bench.b.u32(bench.sym["warp_leaf_v"])
+    return 1
 # The stock lane's envelope, aux and filter resets (the leaf runs them as the stock lane render does;
 # tools/stretch/bungee/bungee.cpp). In the render cases: unity gain, nothing to reset.
+POSTS = []   # engine outbox messages the leaf posted (pad feedback), 24 bytes each
+
+
+def _post(bb):
+    POSTS.append(bytes(bb.mu.mem_read(bb.arg(1), 24)))
+
+
+def _tick_at(bb):
+    bb.mu.mem_write(bb.arg(0), struct.pack("<q", 12345))
+
+
 LANE_STUBS = ((0x0806A6C0, lambda bb: 0), (0x0806A63C, lambda bb: 0), (0x0806A698, lambda bb: 0),
-              (0x0806A5D8, lambda bb: 0), (0x0806EF38, lambda bb: 0), (0x08076704, lambda bb: 0))
+              (0x0806A5D8, lambda bb: 0), (0x0806EF38, lambda bb: 0), (0x08076704, lambda bb: 0),
+              (0x0804F504, _post), (0x08069C44, _tick_at))
 RB_BKP = 0x38800000
 FLASH2_REGS = (0x52002104, 0x5200210C, 0x52002110, 0x52002114)   # KEYR2 CR2 SR2 CCR2
 FLASH1_REGS = (0x52002004, 0x5200200C, 0x52002010, 0x52002014)   # KEYR1 CR1 SR1 CCR1
@@ -2323,11 +2356,12 @@ def t_rubber_absent(bench, res):
     res.check(rb_label(bench) == rb_name(bench) + "!", f"label {rb_label(bench)!r}")
     res.check(b.call(bench.sym["rb_ready"]) == 0, "rb_ready is 0")
     labels = bench.sym["labels_repitch"]
-    got = [b.cstr(b.u32(labels + 4 * i)) for i in range(2)]
-    res.check(got == ["Stretch", rb_name(bench) + "!"], f"Warp labels {got}")
+    want = ["Stretch"] + (["Repitch"] if leaf_v(bench) == 2 else []) + [rb_name(bench) + "!"]
+    got = [b.cstr(b.u32(labels + 4 * i)) for i in range(len(want))]
+    res.check(got == want, f"Warp labels {got}")
     reg = bench.sym["hook_register"] & ~1
     code = bytes(b.mu.mem_read(reg, 0x40))
-    res.check(b"\x02\x24" in code, "Warp enum has 2 values (movs r4, #2)")
+    res.check(bytes([len(want), 0x24]) in code, f"Warp enum has {len(want)} values (movs r4, #{len(want)})")
     res.check(b.u32(0x24000088) == 0xC4000000, f"sample stack top {b.u32(0x24000088):#x} (all SDRAM for samples)")
 
 
@@ -2379,7 +2413,7 @@ def t_rubber_lane_hook(bench, res):
     b.stub(0x080667BC, lambda bb: stock.__setitem__(0, stock[0] + 1))
     clip, mixbuf, ctx = 0x2001C800, 0x2001E000, 0x2001E100
     b.mu.mem_write(clip, b"\x00" * 0xC00)
-    b.mu.mem_write(clip + 0xBB1, b"\x01")       # Warp Rubber (Stretch / Rubber list)
+    b.mu.mem_write(clip + 0xBB1, bytes([leaf_v(bench)]))   # the leaf's Warp value
     b.mu.mem_write(clip + 0x260, b"\x01")       # lane 0 active
     lane0, lane1 = clip + 0x260, clip + 0x670
     hook = bench.sym["hook_lane"]
@@ -2633,6 +2667,7 @@ def t_rubber_engine(bench, res):
         b.stub(addr, fn)
     b.mu.mem_write(clip, b"\x00" * 0xC00)
     b.w32(clip + 0x24, sample)
+    b.w32(ctx, 0)                               # no transport: no clock lock
     b.mu.mem_write(clip + 0xBB4, struct.pack("<f", 0.8))
     b.mu.mem_write(clip + 0x260, b"\x01")
     b.w32(RB_VOICE + 20, 1)                     # launch
@@ -2758,7 +2793,8 @@ def t_bungee_voice_end(bench, res):
                      (0x0806A698, lambda bb: calls.append(("fast", bb.arg(0)))),
                      (0x0806A5D8, lambda bb: calls.append(("env_reset", bb.arg(0)))),
                      (0x0806EF38, lambda bb: calls.append(("aux_reset", bb.arg(0)))),
-                     (0x08076704, lambda bb: calls.append(("filt_reset", bb.arg(0))))):
+                     (0x08076704, lambda bb: calls.append(("filt_reset", bb.arg(0)))),
+                     (0x0804F504, _post), (0x08069C44, _tick_at)):
         b.stub(addr, fn)
 
     def launch(lane, tick, predelay=0):
@@ -2782,6 +2818,7 @@ def t_bungee_voice_end(bench, res):
 
     b.mu.mem_write(clip, b"\x00" * 0xC00)
     b.w32(clip + 0x24, sample)
+    b.w32(ctx, 0)                               # no transport: no clock lock
     b.mu.mem_write(clip + 0xBB4, struct.pack("<f", 0.8))
     launch(lane_a, 1000, predelay=100)
     mix(12)
@@ -2830,6 +2867,152 @@ def t_bungee_voice_end(bench, res):
     res.check(b.u8(lane_a) == 0 and b.u8(lane_b) == 1, "relaunch: old lane ended, new lane on")
     envs = [a for n_, a in calls if n_ == "env"]
     res.check(envs and all(a == lane_b + 0x258 for a in envs), "relaunch: the new lane's envelope runs")
+
+
+def t_bungee_clock_feedback_switch(bench, res):
+    """3.1.B: pad feedback (0x4A playhead every block, 0x1D after a quantised delay), the clock
+    lock against the transport's tempo map, latest-launch-wins pad switches, and loop off."""
+    pay = rb_payload(bench)
+    if pay is None or "_emu" not in bench.image_path or rb_name(bench) != "Bungee":
+        res.check(True, "Bungee emu build only (skipped)")
+        return
+    import math
+    b = bench.b
+    b.mu.mem_write(RB_B2, bytes(pay))
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    b.call(bench.sym["rb_load_poll"], limit=2_000_000_000)
+    if rb_state(bench) != 1:
+        res.check(False, f"Bungee running ({rb_label(bench)!r})")
+        return
+    n_src = 48000 * 8
+    srcs = {}
+    clip_a, clip_b = 0x2001C800, 0x2001A000
+    sample_a, sample_b = 0x2001C000, 0x2001C400
+    srcs[sample_a] = lambda i: 0.3 * math.sin(2 * math.pi * 220 * i / 48000)
+    srcs[sample_b] = lambda i: 0.3 * math.sin(2 * math.pi * 330 * i / 48000)
+    lens = {sample_a: n_src, sample_b: n_src}
+    mixbuf, ctx, scratch = 0x2001E000, 0x2001E100, 0x2001E200
+    planes = (0x2001E400, 0x2001E800)
+    tp = 0x2001EC00                                  # a fake transport
+    out = []
+
+    def pcm_read(bb):
+        smp, dest, count, pos = bb.arg(0), bb.arg(1), bb.arg(2), bb.arg(3)
+        f = srcs[smp]
+        bb.mu.mem_write(dest, struct.pack(f"<{count}f", *[f((pos + i) % lens[smp]) for i in range(count)]))
+        return count
+
+    def buf_planes(bb):
+        bb.w32(bb.arg(1), planes[0])
+        bb.w32(bb.arg(2), planes[1])
+
+    def buf_clear(bb):
+        bb.mu.mem_write(planes[0], b"\0" * 1024)
+        bb.mu.mem_write(planes[1], b"\0" * 1024)
+
+    for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: lens[bb.arg(0)]), (0x08063790, lambda bb: 1),
+                     (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, buf_clear), (0x0804D8E8, lambda bb: 256),
+                     (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
+                     (0x0804DA6C, lambda bb: out.extend(struct.unpack("<256f", bytes(bb.mu.mem_read(planes[0], 1024))))),
+                     *LANE_STUBS):
+        b.stub(addr, fn)
+
+    bpm, ratio = 120.0, 0.8
+    clip_ticks = int(round(n_src * bpm / (3000 * ratio)))   # ratio = frames / ticks * BPM / 3000
+
+    def setup_clip(clip, sample, wave):
+        b.mu.mem_write(clip, b"\x00" * 0xC00)
+        b.w32(clip + 0x18, 0x100 + wave)              # pad
+        b.w32(clip + 0x24, sample)
+        b.w32(sample + 0x24, wave)                    # wave id
+        b.w32(clip + 0x248, 0xFFFFFFFF)
+        b.mu.mem_write(clip + 0xBB4, struct.pack("<f", ratio))
+        b.mu.mem_write(clip + 0xBA8, struct.pack("<q", clip_ticks))
+        b.mu.mem_write(clip + 0x1F4, b"\x01")        # loop on
+        b.mu.mem_write(clip + 0x1F8, b"\x00")
+
+    def launch(clip, lane, now, predelay=0, grain_flag=0):
+        b.mu.mem_write(lane, b"\x00" * 0x260)
+        b.mu.mem_write(lane, b"\x01")
+        b.w32(lane + 0xD8, 1)
+        b.w32(lane + 0xC8, 0)
+        for o in (0xCC, 0xD0, 0xD4):
+            b.w32(lane + o, 0xFFFFFFFF)
+        b.mu.mem_write(clip + 0x30, b"\x01\x00")
+        b.mu.mem_write(clip + 0x6C, bytes([grain_flag]))
+        b.mu.mem_write(lane + 0xE0, struct.pack("<q", now))
+        b.w32(lane + 0x138, predelay)
+        b.mu.mem_write(lane + 0x25C, b"\x03")
+        b.w32(RB_VOICE + 20, 1)
+
+    now = [0]
+
+    def set_tp(bpm_now, playing=1):
+        b.mu.mem_write(tp, struct.pack("<qqqf", now[0], 0, 0, bpm_now))
+        b.mu.mem_write(tp + 0x38, bytes([playing]))
+
+    def mix(clip, k, bpm_now=bpm):
+        for _ in range(k):
+            set_tp(bpm_now)
+            b.call(bench.sym["rb_mix"], clip, clip + 0x260, mixbuf, ctx, limit=400_000_000)
+            b.call(bench.sym["rb_work"], limit=400_000_000)
+            now[0] += 256
+
+    setup_clip(clip_a, sample_a, 7)
+    setup_clip(clip_b, sample_b, 8)
+    b.w32(ctx, tp)
+    POSTS.clear()
+    launch(clip_a, clip_a + 0x260, now[0], predelay=100, grain_flag=1)
+    mix(clip_a, 30)
+    ups = [m for m in POSTS if m[0] == 0x4A]
+    started = [m for m in POSTS if m[0] == 0x1D]
+    pos = [struct.unpack_from("<I", m, 0x10)[0] for m in ups]
+    res.check(len(started) == 1 and struct.unpack_from("<I", started[0], 8)[0] == 0x107,
+              f"0x1D once after the launch delay ({len(started)})")
+    res.check(len(ups) >= 29 and all(q > p for p, q in zip(pos, pos[1:])) and
+              struct.unpack_from("<I", ups[-1], 0xC)[0] == 7, f"0x4A every block, rising ({len(ups)}, last {pos[-1] if pos else None})")
+    pm = struct.unpack_from("<h", ups[-1], 0x14)[0]
+    res.check(abs(pm - pos[-1] * 1000 // n_src) <= 1, f"0x4A permille {pm}")
+
+    # The clock runs 0.3 % fast against the Clip's ratio: Bungee pulls in and stays locked.
+    fast = bpm * 1.003
+
+    def expected():
+        tick = now[0] * fast / 3000.0
+        return (tick - anchor) * n_src / clip_ticks
+
+    POSTS.clear()
+    anchor = 0.0
+    launch(clip_a, clip_a + 0x260, now[0])
+    anchor = now[0] * fast / 3000.0
+    errs = []
+    for _ in range(8):
+        mix(clip_a, 100, bpm_now=fast)
+        ups = [struct.unpack_from("<I", m, 0x10)[0] for m in POSTS if m[0] == 0x4A]
+        errs.append((ups[-1] - expected()) if ups else 1e9)
+    free = 0.003 * ratio * 800 * 256                 # how far it would be off unlocked
+    res.check(abs(errs[-1]) < 96 and abs(errs[-2]) < 96,
+              f"clock lock: {errs[-1]:.0f} frames off after ~4 s at +0.3 % (unlocked: {free:.0f}); "
+              f"track {[round(e) for e in errs]}")
+
+    # Latest launch wins: B takes the voice while A plays; A's lanes end, B renders at once.
+    launch(clip_b, clip_b + 0x260, now[0])
+    b.w32(RB_VOICE + 72, clip_a)                    # what hook_main_rate records on the steal
+    b.w32(RB_VOICE + 4, clip_b)
+    out.clear()
+    mix(clip_b, 2)
+    res.check(b.u8(clip_a + 0x260) == 0, "switch: the previous Clip's lane ended")
+    want = [srcs[sample_b](i) for i in range(256)]
+    res.check(max(abs(x - y) for x, y in zip(out[:256], want)) < 1e-6, "switch: the new Clip plays from its first frame at once")
+    res.check(b.u32(RB_VOICE + 72) == 0, "switch: record cleared")
+
+    # Loop off: the voice ends at the end of the file.
+    lens[sample_b] = 6000
+    b.mu.mem_write(clip_b + 0x1F4, b"\x00")
+    launch(clip_b, clip_b + 0x260, now[0])
+    mix(clip_b, 40)
+    res.check(b.u8(clip_b + 0x260) == 0, "loop off: lane ended at the end of the file")
 
 
 def t_rubber_broken_left_alone(bench, res):
@@ -3168,6 +3351,7 @@ def t_rubber_cost_flat(bench, res):
     b.mu.hook_add(UC_HOOK_BLOCK, lambda mu, a, sz, d: work.__setitem__(0, work[0] + sz), begin=RB_B2, end=0x081FFFFF)
     b.mu.mem_write(clip, b"\x00" * 0xC00)
     b.w32(clip + 0x24, sample)
+    b.w32(ctx, 0)                               # no transport: no clock lock
     b.mu.mem_write(clip + 0x260, b"\x01")
     means = {}
     for ratio in (1.0, 0.5, 2.0, 0.8, 1.25):
@@ -3283,6 +3467,7 @@ def main():
             ("Rubber broken start is left alone", t_rubber_broken_left_alone),
             ("Rubber CPU guard", t_rubber_cpu_guard),
             ("Rubber/Bungee voice ends like a stock lane (emu build)", t_bungee_voice_end),
+            ("Rubber/Bungee clock lock, pad feedback, pad switch (emu build)", t_bungee_clock_feedback_switch),
             ("Rubber cost flat over tempo (emu build)", t_rubber_cost_flat),
             ("Rubber takes over bank 2 only with RBTAKE.TXT", t_rubber_takeover),
             ("Rubber gives bank 2 back with RBFREE.TXT", t_rubber_release),

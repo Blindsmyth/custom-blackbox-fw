@@ -49,6 +49,13 @@ ELF = BUILD / "bungee.elf"
 if "--emu" in sys.argv:
     OUT, OUT_B2, SYMS = BUILD / "BLACKBOX_emu.BIN", BUILD / "BBBUNGEE_emu.BIN", BUILD / "BLACKBOX_emu.sym.json"
     ELF = BUILD / "bungee_emu.elf"
+# --with-repitch: Warp Stretch / Repitch / Bungee (Bungee at value 2) instead of Stretch / Bungee.
+# Same bank 2 payload; the images go to repitch/ (and build/repitch/ with --emu).
+REPITCH = "--with-repitch" in sys.argv
+if REPITCH:
+    OUT, OUT_B2, SYMS = (OUT.parent / "repitch" / OUT.name, OUT_B2.parent / "repitch" / OUT_B2.name,
+                         SYMS.parent / "repitch" / SYMS.name)
+    OUT.parent.mkdir(exist_ok=True)
 LETTER = "B"
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
@@ -92,6 +99,7 @@ def compile_all(rb_id):
     objs = []
     cave_o = BUILD / "bungee_cave.o"
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
+         *(["-DWITH_REPITCH"] if REPITCH else []),
          "-I", MIX_DIR, "-I", mix.BASE_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
     objs.append(cave_o)
     for src in (BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"):
@@ -228,7 +236,7 @@ def main():
     stock = base.STOCK.read_bytes()
     add_rubber_sites(stock)
     mix.OBJ = BUILD / "bungee_cave.o"
-    mix.HERE = BUILD if EMU else HERE
+    mix.HERE = OUT.parent
     mix.check_collisions()
     mix.check_alignment()
     symbols = {k: v & ~1 for k, v in syms.items() if base.CAVE_VA <= v < B2_BASE}

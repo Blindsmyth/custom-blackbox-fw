@@ -95,6 +95,14 @@ typedef void (*obj_fn)(void *);
 #define FW_ENV_RESET  ((obj_fn)0x0806a5d9u)
 #define FW_AUX_RESET  ((obj_fn)0x0806ef39u)         /* lane+0xF0 */
 #define FW_FILT_RESET ((obj_fn)0x08076705u)         /* lane+0x14C, the pad filter */
+// Pad feedback: stock's lane render posts these to the engine's outbox (ctx + 0x15238); the pads
+// view and the waveform playhead show "playing" only from them (0x4A every block, position and
+// permille; 0x1D when a quantised launch's delay is over).
+typedef void (*post_fn)(void *, const void *);
+typedef void (*tick_fn)(int64_t *, void *, int);
+#define FW_POST       ((post_fn)0x0804f505u)        /* (ctx + 0x15238, 24-byte message) */
+#define FW_TICK_AT    ((tick_fn)0x08069c45u)        /* (&tick, transport, offset): tick at now + offset */
+#define OUTBOX        0x15238u
 #define LANE_A        0x260u                        /* clip+0x260 and clip+0x670: a Clip's two lanes */
 #define LANE_B        0x670u
 #define L8(l, o)   (*(volatile uint8_t *)((l) + (o)))
@@ -129,7 +137,14 @@ static volatile uint32_t w_frames, r_frames;
 static volatile bool req_stop;              /* the voice ended: render nothing */
 static void *volatile l_sample;              /* the launch's Clip */
 static volatile int l_length, l_stereo;
-static volatile float cur_ratio = 1.f;       /* the Clip's ratio, every block */
+static volatile float cur_ratio = 1.f;       /* the speed: the Clip's ratio, clock-corrected */
+static volatile int l_base;                  /* the launch's first source frame (0, or a resync) */
+// Which source frames each ring chunk covers (one per grain), for the playhead and the clock lock.
+#define TRACK 8
+static volatile uint32_t tr_start[TRACK];    /* ring frame of the chunk's first frame */
+static volatile int tr_n[TRACK];
+static volatile double tr_p0[TRACK], tr_p1[TRACK];
+static volatile uint32_t tr_count;
 static volatile uint32_t task_cyc, task_an, task_syn, underruns;   /* stats, for the label */
 
 // ---- leaf task state ----------------------------------------------------------------------
@@ -143,7 +158,7 @@ static bool active;            /* rendering a launch */
 static uint32_t cur_seq;       /* the launch the task is on */
 static int bg_channels;        /* the stretcher's channel count: 2, or 1 for a mono Clip */
 static void *t_sample;         /* the task's copy of the launch parameters */
-static int t_length, t_stereo;
+static int t_length, t_stereo, t_base;
 
 // ---- audio task state ---------------------------------------------------------------------
 static uint32_t my_seq;        /* the launch the audio side plays */
@@ -151,7 +166,10 @@ static bool launching;         /* raw Clip until the handoff */
 static bool playing;           /* a voice is on */
 static int raw_pos;            /* raw Clip frames played since the launch */
 static void *a_sample;         /* the Clip the audio side reads (raw launch, crossfade) */
-static int a_length, a_stereo;
+static int a_length, a_stereo, a_base;
+static double anchor_tick;     /* the clock tick at the launch's first frame */
+static double lock_i;          /* the clock lock's integral term (removes a steady offset) */
+static bool anchored;
 static float xf_l[XF], xf_r[XF];
 static uint32_t lbl_blocks, lbl_t0;
 
@@ -294,9 +312,9 @@ static void read_chan(void *sample, int length, int pos, int n, float *dest, int
 // The audio side's raw Clip (launch and crossfade): the audio task, as stock reads.
 static void read_raw(int pos, int n, float *l, float *r)
 {
-    read_chan(a_sample, a_length, pos, n, l, 0, false);
+    read_chan(a_sample, a_length, a_base + pos, n, l, 0, false);
     if (a_stereo)
-        read_chan(a_sample, a_length, pos, n, r, 1, false);
+        read_chan(a_sample, a_length, a_base + pos, n, r, 1, false);
     else
         for (int i = 0; i < n; i++)
             r[i] = l[i];
@@ -359,10 +377,17 @@ static void grain()
     task_syn += DWT_CYCCNT - t1;
 
     double p0 = o.request[Bungee::OutputChunk::begin]->position;
-    if (std::isnan(p0) || p0 < START)
+    if (std::isnan(p0) || p0 < t_base + START)
         return;   // preroll and the grains before the handoff
     const float *r = bg_channels == 2 ? o.data + o.channelStride : o.data;
     uint32_t w = w_frames;
+    uint32_t t = tr_count % TRACK;
+    tr_start[t] = w;
+    tr_n[t] = o.frameCount;
+    tr_p0[t] = p0;
+    tr_p1[t] = o.request[Bungee::OutputChunk::end]->position;
+    DMB();
+    tr_count = tr_count + 1;
     for (int i = 0; i < o.frameCount; i++) {
         ring_l[(w + i) % RING] = o.data[i];
         ring_r[(w + i) % RING] = r[i];
@@ -378,13 +403,14 @@ static void start_launch()
     t_sample = l_sample;
     t_length = l_length;
     t_stereo = l_stereo;
+    t_base = l_base;
     int channels = t_stereo ? 2 : 1;
     if (channels != bg_channels && !build(channels)) {
         active = false;
         return;
     }
     req = {};
-    req.position = START;
+    req.position = t_base + START;
     req.speed = 1.;
     req.pitch = 1.;
     req.reset = true;
@@ -393,6 +419,7 @@ static void start_launch()
     unity_hop = true;
     win_ok = false;
     w_frames = 0;
+    tr_count = 0;
     active = true;
 }
 
@@ -542,14 +569,53 @@ static void play(float *l, float *r, int n)
     r_frames = rd + (uint32_t)m;
 }
 
-static void launch_voice(void *sample, int length, int stereo)
+// The source frame (unwrapped) of the frame the audio side plays next.
+static double src_pos()
+{
+    if (launching)
+        return a_base + raw_pos;
+    uint32_t r = r_frames, cnt = tr_count;
+    for (uint32_t i = 0; i < TRACK && i < cnt; i++) {
+        uint32_t t = (cnt - 1 - i) % TRACK;
+        uint32_t st = tr_start[t];
+        if (r >= st && r - st <= (uint32_t)tr_n[t] && tr_n[t] > 0)
+            return tr_p0[t] + (tr_p1[t] - tr_p0[t]) * (double)(r - st) / tr_n[t];
+    }
+    return a_base + START + (double)r * cur_ratio;
+}
+
+// The clock tick at output sample s (fractional): the transport's tempo map, 960 ticks per beat,
+// one tick = 3000 / BPM samples at 48 kHz (map anchor tick +0x08, sample +0x10, BPM +0x18).
+static double tick_at(void *transport, double s)
+{
+    const char *t = (const char *)transport;
+    double map_tick = (double)*(const volatile int64_t *)(t + 0x08);
+    double map_sample = (double)*(const volatile int64_t *)(t + 0x10);
+    double bpm = *(const volatile float *)(t + 0x18);
+    return map_tick + (s - map_sample) * bpm / 3000.;
+}
+
+// e mod len, into [-len/2, len/2): how far ahead the clock is, the short way round the loop.
+static double wrap_err(double e, int len)
+{
+    e = std::fmod(e, (double)len);
+    if (e >= len / 2.)
+        e -= len;
+    if (e < -len / 2.)
+        e += len;
+    return e;
+}
+
+static void launch_voice(void *sample, int length, int stereo, int base)
 {
     a_sample = sample;
     a_length = length;
     a_stereo = stereo;
+    a_base = base;
     l_sample = sample;
     l_length = length;
     l_stereo = stereo;
+    l_base = base;
     req_stop = false;
     raw_pos = 0;
     r_frames = 0;
@@ -572,6 +638,15 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     RbVoice *v = voice();
     if (!bg || !clip || !lane || !mix || !ctx)
         return;
+    // A launch on this Clip took the voice from another (choke switch): that Clip's lanes end now,
+    // as a choke's fast release would, so they neither hang unrendered nor play stock grains.
+    unsigned prev = v->prev_owner;
+    if (prev && prev != clip) {
+        for (unsigned o = LANE_A; o <= LANE_B; o += LANE_B - LANE_A)
+            if (L8(prev + o, 0))
+                lane_end(prev, prev + o, true);
+    }
+    v->prev_owner = 0;
     lane = pick_lane(clip);
     if (!lane)
         return;
@@ -597,12 +672,15 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     if (!dl)
         return;
 
-    float ratio = *(float *)(clip + 0xBB4);   // tempo / clip tempo (repitch.S hook_rate)
+    float want = *(float *)(clip + 0xBB4);   // tempo / clip tempo (repitch.S hook_rate)
+    float ratio = want;
     if (!(ratio >= RB_MIN_RATIO))
         ratio = RB_MIN_RATIO;
     if (ratio > RB_MAX_RATIO)
         ratio = RB_MAX_RATIO;
-    cur_ratio = ratio;
+    void *transport = *(void **)ctx;
+    int64_t clip_ticks = *(volatile int64_t *)(clip + 0xBA8);
+    bool loops = *(volatile uint8_t *)(clip + 0x1F4) && *(volatile uint8_t *)(clip + 0x1F8) != 1;
 
     int reset = v->reset_req;
     v->reset_req = 0;
@@ -610,8 +688,54 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     if ((a0 || a1) && !v->prev_active)
         reset = 1;
     v->prev_active = (a0 || a1) ? 1 : 0;
-    if (reset || !playing || sample != a_sample || stereo != a_stereo)
-        launch_voice(sample, length, stereo);
+    if (reset || !playing || sample != a_sample || stereo != a_stereo) {
+        launch_voice(sample, length, stereo, 0);
+        anchored = false;
+        lock_i = 0;
+    }
+    if (!anchored && transport) {
+        // The clock tick at the launch's first frame: the transport's sample count at launch
+        // (lane+0xE0) plus the quantise delay (lane+0x138, before this block counts it down).
+        int64_t s0 = *(volatile int64_t *)(lane + 0xE0) + L32(lane, 0x138);
+        anchor_tick = tick_at(transport, (double)s0);
+        anchored = true;
+    }
+
+    // Clock lock: where stock would be in the file now, against where Bungee is; the speed is
+    // nudged (at most 2 %, no pitch change) so a long sample stays on the beat. A big jump (locate,
+    // external clock) relaunches there instead.
+    double speed_now = ratio;
+    if (transport && *(volatile uint8_t *)((char *)transport + 0x38) && !launching && clip_ticks > 0 &&
+        ratio == want) {
+        double now = (double)*(volatile int64_t *)transport + (L32(lane, 0x138) > 0 ? L32(lane, 0x138) : 0);
+        double expect = (tick_at(transport, now) - anchor_tick) * (double)length / (double)clip_ticks;
+        double err = wrap_err(expect - src_pos(), length);
+        if (err > 4800. || err < -4800.) {
+            double at = std::fmod(expect, (double)length);
+            if (at < 0)
+                at += length;
+            launch_voice(sample, length, stereo, (int)at);
+        } else {
+            // PI on the source-frame error, tuned with the ring's ~8-block delay in the loop
+            // (bench): 2 ms of error asks the full 2 %, the integral takes over a steady
+            // difference (a clip tempo a hair off, an external clock) and settles within ~1 s. A
+            // speed change, not pitch: 2 % for a moment is inaudible. No integration while the
+            // output is at its limit (no wind-up after a launch's raw-start offset).
+            double c = err * 1e-4 + lock_i;
+            if (c > 0.02)
+                c = 0.02;
+            else if (c < -0.02)
+                c = -0.02;
+            else
+                lock_i += err * 5e-7;
+            if (lock_i > 0.01)
+                lock_i = 0.01;
+            if (lock_i < -0.01)
+                lock_i = -0.01;
+            speed_now = ratio * (1. + c);
+        }
+    }
+    cur_ratio = (float)speed_now;
 
     // Launch pre-delay (lane+0x138: where in the block the note starts): silence before it.
     static float mono_r[SUB];   /* a buffer without a right plane: play() still writes one */
@@ -629,6 +753,43 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     // passes it), then the pad filter, then the mix.
     if (!L32(lane, 0x138))
         FW_ENV_APPLY((void *)(lane + 0x258), dl, dr, n);
+
+    // Pad feedback, as stock's lane render posts it: "started" once a quantised launch's delay is
+    // over, the playhead every block.
+    if (!L32(lane, 0x138) && L32(lane, 0xD8) > 0) {
+        int g = L32(lane, 0xC8);
+        unsigned gr = clip + (unsigned)g * 0x70u;
+        if (g >= 0 && g <= 3 && L8(gr, 0x6C)) {
+            uint32_t m[6] = { 0x1Du, *(volatile uint32_t *)(clip + 0x248), *(volatile uint32_t *)(clip + 0x18),
+                              *(volatile uint32_t *)(*(volatile uint32_t *)(clip + 0x24) + 0x24), 0, 0 };
+            FW_POST((void *)(ctx + OUTBOX), m);
+            if (transport)
+                FW_TICK_AT((int64_t *)(lane + 0x140), transport, from);
+            L8(gr, 0x6C) = 0;
+        }
+    }
+    double here = src_pos();
+    if (!loops && here >= length) {
+        // Loop off, or Trigger: stock stops at the end of the file. Bungee reads wrap, so stop here.
+        lane_end(clip, lane, true);
+        stop_voice();
+        set_label("Bungee");
+        lbl_blocks = 0;
+        return;
+    }
+    {
+        double at = std::fmod(here, (double)length);
+        if (at < 0)
+            at += length;
+        uint32_t pos = (uint32_t)at;
+        if (pos != *(volatile uint32_t *)(clip + 0x248)) {
+            uint32_t m[6] = { 0x4Au, 0, *(volatile uint32_t *)(clip + 0x18),
+                              *(volatile uint32_t *)(*(volatile uint32_t *)(clip + 0x24) + 0x24), pos, 0 };
+            *(int16_t *)&m[5] = (int16_t)(at * 1000. / length);
+            FW_POST((void *)(ctx + OUTBOX), m);
+            *(volatile uint32_t *)(clip + 0x248) = pos;
+        }
+    }
     FW_BUF_ENV((void *)(lane + 0x14c), scratch);
     FW_BUF_MIX((void *)mix, scratch);
 
