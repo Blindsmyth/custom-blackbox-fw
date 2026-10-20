@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warp Lab</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1c1a; --muted: #6b6862; --line: #dedbd4;
+    --accent: #c2410c; --accent-ink: #ffffff; --good: #15803d; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161514; --panel: #201f1d; --ink: #ecebe7; --muted: #9c988f; --line: #34322e;
+            --accent: #fb923c; --accent-ink: #1b1003; --good: #4ade80; --warn: #fbbf24; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+            padding: 16px; margin-bottom: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+       margin: 0 0 12px; font-weight: 600; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button, select, input[type=number] { font: inherit; color: var(--ink); background: var(--bg);
+       border: 1px solid var(--line); border-radius: 7px; padding: 6px 12px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
+                   font-weight: 600; min-width: 96px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .drop { border: 1.5px dashed var(--line); border-radius: 8px; padding: 14px; text-align: center;
+          color: var(--muted); flex: 1 1 240px; }
+  .drop.over { border-color: var(--accent); color: var(--ink); }
+  .algos { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+  .algo { text-align: left; padding: 10px 12px; border-radius: 8px; }
+  .algo b { display: block; }
+  .algo span { color: var(--muted); font-size: 12.5px; }
+  .algo kbd { float: right; font-size: 11px; color: var(--muted); border: 1px solid var(--line);
+              border-radius: 4px; padding: 0 5px; }
+  .algo.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .tempo { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+  @media (max-width: 600px) {
+    .tempo { grid-template-columns: auto auto; justify-content: space-between; }
+    .tempo #bpm { grid-column: 1 / -1; order: 3; }
+  }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .big { font-size: 26px; font-variant-numeric: tabular-nums; font-weight: 600; min-width: 120px; text-align: right; }
+  .muted { color: var(--muted); }
+  .meter { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; flex: 1 1 120px; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--good); transition: width .1s; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  td.n { text-align: right; }
+  .bar { height: 8px; background: var(--accent); border-radius: 4px; }
+  details summary { cursor: pointer; color: var(--muted); }
+  .params { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-top: 10px; }
+  .params label { display: grid; gap: 3px; font-size: 13px; color: var(--muted); }
+  #status { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Warp Lab</h1>
+  <p class="sub">The Blackbox Warp C code, compiled to WebAssembly, rendering in 1024-sample blocks like the device. Drag the tempo while it plays; press 1–9 and 0 to switch algorithms (click for the rest).</p>
+
+  <section>
+    <h2>Loop</h2>
+    <div class="row">
+      <button id="demo">Demo loop</button>
+      <label class="drop" id="drop">Drop a WAV/AIFF/MP3 here, or <u>choose a file</u>
+        <input id="file" type="file" accept="audio/*" hidden></label>
+    </div>
+    <p id="status">Loading engine…</p>
+  </section>
+
+  <section>
+    <h2>Algorithm</h2>
+    <div class="algos" id="algos"></div>
+  </section>
+
+  <section>
+    <h2>Tempo</h2>
+    <div class="tempo">
+      <span class="muted">Clip BPM <input id="orig" type="number" value="120" min="30" max="300" step="0.01" style="width:90px"></span>
+      <input id="bpm" type="range" min="30" max="300" step="0.5" value="120">
+      <span class="big" id="bpmv">120 BPM</span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="play" class="primary" disabled>Play</button>
+      <button id="half">½×</button><button id="unity">1×</button><button id="dbl">2×</button>
+      <span class="muted" id="ratio">ratio 1.000</span>
+      <span class="muted">Sync <select id="sync"><option value="1">1/4</option><option value="2">1/8</option><option value="4" selected>1/16</option><option value="8">1/32</option></select></span>
+      <span class="muted">Vol</span><input id="gain" type="range" min="0" max="1.5" step="0.01" value="0.8" style="width:110px">
+      <div class="meter"><i id="meter"></i></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Cost</h2>
+    <p class="muted" style="margin-top:0">Wasm time on this computer for the current loop and tempo, relative to stock Stretch. It ranks the algorithms; it is not a device number. Blackbox column: instructions per 1024-sample block measured in Unicorn on the cave build, where known.</p>
+    <div class="row"><button id="bench" disabled>Measure</button><button id="render" disabled>Download current as WAV</button></div>
+    <table style="margin-top:10px"><thead><tr><th>Algorithm</th><th class="n">µs / block</th><th class="n">× stock</th><th style="width:30%"></th><th class="n">Blackbox @1×</th></tr></thead>
+      <tbody id="benchrows"></tbody></table>
+  </section>
+
+  <section>
+    <h2>Beats / Slice</h2>
+    <div class="params" style="margin-top:0">
+      <label>Fill when a segment runs out <select id="b_fill"><option value="0">Loop tail</option><option value="1">Gate</option><option value="3">Ping-pong</option><option value="4">Granular</option><option value="2">Run on (stock)</option></select></label>
+      <label>Ping-pong width / grain spread (samples) <input type="number" id="b_pp" value="2400" min="32" max="48000"></label>
+      <label>Grain size (samples) <input type="number" id="b_glen" value="2400" min="64" max="24000"></label>
+      <label>Grain density (overlap, 1–8) <input type="number" id="b_dens" value="4" min="1" max="8"></label>
+      <label>Pre-roll fade-in (samples) <input type="number" id="b_attack" value="256" min="1" max="2048"></label>
+      <label>Cut fade-out (samples) <input type="number" id="b_cut" value="512" min="1" max="4096"></label>
+      <label>Loop crossfade / gate fade (samples) <input type="number" id="b_xf" value="1024" min="16" max="4096"></label>
+      <label>Slice sensitivity (lower = more) <input type="number" id="b_sens" value="4" min="1.2" max="20" step="0.2"></label>
+      <label>Fill slice gaps longer than (Sync steps, 0 = off) <input type="number" id="b_gap" value="2.5" min="0" max="16" step="0.25"></label>
+      <label>Slice segments <output id="b_count">—</output></label>
+    </div>
+  </section>
+
+  <section>
+    <details id="capidet"><summary>Capi parameters</summary>
+      <div class="params">
+        <label>Leash (keyframes) <input type="number" id="c_leash" value="642" min="16" max="1500"></label>
+        <label>Punch fade (samples) <input type="number" id="c_fade" value="960" min="1" max="4800"></label>
+        <label>Analyzer gate ε <input type="number" id="c_eps" value="0.001" step="0.001" min="0"></label>
+        <label>Transient ratio (1e9 = off) <input type="number" id="c_thresh" value="2.22" step="0.1" min="0"></label>
+        <label>Land on <select id="c_onset"><option value="1">onset</option><option value="0">peak (Capicola)</option></select></label>
+      </div>
+    </details>
+  </section>
+  <section>
+    <details id="grandet" open><summary>Granular parameters (Gran tab, stock ranges)</summary>
+      <div class="params">
+        <label>Grain Size <input type="number" id="g_size" value="82" min="0" max="1000"> <span class="muted" id="g_size_v"></span></label>
+        <label>Density <input type="number" id="g_dens" value="750" min="0" max="1000"> <span class="muted" id="g_dens_v"></span></label>
+        <label>Scatter <input type="number" id="g_scat" value="0" min="0" max="1000"></label>
+        <label>Window (random range) <input type="number" id="g_win" value="0" min="0" max="1000"> <span class="muted" id="g_win_v"></span></label>
+        <label>Speed (1000 = 1×; Granular only) <input type="number" id="g_speed" value="1000" min="0" max="2000"></label>
+        <label>Pan Rnd <input type="number" id="g_pan" value="0" min="0" max="1000"></label>
+        <label>Root Note (0 = none; period lock) <input type="number" id="g_root" value="0" min="0" max="127"></label>
+      </div>
+      <p class="muted" style="margin:6px 0 0">Granular is the stock pad engine: the playhead scans at Speed, so it drifts off the tempo. Granular Sync scans at the tempo ratio instead, so the cloud stays on the beat; the grains keep their pitch either way. Stock sums grains without normalising: at high Density it is loud (up to ~2.8×), so watch the meter and Vol.</p>
+    </details>
+  </section>
+</main>
+
+<script>
+const ALGOS = [
+  { id: 6, name: 'Stock (Sync)', desc: '3.1.9 Stretch: 1× grains per Sync step, 256 fades', dev: 'stock' },
+  { id: 7, name: 'Beats', desc: 'Stock segments on the Sync grid, gap filled (see Fill)', dev: '—' },
+  { id: 8, name: 'Slice', desc: 'Segments at slice markers, gap filled (see Fill)', dev: '—' },
+  { id: 30, name: 'Granular', desc: 'Stock Granular pad engine: grains, playhead at Speed (drifts)', dev: 'stock' },
+  { id: 31, name: 'Granular Sync', desc: 'Granular with the playhead at the tempo ratio (on the beat)', dev: '—' },
+  { id: 9, name: 'Deluge', desc: 'Synthstrom Deluge: percussive-aware hops + phase search', dev: '—' },
+  { id: 0, name: 'OLA 256', desc: 'Plain overlap-add, window 256 / hop 128', dev: '—' },
+  { id: 1, name: 'OLA 2048', desc: 'Plain overlap-add, window 2048 / hop 1024', dev: '—' },
+  { id: 2, name: 'Smooth', desc: 'WSOLA, window 2048, search ±160', dev: '103k' },
+  { id: 3, name: 'Capi', desc: 'Capicola keyframes + transient punch', dev: '568k' },
+  { id: 4, name: 'Vari', desc: 'Epoch/onset map grains', dev: '—' },
+  { id: 5, name: 'Original', desc: 'Unstretched loop (ignores tempo)', dev: '—' },
+  { id: 10, name: 'RB Mixxx faster', desc: 'Rubber Band R2, Mixxx "faster" (reference only)', dev: 'too heavy', ext: 'rb' },
+  { id: 11, name: 'RB Mixxx better', desc: 'Rubber Band R3 finer, channels together', dev: 'too heavy', ext: 'rb' },
+  { id: 12, name: 'RB better, short', desc: 'R3 finer + short window (Mixxx option)', dev: 'too heavy', ext: 'rb' },
+  { id: 20, name: 'Bungee 512 hop', desc: 'Bungee Basic (MPL-2.0), default hop: one grain per 512 frames', dev: '46% avg, 92% peak', ext: 'bg' },
+  { id: 22, name: 'Bungee 256 hop', desc: 'Bungee, one grain per 256 frames (hop adjust −1)', dev: '45% flat', ext: 'bg' },
+  { id: 21, name: 'Bungee rev 512', desc: 'Bungee reverse, default 512-frame hop', dev: '46% avg, 92% peak', ext: 'bg' },
+  { id: 23, name: 'Bungee rev 256', desc: 'Bungee reverse, 256-frame hop', dev: '45% flat', ext: 'bg' },
+];
+// Optional extra engines: file, exports prefix and the algo id of its mode 0.
+const EXT = { rb: { file: 'rb.wasm', base: 10 }, bg: { file: 'bungee.wasm', base: 20 } };
+const $ = (id) => document.getElementById(id);
+const state = { algo: 6, playing: false, clip: null, module: null, bytes: null, ext: {} };
+let ctx = null, node = null;
+
+// ── UI ───────────────────────────────────────────────────────────────────
+const algosEl = $('algos');
+for (const a of ALGOS) {
+  const b = document.createElement('button');
+  b.className = 'algo'; b.dataset.id = a.id;
+  b.innerHTML = `<kbd>${(ALGOS.indexOf(a) + 1) % 10}</kbd><b>${a.name}</b><span>${a.desc}</span>`;
+  b.onclick = () => setAlgo(a.id);
+  algosEl.appendChild(b);
+}
+function setAlgo(id) {
+  state.algo = id;
+  for (const b of algosEl.children) b.classList.toggle('on', +b.dataset.id === id);
+  send({ algo: id });
+}
+setAlgo(6);
+
+function ratio() { return +$('bpm').value / +$('orig').value; }
+function updateTempo() {
+  $('bpmv').textContent = `${(+$('bpm').value).toFixed(1).replace(/\.0$/, '')} BPM`;
+  $('ratio').textContent = `ratio ${ratio().toFixed(3)}`;
+  send({ ratio: Math.min(4, Math.max(0.25, ratio())) });
+}
+$('bpm').oninput = updateTempo;
+$('orig').oninput = () => { updateTempo(); sendSync(); };
+function sendSync() { send({ sync: { bpm: +$('orig').value, perBeat: +$('sync').value } }); }
+$('sync').onchange = sendSync;
+const setMult = (m) => { $('bpm').value = (+$('orig').value * m).toFixed(1); updateTempo(); };
+$('half').onclick = () => setMult(0.5);
+$('unity').onclick = () => setMult(1);
+$('dbl').onclick = () => setMult(2);
+$('gain').oninput = () => send({ gain: +$('gain').value });
+
+function beatsParams() {
+  return { fill: +$('b_fill').value, attack: +$('b_attack').value, cut: +$('b_cut').value,
+           xf: +$('b_xf').value, pp: +$('b_pp').value, glen: +$('b_glen').value, dens: +$('b_dens').value, sens: +$('b_sens').value, gap: +$('b_gap').value };
+}
+for (const id of ['b_fill', 'b_attack', 'b_cut', 'b_xf', 'b_pp', 'b_glen', 'b_dens', 'b_sens', 'b_gap'])
+  $(id).onchange = () => send({ beats: beatsParams() });
+function granParams() {
+  return { size: +$('g_size').value, dens: +$('g_dens').value, scat: +$('g_scat').value, win: +$('g_win').value,
+           speed: +$('g_speed').value, pan: +$('g_pan').value, root: +$('g_root').value };
+}
+function granInfo() {
+  const g = granParams();
+  const size = Math.max(840, Math.floor((1200 + g.size * 47.744) / 840) * 840);
+  const d = g.dens / 1000;
+  const n = d < 0.5 ? 3 : Math.min(8, Math.floor((d - 0.5) * 10 + 3));
+  const gap = d < 0.5 ? Math.floor((256 + ((0.5 - d) * 2) ** 3 * 432000) / 3) : 0;
+  $('g_size_v').textContent = `${size} samples (${(size / 48).toFixed(0)} ms)`;
+  $('g_dens_v').textContent = `${n} grains${gap ? `, gap ${(gap / 48).toFixed(0)} ms` : ''}`;
+  $('g_win_v').textContent = `±${((g.win / 1000) ** 3 * 19).toFixed(2)} s`;
+}
+for (const id of ['g_size', 'g_dens', 'g_scat', 'g_win', 'g_speed', 'g_pan', 'g_root'])
+  $(id).onchange = () => { granInfo(); send({ gran: granParams() }); };
+granInfo();
+function capiParams() {
+  return { leash: +$('c_leash').value, fade: +$('c_fade').value, eps: +$('c_eps').value,
+           thresh: +$('c_thresh').value, onset: $('c_onset').value === '1' };
+}
+for (const id of ['c_leash', 'c_fade', 'c_eps', 'c_thresh', 'c_onset'])
+  $(id).onchange = () => send({ capi: capiParams() });
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' && e.target.type === 'number') return;
+  const k = e.key === '0' ? 10 : +e.key;
+  if (k >= 1 && k <= ALGOS.length) setAlgo(ALGOS[k - 1].id);
+  else if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'ArrowUp' || e.key === 'ArrowRight') { $('bpm').value = +$('bpm').value + 1; updateTempo(); }
+  else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') { $('bpm').value = +$('bpm').value - 1; updateTempo(); }
+});
+
+// ── Engine ───────────────────────────────────────────────────────────────
+function send(p) { if (node) node.port.postMessage({ type: 'params', ...p }); }
+
+async function ensureAudio() {
+  if (ctx) return;
+  ctx = new AudioContext({ sampleRate: 48000 });
+  await ctx.audioWorklet.addModule(`worklet.js?${Date.now()}`);
+  node = new AudioWorkletNode(ctx, 'lab', { outputChannelCount: [2] });
+  node.connect(ctx.destination);
+  await new Promise((res) => {
+    node.port.onmessage = (ev) => {
+      const m = ev.data;
+      if (m.type === 'ready') res();
+      else if (m.type === 'error') $('status').textContent = `Audio engine failed: ${m.message}`;
+      else if (m.type === 'loaded') $('status').textContent = statusText(m.frames);
+      else if (m.type === 'slices') $('b_count').textContent = m.total > m.count ? `${m.count} slices + ${m.total - m.count} grid` : `${m.count} slices`;
+      else if (m.type === 'meter') {
+        $('meter').style.width = `${Math.min(100, m.peak * 100)}%`;
+        $('meter').style.background = m.peak > 1 ? 'var(--warn)' : 'var(--good)';
+      }
+    };
+    node.port.postMessage({ type: 'init', bytes: state.bytes, extBytes: Object.fromEntries(Object.entries(state.ext).map(([p, x]) => [p, x.bytes])) });
+  });
+  send({ algo: state.algo, ratio: ratio(), gain: +$('gain').value, capi: capiParams(), beats: beatsParams(), gran: granParams(),
+         sync: { bpm: +$('orig').value, perBeat: +$('sync').value } });
+}
+
+function statusText(frames) {
+  const c = state.clip;
+  return `${c.name} · ${(frames / 48000).toFixed(2)} s · ${c.r ? 'stereo' : 'mono'} · clip BPM ${(+$('orig').value).toFixed(2)}`;
+}
+
+async function loadClip(clip) {
+  state.clip = clip;
+  $('orig').value = clip.bpm.toFixed(2);
+  $('bpm').value = clip.bpm.toFixed(1);
+  await ensureAudio();
+  node.port.postMessage({ type: 'load', l: clip.l, r: clip.r });
+  updateTempo();
+  sendSync();
+  send({ beats: beatsParams() });
+  for (const id of ['play', 'bench', 'render']) $(id).disabled = false;
+}
+
+async function togglePlay() {
+  if (!state.clip) return;
+  await ensureAudio();
+  await ctx.resume();
+  state.playing = !state.playing;
+  $('play').textContent = state.playing ? 'Stop' : 'Play';
+  send({ playing: state.playing });
+}
+$('play').onclick = togglePlay;
+
+// Guess the loop's BPM from its length: the bar count that lands in 80–160.
+function guessBpm(seconds) {
+  for (const beats of [4, 8, 16, 32, 64, 2, 1]) {
+    const bpm = 60 * beats / seconds;
+    if (bpm >= 80 && bpm < 160) return bpm;
+  }
+  return 120;
+}
+
+async function loadFile(file) {
+  await ensureAudio();
+  $('status').textContent = `Decoding ${file.name}…`;
+  const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+  const l = buf.getChannelData(0).slice();
+  const r = buf.numberOfChannels > 1 ? buf.getChannelData(1).slice() : null;
+  await loadClip({ name: file.name, l, r, bpm: guessBpm(buf.duration) });
+}
+$('file').onchange = (e) => e.target.files[0] && loadFile(e.target.files[0]);
+const drop = $('drop');
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && loadFile(e.dataTransfer.files[0]); };
+
+// Demo: 4 bars at 120 BPM, kick/snare/hats, a bass line and chord stabs.
+function demoLoop() {
+  const sr = 48000, beat = sr / 2, n = beat * 16, L = new Float32Array(n), R = new Float32Array(n);
+  let seed = 1; const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 31) - 1;
+  const add = (p, len, fn, gl, gr) => { for (let i = 0; i < len && p + i < n; i++) { const v = fn(i / sr); L[p + i] += v * gl; R[p + i] += v * gr; } };
+  const notes = [55, 55, 65.4, 49];
+  for (let b = 0; b < 16; b++) {
+    const p = b * beat;
+    let ph = 0;
+    add(p, sr * 0.35, (t) => { ph += 2 * Math.PI * (50 + 120 * Math.exp(-t * 30)) / sr; return Math.sin(ph) * Math.exp(-t * 9) * 0.8; }, 1, 1);
+    if (b % 2) add(p, sr * 0.2, (t) => (rnd() * 0.4 + Math.sin(2 * Math.PI * 190 * t) * 0.5) * Math.exp(-t * 18), 0.85, 0.7);
+    for (const h of [0, beat / 2]) { let prev = 0; add(p + h, sr * 0.05, (t) => { const x = rnd(); const y = x - prev; prev = x; return y * Math.exp(-t * 80) * 0.2; }, 0.6, 1); }
+    const f = notes[Math.floor(b / 4) % 4];
+    add(p + beat / 2, beat / 2, (t) => (Math.sin(2 * Math.PI * f * t) + 0.3 * Math.sin(4 * Math.PI * f * t)) * Math.min(1, t * 300) * Math.exp(-t * 4) * 0.45, 1, 1);
+    if (b % 4 === 3) for (const [m, pan] of [[4, 0.3], [5, 0.7], [6, 0.5]])
+      add(p + beat / 2, beat * 0.45, (t) => Math.sin(2 * Math.PI * f * m * t + 0.4 * Math.sin(2 * Math.PI * 5 * t)) * Math.exp(-t * 6) * 0.12, 1 - pan, pan);
+  }
+  let pk = 0; for (let i = 0; i < n; i++) pk = Math.max(pk, Math.abs(L[i]), Math.abs(R[i]));
+  for (let i = 0; i < n; i++) { L[i] *= 0.9 / pk; R[i] *= 0.9 / pk; }
+  return { name: 'Demo loop', l: L, r: R, bpm: 120 };
+}
+$('demo').onclick = () => loadClip(demoLoop());
+
+// ── Offline: benchmark and WAV render on a second instance ───────────────
+async function offlineInstance() {
+  const { exports: e } = await WebAssembly.instantiate(state.module, {});
+  const c = state.clip, n = Math.min(c.l.length, e.lab_max_frames());
+  new Float32Array(e.memory.buffer, e.lab_in_l(), n).set(c.l.subarray(0, n));
+  new Float32Array(e.memory.buffer, e.lab_in_r(), n).set((c.r || c.l).subarray(0, n));
+  e.lab_load(n, c.r ? 1 : 0);
+  const p = capiParams(); e.lab_capi_params(p.leash, p.fade, p.eps, p.thresh, p.onset ? 1 : 0);
+  const g = granParams(); e.lab_gran_params(g.size, g.dens, g.scat, g.win, g.speed, g.pan, g.root);
+  e.lab_sync_params(+$('orig').value, +$('sync').value);
+  const bp = beatsParams(); e.lab_beats_params(bp.fill, bp.attack, bp.cut, bp.xf, bp.pp, bp.glen, bp.dens); e.lab_slices(bp.sens); e.lab_slice_gap(bp.gap);
+  return { e, n };
+}
+
+// An extra engine (rb/bg) with the clip loaded, wrapped to look like lab.wasm.
+async function extInstance(p) {
+  if (!state.ext[p]) return null;
+  const stub = new Proxy({}, { get: () => () => 0 });
+  const x = (await WebAssembly.instantiate(state.ext[p].module, { wasi_snapshot_preview1: stub, env: stub })).exports;
+  if (x._initialize) x._initialize();
+  const c = state.clip, n = c.l.length;
+  x[`${p}_alloc`](n);
+  new Float32Array(x.memory.buffer, x[`${p}_in_l`](), n).set(c.l);
+  new Float32Array(x.memory.buffer, x[`${p}_in_r`](), n).set(c.r || c.l);
+  return { lab_render: (algo, k, r, reset) => x[`${p}_render`](algo - EXT[p].base, k, r, reset),
+           lab_out_l: () => x[`${p}_out_l`](), lab_out_r: () => x[`${p}_out_r`](),
+           get memory() { return x.memory; } };
+}
+
+$('bench').onclick = async () => {
+  $('bench').disabled = true; $('bench').textContent = 'Measuring…';
+  await new Promise((r) => setTimeout(r, 20));
+  const { e } = await offlineInstance();
+  const r = Math.min(4, Math.max(0.25, ratio())), blocks = 200, rows = [];
+  const ext = {};
+  for (const p in EXT) ext[p] = await extInstance(p);
+  for (const a of ALGOS.filter((x) => x.id !== 5 && (!x.ext || ext[x.ext]))) {
+    const en = a.ext ? ext[a.ext] : e;
+    const go = (reset) => en.lab_render(a.id, 1024, r, reset);
+    go(1);
+    let best = Infinity;
+    for (let rep = 0; rep < 3; rep++) {
+      const t0 = performance.now();
+      for (let b = 0; b < blocks; b++) go(0);
+      best = Math.min(best, (performance.now() - t0) * 1000 / blocks);
+    }
+    rows.push({ a, us: best });
+  }
+  const stock = rows.find((x) => x.a.id === 6).us, max = Math.max(...rows.map((x) => x.us));
+  $('benchrows').innerHTML = rows.map(({ a, us }) =>
+    `<tr><td>${a.name}</td><td class="n">${us.toFixed(1)}</td><td class="n">${(us / stock).toFixed(1)}×</td>` +
+    `<td><div class="bar" style="width:${(100 * us / max).toFixed(1)}%"></div></td><td class="n muted">${a.dev}</td></tr>`).join('');
+  $('bench').disabled = false; $('bench').textContent = 'Measure';
+};
+
+$('render').onclick = async () => {
+  const { e: lab, n } = await offlineInstance();
+  const algo = ALGOS.find((a) => a.id === state.algo);
+  const e = algo.ext ? await extInstance(algo.ext) : lab;
+  const r = Math.min(4, Math.max(0.25, ratio())), total = Math.round(n / r);
+  const L = new Float32Array(total), R = new Float32Array(total);
+  for (let done = 0; done < total; done += 1024) {
+    const k = Math.min(1024, total - done);
+    e.lab_render(state.algo, k, r, done === 0 ? 1 : 0);
+    L.set(new Float32Array(e.memory.buffer, e.lab_out_l(), k), done);
+    R.set(new Float32Array(e.memory.buffer, e.lab_out_r(), k), done);
+  }
+  const data = new DataView(new ArrayBuffer(44 + total * 4));
+  const str = (o, s) => [...s].forEach((ch, i) => data.setUint8(o + i, ch.charCodeAt(0)));
+  str(0, 'RIFF'); data.setUint32(4, 36 + total * 4, true); str(8, 'WAVEfmt ');
+  data.setUint32(16, 16, true); data.setUint16(20, 1, true); data.setUint16(22, 2, true);
+  data.setUint32(24, 48000, true); data.setUint32(28, 192000, true); data.setUint16(32, 4, true);
+  data.setUint16(34, 16, true); str(36, 'data'); data.setUint32(40, total * 4, true);
+  for (let i = 0; i < total; i++) {
+    data.setInt16(44 + 4 * i, Math.max(-1, Math.min(1, L[i])) * 32767, true);
+    data.setInt16(46 + 4 * i, Math.max(-1, Math.min(1, R[i])) * 32767, true);
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data], { type: 'audio/wav' }));
+  a.download = `${state.clip.name.replace(/\.[^.]+$/, '')}_${algo.name.replace(/\s+/g, '')}_${(+$('bpm').value).toFixed(0)}bpm.wav`;
+  a.click();
+};
+
+// ── Boot ─────────────────────────────────────────────────────────────────
+(async () => {
+  try {
+    state.bytes = await (await fetch('lab.wasm', { cache: 'no-store' })).arrayBuffer();
+    state.module = await WebAssembly.compile(state.bytes);
+    for (const p in EXT) {
+      try {
+        const r = await fetch(EXT[p].file, { cache: 'no-store' });
+        if (r.ok) { const bytes = await r.arrayBuffer(); state.ext[p] = { bytes, module: await WebAssembly.compile(bytes) }; }
+      } catch (err) { /* extra engines are optional */ }
+    }
+    for (const b of algosEl.children) { const x = ALGOS.find((a) => a.id === +b.dataset.id).ext; if (x && !state.ext[x]) b.disabled = true; }
+    $('status').textContent = 'Engine ready. Load the demo loop or drop a file.';
+  } catch (err) {
+    $('status').textContent = `Could not load lab.wasm (${err.message}). Serve this folder over http, e.g. python3 -m http.server.`;
+  }
+})();
+</script>
+</body>
+</html>
