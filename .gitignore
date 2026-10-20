@@ -7,6 +7,8 @@ __pycache__/
 *.img
 AGENTS.md
 tools/stretch/out/
+tools/master_chain/build/
+tools/master_chain/out/
 
 # Proprietary 1010music firmware and manuals — keep locally, do not commit
 firmware/zips/
@@ -14,8 +16,14 @@ firmware/bins/
 firmware/gamechanger/
 firmware/patches/*/BLACKBOX.BIN
 firmware/patches/*/BLACKBOX.bin
+firmware/patches/*/BBEXTRA.BIN
+tools/lab/rb/m7/probe*.elf
+tools/lab/rb/m7/obj/
+tools/lab/rb/m7/.venv/
 /BLACKBOX*.bin
 /BLACKBOX*.BIN
 *.pdf
 Blackbox-User-Manual*
 tools/stretch/proto
+tools/lab/rb/rubberband/
+tools/lab/bungee/bungee/
