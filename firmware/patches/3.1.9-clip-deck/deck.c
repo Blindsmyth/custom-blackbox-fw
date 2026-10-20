@@ -798,9 +798,26 @@ typedef int (*snprintf_fn)(char *, unsigned, const char *, ...);
 
 /* 0x080A9218 in the Info list row's value draw: snprintf(buf, 0x1F, "%d", value) for number params.
  * row = the list row (r4 there): id at +0x94. Cues read "Off" or bar.beat, positions "17.1.1". */
+/* Beat Count (0xD2): stock registers a list of 513 labels, Auto and 1..512 (0x0808D708). Registered
+ * here as a number 0..1024 instead: the same values (0 = Auto, else beats), so presets and the engine
+ * (clip+0xB80, beats x 960 ticks, no cap) are unchanged, and no 1025-label table is needed.
+ * deck_list_value prints 0 as "Auto". Runs at boot, before deck_init. */
+#define ID_BEATS  0xD2
+#define BEATS_MAX 1024
+
+void deck_reg_beats(void *reg, unsigned id, const char *title, const void *labels, unsigned count,
+                    const char *xml)
+{
+    (void)labels;
+    (void)count;
+    PARAM_NUMBER(reg, id, 1, title, 0, BEATS_MAX, xml);
+}
+
 int deck_list_value(char *buf, unsigned size, const char *fmt, int value, const void *row)
 {
     unsigned id = *(const unsigned short *)((const char *)row + 0x94);
+    if (id == ID_BEATS && value <= 0)
+        return SNPRINTF(buf, size, "Auto");
     if (live() && id - ID_CUE1 < CUES) {
         if (value <= 0)
             return SNPRINTF(buf, size, "Off");

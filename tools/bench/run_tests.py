@@ -1365,6 +1365,9 @@ def t_cue_registry(bench, res):
     res.check(n == 2 and [b.cstr(b.u32(p + 4 * i)) for i in range(2)] == ["Off", "On"], "Cue Mode Off/On")
     res.check(b.call(0x0808E2D0, ID_CUE1 + 3) == 0 and b.call(0x0808E304, ID_CUE1 + 3) == 4096,
               "cues are numbers 0..4096 (0 = Off, k = beat k - 1)")
+    t, x = b.call(PARAM_TITLE, 0xD2), b.call(PARAM_XML_NAME, 0xD2)
+    res.check(b.call(0x0808E2D0, 0xD2) == 0 and b.call(0x0808E304, 0xD2) == 1024 and b.cstr(t) == "Beat Count:"
+              and b.cstr(x) == "beatcount", "Beat Count: a number 0..1024 (0 = Auto), same title and XML name")
     p, n = labels(ID_GRID)
     res.check(n == 9 and [b.cstr(b.u32(p + 4 * i)) for i in (0, 4, 8)] == ["1/16", "1 bar", "16 bars"],
               f"Grid sizes ({n})")
@@ -2131,7 +2134,8 @@ def t_list_value(bench, res):
     b.call(sym["deck_init"])
     buf, row, fmt = 0x2001CE40, 0x2001CE80, b.put_cstr(0x2001CF00, "%d")
     for pid, val, want in ((ID_CUE1, 0, "Off"), (ID_CUE1 + 7, 1, "1.1"), (ID_CUE1, 37, "10.1"),
-                           (ID_DECK + 1, POS_END, "end"), (ID_DECK, 16, "2.1.1"), (0x4E, 37, "37")):
+                           (ID_DECK + 1, POS_END, "end"), (ID_DECK, 16, "2.1.1"), (0x4E, 37, "37"),
+                           (0xD2, 0, "Auto"), (0xD2, 1024, "1024")):
         b.mu.mem_write(row + 0x94, pid.to_bytes(2, "little"))
         b.call(sym["deck_list_value"], buf, 0x1F, fmt, val, row)
         res.check(b.cstr(buf) == want, f"{pid:#x} = {val}: {b.cstr(buf)!r} (want {want!r})")

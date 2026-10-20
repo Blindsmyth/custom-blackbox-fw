@@ -94,7 +94,8 @@ SITES = [
     (0x080656E2, "hook_grain_ofs", True, "17ee90ba"),   # Clip_StartGrain: vmov fp, s15 (grain start frame)
     (0x080A9218, "hook_list_value", True, "1ff0ecfb"),  # Info list row value: snprintf("%d") for number params
     (0x080AD728, "hook_key_lit", True, "0cf068fe"),     # Keys key draw: in-scale check (cue keys: set = lit)
-    (0x08093E7C, "hook_bag_size", True, "0121e800"),    # param list alloc: 64 -> 96 rows (ids past 0x1A0 fit)
+    (0x08093E7C, "hook_bag_size", True, "0121e800"),
+    (0x0808D708, "deck_reg_beats", True, "fef7e6fc"),   # Param_RegisterAll: Beat Count list 1..512 -> number 0..1024    # param list alloc: 64 -> 96 rows (ids past 0x1A0 fit)
 ]
 # Load button: skip the screen switch (movs r3,#0 -> b.n 0x080A1A50, the case exit)
 SKIP_SCREEN = (0x080A1AC4, "0023", 0x080A1A50)
