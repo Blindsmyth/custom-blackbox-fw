@@ -80,6 +80,7 @@ PATH_BUF = 0x2001C700
 STATE = 0x38000000
 S_BROWSE = STATE + 0x100
 S_BASE = STATE + 0x200
+S_PEND = STATE + 0x01C    # byte: the shown folder has rows left to check (hook_idle)
 
 TREE = dict(mkcard.DEFAULT_TREE)
 TREE["Root.xml"] = mkcard.PRESET_XML  # legacy root preset: listed at the top level only
@@ -98,6 +99,8 @@ class Bench:
         self.dotdot = "pset_on_event" not in self.sym   # 3.1.Q: ^ button instead of a ".." row
         self.repitch = "hook_register" in self.sym
         self.patched = self.folders
+        self.idle = "hook_idle" in self.sym
+        self.idle_reads = []      # sector reads of each idle dispatcher step (mark_step)
         self.loadbank = []
         self.screen = []
         self.events = []
@@ -199,6 +202,17 @@ class Bench:
             while self.b.u32(PM + 0x120) != self.b.u32(PM + 0x124):
                 self.b.call(DISPATCH, PM)
                 busy = True
+            # pcmStreamer calls the dispatcher on every loop, ring empty or not; with folder rows
+            # left to check, each call checks a few of them (hook_idle -> mark_step)
+            steps = 0
+            while self.idle and self.b.u8(S_PEND) and self.b.u32(PM + 0x120) == self.b.u32(PM + 0x124):
+                before = self.b.reads
+                self.b.call(DISPATCH, PM)
+                self.idle_reads.append(self.b.reads - before)
+                busy = True
+                steps += 1
+                if steps > 2000:
+                    raise RuntimeError("idle mark steps did not finish")
             while self.b.call(POP_EVENT, PM, EVT_BUF):
                 self.events.append((self.b.u8(EVT_BUF), self.b.u32(EVT_BUF + 8), self.b.u32(EVT_BUF + 0x10)))
                 busy = True
@@ -266,12 +280,15 @@ def itcm_watch(bench):
     return seen
 
 
-def run_case(image, name, fn, res, tree=None, writes=False):
+def run_case(image, name, fn, res, tree=None, writes=False, fs="fat"):
     print(f"[{name}]")
     with tempfile.TemporaryDirectory() as tmp:
         card = os.path.join(tmp, "card.img")
         # Save As only copies samples with 100 MB to spare
-        mkcard.build(card, tree or TREE, size_mb=160 if writes else 64)
+        if fs == "exfat":
+            mkcard.build_exfat(card, tree or TREE, size_mb=160, cluster_kb=32)
+        else:
+            mkcard.build(card, tree or TREE, size_mb=160 if writes else 64)
         bench = Bench(image, card, allow_writes=writes)
         itcm = itcm_watch(bench)
         try:
@@ -539,7 +556,8 @@ def t_smooth_enum_labels(bench, res):
         res.check(b.cstr(b.u32(labels)) == "Stretch", "label0 Stretch")
         res.check(b.cstr(b.u32(labels + 4)) == "Repitch", "label1 Repitch")
         res.check(b.cstr(b.u32(labels + 8)) == "Smooth", "label2 Smooth")
-        res.check(b.cstr(b.u32(labels + 12)) == "Capi", "label3 Capi")
+        if "capi_mix" in bench.sym:                  # 3.1.Z still builds Snap here; only 3.1.E has Capi
+            res.check(b.cstr(b.u32(labels + 12)) == "Capi", "label3 Capi")
         res.check(b.cstr(b.u32(labels + 16)) == "Vari", "label4 Vari")
         res.check(b.cstr(b.u32(labels + 20)) == "Grain", "label5 Grain")
         if leaf:
@@ -1053,6 +1071,188 @@ def t_clean(bench, res):
     res.check(added == [], "nothing added")
     res.check(all(r.startswith("Presets/_Test/One/") for r in removed), f"Clean stays in the browsed preset {removed}")
     res.check("Presets/One/keep.wav" in bench.files(), "top-level decoy untouched")
+
+
+# ---- folder marks on a big group folder (3.1.Z+: one f_stat per row, kept per folder, idle steps)
+def _big_name(i):
+    return f"A rather long subfolder name number {i:03d} for testing"
+
+
+BIG_TREE = dict(TREE)
+for _i in range(88):                                   # odd: group folders, even: presets
+    BIG_TREE[f"Presets/_G00/{_big_name(_i)}/" + ("Inner/preset.xml" if _i % 2 else "preset.xml")] = mkcard.PRESET_XML
+for _g in range(1, 9):
+    BIG_TREE[f"Presets/_G{_g:02d}/Child/preset.xml"] = mkcard.PRESET_XML
+
+
+def _reads(bench, fn):
+    """Sector reads of fn, and the reads of each idle dispatcher step it caused."""
+    bench.b.reads = 0
+    bench.idle_reads.clear()
+    fn()
+    return bench.b.reads, list(bench.idle_reads)
+
+
+def t_mark_big_folder(bench, res):
+    """Entering a folder of 88 long-named subfolders. Before 2026-10-21 that was two f_stats per row in
+    one command: 5,542 sector reads on this card with sample streaming stopped, and the same again
+    on every re-entry (only the parent folder's marks were kept)."""
+    bench.refresh()
+    total, steps = _reads(bench, lambda: bench.press_load("/_G00"))
+    first = total - sum(steps)
+    rows = bench.rows()
+    want = sorted(("/" if i % 2 else "") + _big_name(i) for i in range(88))
+    res.check(sorted(r for r in rows if r != "..") == want, f"all 88 rows, 44 marked ({sum(r.startswith('/') for r in rows)})")
+    res.check(first <= 400, f"the Load press reads {first} sectors (was 5,542)")
+    res.check(steps and max(steps) <= 300, f"the rest in {len(steps)} idle steps of <= {max(steps or [0])} reads")
+    res.check(total <= 3300, f"whole first visit {total} reads (one f_stat per row)")
+    bench.up()
+    again, steps = _reads(bench, lambda: bench.press_load("/_G00"))
+    res.check(not steps and again <= 250, f"re-entering reads {again} (was 5,541), no checks")
+    res.check(bench.rows() == rows, "same marks from the cache")
+    for g in range(1, 7):                              # Presets, _G00 and these six: 8 slots
+        bench.up()
+        bench.press_load(f"/_G{g:02d}")
+    bench.up()
+    again, steps = _reads(bench, lambda: bench.press_load("/_G00"))
+    res.check(not steps and again <= 250, f"still cached after six other folders ({again} reads)")
+    for g in range(1, 9):                              # eight more: _G00 is the oldest, reused
+        bench.up()
+        bench.press_load(f"/_G{g:02d}")
+    bench.up()
+    again, steps = _reads(bench, lambda: bench.press_load("/_G00"))
+    res.check(steps, f"least recently used folder was dropped ({len(steps)} idle steps)")
+    res.check(bench.rows() == rows, "marks rebuilt the same")
+
+
+def t_mark_lost_delete(bench, res):
+    """Delete and Clean ask the card, never the marks: losing them cannot delete a group tree."""
+    bench.refresh()
+    bench.press_load("Alpha")
+    bench.press_load("/_Test")
+    before = bench.files()
+    bench.b.mu.mem_write(STATE + 0x720, b"\0" * 0x4000)   # every folder's marks gone
+    bench.b.w32(STATE + 0x14, 0)
+    for name in ("Sub", "/Sub"):
+        bench.request(REQUEST_DELETE, name)
+        res.check(bench.files() == before, f"Delete {name!r} refused without marks")
+        bench.request(REQUEST_CLEAN, name)
+        res.check(bench.files() == before, f"Clean {name!r} refused without marks")
+
+
+# ---- saving (3.1.Z+): exFAT, deep and long paths, failures shown
+WAV_3M = "RIFF\x24\0\0\0WAVEfmt " + "\0" * (3 << 20)
+DEEP = "Presets/_Test/Sub/Deeper Group Folder/Even Deeper"
+SAVE_TREE = dict(TREE)
+SAVE_TREE.update({
+    "Presets/Beta/kick.wav": WAV_3M,
+    "Presets/Beta/Sub Samples/snare.wav": WAV_3M[:200000],
+    f"{DEEP}/Leaf/preset.xml": mkcard.PRESET_XML,
+})
+SAVE_FILES = ["kick.wav", "Sub Samples", "Sub Samples/snare.wav", "preset.als", "preset.xml"]
+# A browse path of 209 characters: "Presets\" + three long group names.
+G1 = "_Long group folder name number one and more words here to make it long"[:70]
+G2 = "Another long nested group folder name two with many more words to pad it out"[:76]
+G3 = "Third level group with a long name and yet more words"[:60]
+LONG_TREE = dict(SAVE_TREE)
+LONG_TREE[f"Presets/{G1}/{G2}/{G3}/Leaf/preset.xml"] = mkcard.PRESET_XML
+LONG_TREE["Presets/_Test/Copy"] = "not a folder"           # Save As "Copy" cannot write here
+
+
+def _save_into(bench, path, new):
+    bench.refresh()
+    while bench.browse() != "Presets":
+        bench.up()
+    bench.press_load("Beta")
+    for p in path:
+        bench.press_load(p)
+    before = bench.files()
+    bench.save_as(new)
+    added, removed = diff(before, bench.files())
+    return added, removed
+
+
+def _failed_save(bench, res, what, added, removed):
+    res.check(added == [] and removed == [], f"{what}: nothing written {added} {removed}")
+    res.check((0x26, 0, 1) in bench.events, f"{what}: the preset screen shows the error ({bench.events})")
+    res.check((3, 0, 1) in bench.events and bench.current() == "Beta",
+              f"{what}: the Load after it keeps the session ({bench.current()!r})")
+
+
+def t_save_as_exfat(bench, res):
+    res.check(mkcard.is_exfat(bench.card_path), "exFAT card, 32 KB clusters")
+    added, removed = _save_into(bench, ["/_Test"], "Copy")
+    res.check(added == sorted(["Presets/_Test/Copy"] + [f"Presets/_Test/Copy/{f}" for f in SAVE_FILES]),
+              f"Save As into a group folder {added}")
+    res.check(mkcard.read(bench.card_path, "Presets/_Test/Copy/kick.wav") == WAV_3M.encode("latin1"),
+              "3 MB sample copied intact")
+    added, removed = _save_into(bench, ["/_Test", "/Sub", "/Deeper Group Folder", "/Even Deeper"], "Deep Copy")
+    res.check(added == sorted([f"{DEEP}/Deep Copy"] + [f"{DEEP}/Deep Copy/{f}" for f in SAVE_FILES]),
+              f"Save As four groups deep {added}")
+    res.check(bench.current() == "Deep Copy" and bench.base() == DEEP.replace("/", "\\"), "loaded from there")
+
+
+def t_save_as_long_path(bench, res):
+    """<browse>\\name\\preset.xml past 255: stock cut the paths, made the folder, then overran
+    path_join's stack buffer on the first sample (a reset on the unit)."""
+    path = ["/" + G1, "/" + G2, "/" + G3]
+    added, removed = _save_into(bench, path, "My new preset name that is quite long too")
+    _failed_save(bench, res, "xml path of 261", added, removed)
+    # preset.xml fits (247), "Sub Samples\\snare.wav" does not (259): the copy stops there
+    added, removed = _save_into(bench, path, "My new preset name that i")
+    dest = f"Presets/{G1}/{G2}/{G3}/My new preset name that i"
+    res.check(f"{dest}/preset.xml" in added, "preset.xml written")
+    res.check(all(a == dest or a[len(dest) + 1:] in SAVE_FILES for a in added), f"no cut file names {added}")
+    res.check((0x26, 0, 1) in bench.events, "sample copy error shown")
+
+
+def t_save_as_onto_group(bench, res):
+    """A Save As name that is a group folder would put preset.xml in it and hide its presets."""
+    for name in ("Sub", "/Sub"):
+        added, removed = _save_into(bench, ["/_Test"], name)
+        _failed_save(bench, res, f"Save As {name!r} onto group Sub", added, removed)
+    # the keyboard and unique_name side (UI task)
+    b = bench.b
+    texts = []
+    b.stub(0x080C42AC, lambda bb: texts.append(bb.cstr(bb.arg(1))) or 0)
+    buf = b.put_cstr(NAME_BUF, "/Sub")
+    b.call(bench.sym["hook_kb_saveas"], 0x2001E800, buf)
+    b.put_cstr(NAME_BUF, "One")
+    b.call(bench.sym["hook_kb_saveas"], 0x2001E800, NAME_BUF)
+    b.unstub(0x080C42AC)
+    res.check(texts == ["Beta", "One"], f"Save As pre-fill: loaded preset on a group row {texts}")
+    b.call(0x08091244, PATH_BUF, PM, b.put_cstr(NAME_BUF, "sub"))
+    res.check(b.cstr(PATH_BUF).lower() != "sub", f"unique_name numbers a group's name ({b.cstr(PATH_BUF)!r})")
+
+
+def t_save_fail_shown(bench, res):
+    """doc_save failing only logged: Save As left a folder without preset.xml and the Load after it
+    fell back to the first row that loads."""
+    added, removed = _save_into(bench, ["/_Test"], "Copy")      # "Copy" is a file there
+    _failed_save(bench, res, "Save As where preset.xml cannot be created", added, removed)
+    res.check(not any(a.startswith("Presets/_Test/Copy/") for a in added), "no partial folder")
+    bench.b.stub(0x08096754, lambda bb: 0)                      # doc_save fails
+    bench.b.stub(SESSION_COPY, lambda bb: 0)
+    bench.events.clear()
+    bench.b.call(REQUEST_SAVE, PM, 0, 1)
+    bench.pump()
+    bench.b.unstub(SESSION_COPY)
+    bench.b.unstub(0x08096754)
+    res.check((0x26, 0, 1) in bench.events, f"failed Save shows the error {bench.events}")
+
+
+def t_pathjoin_bounded(bench, res):
+    b = bench.b
+    pj = 0x080431A4
+    for base, comp, want in (("Presets", "X", "Presets\\X"), ("Presets\\", "X", "Presets\\X"),
+                             ("Presets", "\\X", "Presets\\X"), ("", "X", "\\X")):
+        b.call(pj, PATH_BUF, 0, b.put_cstr(NAME_BUF, base), b.put_cstr(NAME2_BUF, comp))
+        res.check(b.cstr(PATH_BUF) == want, f"path_join({base!r}, {comp!r}) = {b.cstr(PATH_BUF)!r}")
+    base, comp = "P" * 250, "c" * 200
+    b.mu.mem_write(PATH_BUF, b"\xee" * 0x300)
+    b.call(pj, PATH_BUF, 0, b.put_cstr(NAME_BUF, base), b.put_cstr(NAME2_BUF, comp))
+    res.check(b.cstr(PATH_BUF, 400) == (base + "\\" + comp)[:255], "450 characters cut at 255, no overrun")
+    res.check(bytes(b.mu.mem_read(PATH_BUF + 256, 16)) == b"\xee" * 16, "nothing written past dest[255]")
 
 
 CELL_CTOR = 0x08093C7C
@@ -5844,6 +6044,8 @@ def main():
             ("BACK goes up", t_back),
             *([("preset ^ button", t_pset_up_button)] if "pset_on_event" in sym else []),
         ]
+        if "hook_pathjoin" in sym:
+            cases += [("path_join stays in 255 characters", t_pathjoin_bounded)]
         write_cases = [
             ("Save As into a group folder", t_save_as_into_group, TREE),
             ("Save As, same name, other folder", t_save_as_same_name, TREE),
@@ -5854,6 +6056,18 @@ def main():
             ("New preset in a group folder", t_new, TREE),
             ("Clean in a group folder", t_clean, DECOY_TREE),
         ]
+        if "hook_idle" in sym:
+            write_cases += [("Delete / Clean with the marks lost", t_mark_lost_delete, DECOY_TREE)]
+        if "hook_save" in sym:
+            write_cases += [
+                ("Save As on long paths", t_save_as_long_path, LONG_TREE),
+                ("Save As onto a group folder", t_save_as_onto_group, SAVE_TREE),
+                ("failed saves are shown", t_save_fail_shown, LONG_TREE),
+            ]
+            if mkcard.exfat_available():
+                write_cases += [("Save As on exFAT, deep", t_save_as_exfat, SAVE_TREE, "exfat")]
+            else:
+                print("exFAT cases skipped: needs hdiutil, newfs_exfat, fsck_exfat (macOS)")
     else:
         cases += [("stock group-row fallback", t_stock_group_fallback)]
     if repitch:
@@ -5873,7 +6087,7 @@ def main():
             ("Smooth lane hook present", t_smooth_lane_hook),
             ("Capi clip-engine flag", t_capi_clip_flag),
             ("Capi grain store sets reset", t_capi_main_rate_sets_reset),
-            ("Capi lane symbols present", t_capi_lane_hook),
+            *([("Capi lane symbols present", t_capi_lane_hook)] if "capi_mix" in sym else []),
             ("Vari clip-engine flag", t_vari_clip_flag),
             ("Vari grain store sets reset", t_vari_main_rate_sets_reset),
             ("Vari lane symbols present", t_vari_lane_hook),
@@ -5945,6 +6159,8 @@ def main():
     else:
         cases += [("stock cell list stays at 128", t_slice_stock_cap)]
         extra_reads.append(("stock XML keeps 128 tags and ignores ext", t_slice_stock_xml, SLICE_TREE))
+    if "hook_idle" in sym:
+        extra_reads.append(("marks on a folder of 88 subfolders", t_mark_big_folder, BIG_TREE))
     print(f"image {image} menu letter {menu_letter(probe)!r} ({kind})")
     if "deck_id_v" in sym:                      # 3.1.T: Clip Deck's ids moved past the Mix line's
         global ID_DECK, ID_CUEMODE, ID_CUENOTE, ID_CUE1, ID_GRID, ID_GRIDOFS
@@ -6024,13 +6240,14 @@ def main():
     if args.only:
         cases = [c for c in cases if args.only in c[0]]
         write_cases = [c for c in write_cases if args.only in c[0]]
+        extra_reads = [c for c in extra_reads if args.only in c[0]]
     for name, fn in cases:
         run_case(image, name, fn, res)
     for name, fn, tree in extra_reads:
         run_case(image, name, fn, res, tree=tree)
     if write_cases:
-        for name, fn, tree in write_cases:
-            run_case(image, name, fn, res, tree=tree, writes=True)
+        for name, fn, tree, *fs in write_cases:
+            run_case(image, name, fn, res, tree=tree, writes=True, fs=(fs or ["fat"])[0])
     print(f"\n{res.passed} passed, {res.failed} failed")
     sys.exit(1 if res.failed else 0)
 

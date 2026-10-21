@@ -38,6 +38,16 @@ SITES = [
     (0x080919A0, "hook_tryload", True, "fff792ff"),   # PresetMgr_Load: TryLoad(name)
     (0x080919C2, "hook_tryload", True, "fff781ff"),   # PresetMgr_Load: fallback TryLoad
     (0x08092FBA, "hook_disp", True, "237d043b"),      # dispatcher: command id
+    (0x08092F5E, "hook_idle", True, "d0f82421"),      # dispatcher entry: idle mark step
+    (0x0809305E, "hook_save", True, "fef70fff"),      # dispatcher cmd 0x20: PresetMgr_SaveAs (Save)
+    (0x080921F2, "hook_docsave", True, "04f0affa"),   # SaveAs: doc_save (Save)
+    (0x08092290, "hook_docsave", True, "04f060fa"),   # SaveAs: doc_save (Save As)
+    (0x08092E14, "hook_docsave", True, "03f09efc"),   # New preset: doc_save
+    (0x080921A2, "hook_copy", True, "fff7edfd"),      # SaveAs: PresetMgr_CopyFile
+    (0x080431A4, "hook_pathjoin", False, "2de9f041"), # path_join entry (b.w): bounded copy
+    (0x080BDB44, "hook_kb_saveas", True, "06f0b2fb"), # preset_screen_key 0x21: keyboard pre-fill
+    (0x080912F2, "hook_uname_get", True, "b1f70bfb"), # unique_name: list_get
+    (0x0809134A, "hook_uname_get", True, "b1f7dffa"), # unique_name: list_get
     (0x0809061E, "hook_pop", True, "2b78032b"),       # PopEvent: event id
     (0x080A1AC0, "hook_ui_load", True, "fcf7aafb"),   # Load button: LoadBank(app, idx, 1)
     (0x08091588, "hook_legacy", False, "10b50446"),   # preset_legacy_xml_path entry

@@ -5,6 +5,10 @@ One image with everything on this line:
 - **Bungee** in flash bank 2 (3.1.B, `..`).
 - **Clip Deck** (3.1.E, `../../3.1.9-clip-deck`): Start / End / Loop, 8 hot cues, the waveform editor.
 - **Warp Stutter / Fill / Repitch / Slice / Grain / Bungee.**
+- **The preset-folder fixes** (`docs/preset-folders.md`):
+  - no dropout when entering big folders;
+  - Save / Save As safe in deep folders;
+  - a failed save is shown, not lost.
 
 The menu version reads `3.1.T`. Built with `build_patch.py --lineup`.
 
@@ -112,4 +116,3 @@ What changes against 3.1.E:
 ## Not done yet
 
 - **Pitch on Fill / Slice / Grain:** the Pitch knob doesn't change them; their heads play at 1x.
-- **Preset folder fixes:** they're on their own branch (`claude/sad-germain-3000f6`), not in this image yet.
