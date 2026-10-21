@@ -4,13 +4,26 @@
 
 #define PI_F 3.14159265f
 
+#ifdef GRAN_FW_HANN
+/* The device build reads stock's own table (0x080D26AC, checked: within 2e-7 of the formula). */
+#define hann ((const float *)0x080D26ACu)
+#else
 static float hann[8192];          /* stock table 0x080D26AC: 0.5 - 0.5 cos(2 pi i / 8192) */
+#endif
+#ifndef GRAN_SRC
+#define GRAN_SRC 4096             /* frames per gran_process call at most (device: one block) */
+#endif
+/* GRAN_NO_TABLES (the device build, where bank 2's RAM is Bungee's): the pan gains and the scatter
+ * value are computed when needed instead of looked up, and the read buffer is the caller's
+ * (gran_src_buf, 2 x GRAN_SRC floats). */
+#ifndef GRAN_NO_TABLES
 static float pan_l[256], pan_r[256];
 static int tables;
 
 /* Scatter: stock table 0x080EB2A0, 97 entries, exponential, 0..39317 samples. Approximated by an
  * exponential through the reported points (0, 1, 2 ... 32493, 35743, 39317). */
 static int scatter_tab[97];
+#endif
 
 static float sin_r(float x)       /* |x| <= pi */
 {
@@ -45,25 +58,33 @@ static double exp2_d(double x)    /* 2^x */
     return r;
 }
 
+static int scatter_of(int si) { return si == 0 ? 0 : (int)(exp2_d((si - 1) * 15.2627 / 95.0) + 0.5); }
+
+#ifdef GRAN_NO_TABLES
+static void make_tables(void) {}
+#else
 static void make_tables(void)
 {
     if (tables)
         return;
+#ifndef GRAN_FW_HANN
     for (int i = 0; i < 8192; i++) {
         float a = 2.f * PI_F * i / 8192.f;
         if (a > PI_F)
             a -= 2.f * PI_F;
         hann[i] = 0.5f - 0.5f * cos_r(a);
     }
+#endif
     for (int i = 0; i < 256; i++) {   /* pan index (pan + 1) * 128: L = cos, R = sin of pi/4 (pan + 1) */
         float a = PI_F / 4.f * (i / 128.f);
         pan_l[i] = cos_r(a);
         pan_r[i] = sin_r(a);
     }
     for (int i = 0; i < 97; i++)
-        scatter_tab[i] = i == 0 ? 0 : (int)(exp2_d((i - 1) * 15.2627 / 95.0) + 0.5);
+        scatter_tab[i] = scatter_of(i);
     tables = 1;
 }
+#endif
 
 /* ANSI LCG, as stock FUN_080c89d4 (seed 1 at boot). */
 static int rnd(GranVoice *v)
@@ -117,7 +138,12 @@ void gran_set(GranVoice *v, int size, int density, int scatter, int window, int 
     }
     /* Scatter (0x17E): a constant time offset (only when gap != 0) */
     int si = scatter * 96 / 1000;
-    v->scatter = scatter_tab[si < 0 ? 0 : si > 96 ? 96 : si];
+    si = si < 0 ? 0 : si > 96 ? 96 : si;
+#ifdef GRAN_NO_TABLES
+    v->scatter = scatter_of(si);
+#else
+    v->scatter = scatter_tab[si];
+#endif
     /* Window (0x5B): the random position range, (v/1000)^3 * 38 s */
     float w = window * 0.001f;
     int wi = (int)(256 + w * w * w * 38.f * 48000.f) - 256;
@@ -166,8 +192,13 @@ static void grain_start(GranVoice *v, int k, int note_on, int length, float rati
         pan = (float)((rnd(v) % 256) - 128) * v->panrnd / 128.f;
     int pi = (int)((pan + 1.f) * 128.f);
     pi = pi < 0 ? 0 : pi > 255 ? 255 : pi;
+#ifdef GRAN_NO_TABLES
+    g->gl = cos_r(PI_F / 4.f * (pi / 128.f));
+    g->gr = sin_r(PI_F / 4.f * (pi / 128.f));
+#else
     g->gl = pan_l[pi];
     g->gr = pan_r[pi];
+#endif
     int64_t lead = t - size / 2 - v->now;
     int64_t start = (int64_t)centre - round64(x * size / 2.f);
     if (lead > 0) {
@@ -191,15 +222,21 @@ static void grain_start(GranVoice *v, int k, int note_on, int length, float rati
     g->active = 1;
 }
 
-static float src[2][4096];
+#ifdef GRAN_NO_TABLES
+float *gran_src_buf;              /* 2 x GRAN_SRC floats, the caller's */
+#define src(c) (gran_src_buf + (c) * GRAN_SRC)
+#else
+static float src_[2][GRAN_SRC];
+#define src(c) src_[c]
+#endif
 
 void gran_process(GranVoice *v, void *sample, int length, int stereo, GranReadFn read, float *out_l,
                   float *out_r, int n, float ratio, int reset)
 {
     if (length <= 0 || n <= 0)
         return;
-    if (n > 4096)
-        n = 4096;
+    if (n > GRAN_SRC)
+        n = GRAN_SRC;
     if (reset) {
         v->now = 0;
         v->play = 0.;
@@ -228,14 +265,14 @@ void gran_process(GranVoice *v, void *sample, int length, int stereo, GranReadFn
                 while (got < m) {
                     int p = (int)((g->pos + got) % length);
                     int k2 = length - p < m - got ? length - p : m - got;
-                    read(sample, src[c] + got, k2, p, stereo ? c : 0);
+                    read(sample, src(c) + got, k2, p, stereo ? c : 0);
                     got += k2;
                 }
             }
             for (int i = 0; i < m; i++) {
                 float w = hann[((int64_t)(g->win + i) << 13) / g->size];
-                out_l[at + i] += src[0][i] * w * g->gl;
-                out_r[at + i] += src[1][i] * w * g->gr;
+                out_l[at + i] += src(0)[i] * w * g->gl;
+                out_r[at + i] += src(1)[i] * w * g->gr;
             }
             g->pos += m;
             g->win += m;

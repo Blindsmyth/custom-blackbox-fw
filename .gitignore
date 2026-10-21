@@ -35,3 +35,7 @@ firmware/patches/3.1.9-mix-bungee/repitch/BBBUNGEE.BIN
 tools/lab/*.wasm
 tools/lab/*/m7/obj/
 tools/lab/*/m7/*.wav
+# 3.1.T (3.1.9-mix-bungee --lineup)
+tools/stretch/bungee/build-lineup/
+firmware/patches/**/BBWARP.BIN
+firmware/patches/3.1.9-mix-bungee/lineup/BLACKBOX.BIN

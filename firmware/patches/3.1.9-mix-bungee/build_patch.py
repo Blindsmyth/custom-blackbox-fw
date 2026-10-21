@@ -8,7 +8,11 @@ Outputs, next to this file:
 
 Same structure as ../3.1.9-mix-rubber/build_patch.py (Warp Rubber), with Bungee in place of Rubber Band:
 the cave, pairing, card loader (RBTAKE.TXT / RBFREE.TXT), diag, CPU guard and the bank-2 ABI
-(tools/stretch/rubber/rubber.h) are shared. Needs the Arm GNU Toolchain with newlib/libstdc++
+(tools/stretch/rubber/rubber.h) are shared.
+
+--lineup builds 3.1.T instead (lineup/BLACKBOX.BIN + lineup/BBWARP.BIN): Warp Stutter / Fill /
+Repitch / Slice / Grain / Bungee, with Fill, Slice and Grain rendering each lane in bank 2
+(tools/stretch/bungee/lanes.cpp). Its own build directory, so it never shares objects with 3.1.B. Needs the Arm GNU Toolchain with newlib/libstdc++
 (ARM_GNU, default ~/.local/arm-gnu-15.3/bin), clang for the cave asm, and
 tools/stretch/bungee/fetch_bungee.sh run once.
 """
@@ -39,16 +43,23 @@ BANK2 = ROOT / "tools" / "bank2"
 DIAG = ROOT / "tools" / "diag"
 CMSIS = RUBBER / "cmsis"
 BUILD = BUNGEE / "build"
+STRETCH = ROOT / "tools" / "stretch"
+LINEUP = "--lineup" in sys.argv
+if LINEUP:
+    BUILD = BUNGEE / "build-lineup"
 T = Path(os.environ.get("ARM_GNU", Path.home() / ".local" / "arm-gnu-15.3" / "bin"))
 GCC, GXX = T / "arm-none-eabi-gcc", T / "arm-none-eabi-g++"
 
-OUT = HERE / "BLACKBOX.BIN"
-OUT_B2 = HERE / "BBBUNGEE.BIN"
-SYMS = HERE / "BLACKBOX.sym.json"
+PAYLOAD = "BBWARP" if LINEUP else "BBBUNGEE"
+OUT_DIR = HERE / "lineup" if LINEUP else HERE
+OUT = OUT_DIR / "BLACKBOX.BIN"
+OUT_B2 = OUT_DIR / f"{PAYLOAD}.BIN"
+SYMS = OUT_DIR / "BLACKBOX.sym.json"
 ELF = BUILD / "bungee.elf"
 if "--emu" in sys.argv:
-    OUT, OUT_B2, SYMS = BUILD / "BLACKBOX_emu.BIN", BUILD / "BBBUNGEE_emu.BIN", BUILD / "BLACKBOX_emu.sym.json"
+    OUT, OUT_B2, SYMS = BUILD / "BLACKBOX_emu.BIN", BUILD / f"{PAYLOAD}_emu.BIN", BUILD / "BLACKBOX_emu.sym.json"
     ELF = BUILD / "bungee_emu.elf"
+OUT.parent.mkdir(exist_ok=True)
 # --with-repitch: Warp Stretch / Repitch / Bungee (Bungee at value 2) instead of Stretch / Bungee.
 # Same bank 2 payload; the images go to repitch/ (and build/repitch/ with --emu).
 REPITCH = "--with-repitch" in sys.argv
@@ -56,7 +67,7 @@ if REPITCH:
     OUT, OUT_B2, SYMS = (OUT.parent / "repitch" / OUT.name, OUT_B2.parent / "repitch" / OUT_B2.name,
                          SYMS.parent / "repitch" / SYMS.name)
     OUT.parent.mkdir(exist_ok=True)
-LETTER = "B"
+LETTER = "T" if LINEUP else "B"
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
 CPU = ["-mthumb", "-mcpu=cortex-m7", "-mfloat-abi=hard"]
@@ -71,9 +82,15 @@ CMSIS_SRC = [CMSIS / "Source" / "TransformFunctions" / f for f in (
     "arm_rfft_fast_f32.c", "arm_rfft_fast_init_f32.c", "arm_cfft_f32.c", "arm_cfft_init_f32.c",
     "arm_cfft_radix8_f32.c", "arm_bitreversal.c", "arm_bitreversal2.c")] + \
     [CMSIS / "Source" / "CommonTables" / f for f in ("arm_common_tables.c", "arm_const_structs.c")]
-B2_SOURCES = [RUBBER / "rubber.h"] + [BUNGEE / f for f in ("bungee.cpp", "rt.c", "Fourier_cmsis.cpp",
+B2_SOURCES = [RUBBER / "rubber.h"] + [BUNGEE / f for f in ("bungee.cpp", "lane.h", "rt.c", "Fourier_cmsis.cpp",
                                                          "bungee-blackbox.patch")]
-BANK1_DEFS = ['-DRB_LABEL="Bungee"', '-DRB_PAYLOAD_FILE="BBBUNGEE.BIN"']
+# 3.1.T's per-lane modes: the Warp Lab's C, built for one voice per lane (beats.h, granular.c).
+LANE_SRC = [STRETCH / "beats.c", STRETCH / "granular.c"]
+LANE_DEFS = ["-DBEATS_NO_CLOUD", "-DBEATS_SHARED_SCRATCH", "-DBEATS_CACHE=32", "-DGRAN_FW_HANN", "-DGRAN_SRC=256",
+             "-DGRAN_NO_TABLES"]
+if LINEUP:
+    B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", *LANE_SRC]
+BANK1_DEFS = ['-DRB_LABEL="Bungee"', f'-DRB_PAYLOAD_FILE="{PAYLOAD}.BIN"']
 BUNGEE_CXX = ["-std=c++20", "-fwrapv", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
               "-DBUNGEE_VISIBILITY=", "-DBUNGEE_SELF_TEST=0", "-DBUNGEE_NO_LOG", "-DBUNGEE_FIXED_PITCH",
               *([] if os.environ.get("BG_EXACT_PHASE") else ["-DBUNGEE_FAST_PHASE"]),
@@ -99,19 +116,23 @@ def compile_all(rb_id):
     objs = []
     cave_o = BUILD / "bungee_cave.o"
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
-         *(["-DWITH_REPITCH"] if REPITCH else []),
+         *(["-DWITH_REPITCH"] if REPITCH else []), *(["-DWITH_LINEUP"] if LINEUP else []),
          "-I", MIX_DIR, "-I", mix.BASE_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
     objs.append(cave_o)
     for src in (BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"):
         o = BUILD / (src.stem + ".o")
         run([GCC, *BANK1_C, *BANK1_DEFS, "-I", BANK2, "-I", RUBBER, "-c", "-o", o, src])
         objs.append(o)
-    defs = [f"-DRB_ID={rb_id:#x}u"]
-    inc = ["-I", RUBBER, "-I", BG, "-I", BG / "submodules" / "eigen", "-I", CMSIS / "Include"]
+    defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", *LANE_DEFS] if LINEUP else [])]
+    inc = ["-I", RUBBER, "-I", BG, "-I", BG / "submodules" / "eigen", "-I", CMSIS / "Include", "-I", STRETCH]
     srcs = [f for f in sorted((BG / "src").glob("*.cpp")) if f.name != "Fourier.cpp"]
-    for src in srcs + [BUNGEE / "Fourier_cmsis.cpp", BUNGEE / "bungee.cpp"]:
+    for src in srcs + [BUNGEE / "Fourier_cmsis.cpp", BUNGEE / "bungee.cpp"] + ([BUNGEE / "lanes.cpp"] if LINEUP else []):
         o = BUILD / ("bg_" + src.stem + ".o")
         run([GXX, *BANK2_FLAGS, *BUNGEE_CXX, *defs, *inc, "-c", "-o", o, src])
+        objs.append(o)
+    for src in LANE_SRC if LINEUP else []:
+        o = BUILD / ("ln_" + src.stem + ".o")
+        run([GCC, *BANK2_FLAGS, *LANE_DEFS, "-I", STRETCH, "-c", "-o", o, src])
         objs.append(o)
     o = BUILD / "rt.o"
     run([GCC, *BANK2_FLAGS, "-c", "-o", o, BUNGEE / "rt.c"])

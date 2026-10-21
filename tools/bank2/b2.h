@@ -77,6 +77,7 @@ uint32_t rb_call_on_stack(uint32_t fn, unsigned a, unsigned b, unsigned c, unsig
 void rb_call_at(uint32_t fn, uint32_t stack_top);   /* fn() on the stack ending at stack_top (cave asm) */
 void rb_work(void);                                 /* b2pair.c: one wake of the leaf's task */
 int rb_ready(void);                                 /* b2pair.c: may the leaf render */
+int rb_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);   /* b2pair.c: Fill / Slice / Grain */
 /* b2pair.c, from the card loader's poll (pcmStreamer): start bank 2 once pairing found it. */
 void rb_start(void);
 /* b2pair.c: append the loader's one-character verdict to the Rubber label. */

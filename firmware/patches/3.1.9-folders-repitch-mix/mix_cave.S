@@ -1,5 +1,8 @@
 @ 3.1.Q = 3.1.X (folders + Warp Stretch/Repitch) + Mix overhaul. Built with -I ../3.1.9-folders-repitch.
 .set MIX_EXT, 1                         @ repitch.S: Env Trig hooks (adsr.S)
+.ifndef WARP_RUBBER
+.set WARP_PLAIN, 1                      @ repitch.S, cave.S: Stretch / Repitch only, no 3.1.Z engines or slices
+.endif
 .include "cave.S"
 
 .align 2

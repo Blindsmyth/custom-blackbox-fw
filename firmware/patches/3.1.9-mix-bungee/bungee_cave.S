@@ -6,6 +6,9 @@
 #ifdef WITH_REPITCH
 .set WARP_KEEP_REPITCH, 1               @ build_patch.py --with-repitch: Stretch / Repitch / Bungee
 #endif                     @ repitch.S: Warp Stretch/Rubber only (value 1), hook_lane
+#ifdef WITH_LINEUP
+.set WARP_LINEUP, 1                     @ build_patch.py --lineup (3.1.T): Stutter / Fill / Repitch / Slice / Grain / Bungee
+#endif
 .include "mix_cave.S"
 
 .align 2

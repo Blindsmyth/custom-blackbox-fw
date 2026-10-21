@@ -45,6 +45,10 @@ typedef struct {
     GranGrain g[GRAN_SLOTS];
 } GranVoice;
 
+#ifdef GRAN_NO_TABLES
+extern float *gran_src_buf;   /* the device build: set to 2 x GRAN_SRC floats before gran_process */
+#endif
+
 void gran_init(GranVoice *v);
 void gran_set(GranVoice *v, int size, int density, int scatter, int window, int speed, int panrnd,
               int root, int sync);

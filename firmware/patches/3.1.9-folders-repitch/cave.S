@@ -365,7 +365,9 @@ fm_boot:
     push {r0, lr}
     bl fm_init
 .ifndef WARP_RUBBER
+.ifndef WARP_PLAIN
     bl sl_init
+.endif
 .endif
     pop {r0, lr}
     ldr r12, =BOOT_NEXT
@@ -1203,7 +1205,9 @@ s_presetxml:
 
 .include "repitch.S"
 .ifndef WARP_RUBBER                     @ 2048 slices grow into SRAM1+2, which a bank-2 leaf owns
+.ifndef WARP_PLAIN                      @ and 3.1.Q never had them
 .include "slice.S"
+.endif
 .endif
 
 .align 2

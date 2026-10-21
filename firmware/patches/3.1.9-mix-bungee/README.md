@@ -11,10 +11,11 @@ This is 3.1.R (Warp Rubber, `../3.1.9-mix-rubber`) with Bungee in place of Rubbe
 
 The claim word is the same too, so a unit that has run 3.1.R treats bank 2 as its own and switches between the two builds without a takeover file.
 
-## Two builds
+## Three builds
 
 - **`BLACKBOX.BIN` + `BBBUNGEE.BIN`** here: Warp **Stretch / Bungee**.
 - **`repitch/`** (`build_patch.py --with-repitch`): Warp **Stretch / Repitch / Bungee**, with Bungee at value 2. The bank-2 payload is the same.
+- **`lineup/`** (`build_patch.py --lineup`): **3.1.T**, Warp **Stutter / Fill / Repitch / Slice / Grain / Bungee**. Its own payload, `BBWARP.BIN`. See [lineup/README.md](lineup/README.md).
 
 ## Install
 
@@ -59,7 +60,9 @@ The Warp list label reports Bungee's state, as 3.1.R's does for Rubber:
   - **Costs:** a tempo change reaches the sound up to ~43 ms later. If the task falls behind, those frames play silent and count as `u`; more than an eighth of a second's blocks switches Bungee off.
   - **Shared clip reads:** the stock reader isn't safe from two tasks (it updates the stream cache without a lock), so the task suspends the scheduler around each read.
   - **RTOS heap:** stock leaves only ~0.35 KB of it free, and the task needs ~0.7 KB, so the idle task's stack goes from 0x400 to 0x300 words (`0x08088C98`).
-- **Fixed pitch.** Pitch stays 1 and in/out rates are equal, so Bungee's resampling buffers are never allocated (`bungee-blackbox.patch`, `BUNGEE_FIXED_PITCH`).
+- **Fixed pitch inside Bungee.** Bungee itself runs at pitch 1 with equal in/out rates, so its resampling buffers are never allocated (`bungee-blackbox.patch`, `BUNGEE_FIXED_PITCH`).
+- **The Clip's Pitch** (−12..+7 st, with pitch mods) is done outside Bungee: Bungee renders at speed ÷ pitch, and the audio side reads the ring pitch frames per output frame (cubic). That keeps the tempo, costs no RAM, and costs Bungee's task the pitch factor in CPU, hence the +7 st limit. A pitched launch has no raw-Clip start; it begins ~43 ms later.
+- **The pad's Level and pan** (velocity and mods included) apply to Bungee as stock's grain reader applies them to grains (`lane.h`, shared with 3.1.T's lane modes).
 - **FFT.** CMSIS-DSP `arm_rfft_fast_f32` (`tools/stretch/bungee/Fourier_cmsis.cpp`), with one shared scratch buffer.
 - **Each clip frame read once.** The 4096-frame grain window slides: the frames it keeps move down and only the new hop is read. Before this, every frame went through the stock reader ~8 times.
 - **Fast phase.** No libm per bin (`BUNGEE_FAST_PHASE`, `src/FastPhase.h` in the patch): a polynomial `atan2` that returns Bungee's int16 phase, and the phasor taken straight from the int16 rotation. Bench: the leaf's work per block went from 2.06M to 1.08M, and the output is 124 dB from the libm version.

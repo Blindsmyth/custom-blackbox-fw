@@ -28,8 +28,13 @@ SYMS = HERE / "BLACKBOX.sym.json"
 LETTER = "Q"
 MAX_CAVE = 0x4000
 
+# The base (3.1.Z) also lists its own engines' lane hook and 3.1.Y's 2048 slices; 3.1.Q has neither
+# (mix_cave.S sets WARP_PLAIN), so they are left out here.
+Z_ONLY = {"hook_lane", "hook_slices_max", "hook_slice_max", "hook_engine_cap", "hook_cell_cap", "hook_save_iter",
+          "hook_save_bag", "hook_cell_ext", "hook_pad_slice", "hook_pad_done"}
+
 # (site, cave symbol, bl?, stock bytes): both replace `bl App_SetScreen` in App_HandleInput.
-SITES = base.SITES + [
+SITES = [site for site in base.SITES if site[1] not in Z_ONLY] + [
     (0x080A32DE, "mix_btn_screen", True, "fbf705fc"),  # MIX button: Mix -> Mute toggle
     (0x080A30DC, "mix_info", True, "fbf706fd"),        # INFO on Mix: next pad mode (Mute/Solo)
     (0x0808BC40, "mix_set_mode", True, "2af000f9"),    # GUI shows Mix/Mute: always mute colours

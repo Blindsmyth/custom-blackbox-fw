@@ -30,8 +30,14 @@ void beats_init(BeatsVoice *v)
 {
     unsigned char *w = (unsigned char *)v;
     unsigned i;
+#ifdef BEATS_SHARED_SCRATCH
+    float *scratch = v->scratch;
+#endif
     for (i = 0; i < sizeof(BeatsVoice); i++)
         w[i] = 0;
+#ifdef BEATS_SHARED_SCRATCH
+    v->scratch = scratch;
+#endif
     v->magic = BEATS_MAGIC;
     v->cur = -1;
     v->fill = BEATS_LOOP;
@@ -81,6 +87,7 @@ static float rnd01(BeatsVoice *v)
     return (float)(v->rng >> 8) * (1.f / 16777216.f);
 }
 
+#ifndef BEATS_NO_CLOUD
 /* One sample of the granular fill for the segment [start, end). */
 static void cloud_sample(BeatsVoice *v, void *sample, int length, int stereo, BeatsReadFn read,
                          int start, int end, float *l, float *r)
@@ -129,6 +136,7 @@ static void cloud_sample(BeatsVoice *v, void *sample, int length, int stereo, Be
     *l = sl * 1.5f / (float)(v->density > 0 ? v->density : 1);
     *r = sr * 1.5f / (float)(v->density > 0 ? v->density : 1);
 }
+#endif
 
 /* Tail loop length for a segment [start, end): the lag L whose preceding
  * window best matches the window before the end (normalized correlation on
@@ -307,6 +315,7 @@ void beats_process(BeatsVoice *v, void *sample, int length, int stereo,
             if (!g->active)
                 continue;
             if (j == v->live && g->xf < 0 && !g->gated) {
+#ifndef BEATS_NO_CLOUD
                 if (v->fill == BEATS_GRANULAR && !g->cloud &&
                     g->a.pos >= g->end - v->loop_xf &&
                     due > (float)(g->end - g->a.pos) + 1.f) {
@@ -318,7 +327,9 @@ void beats_process(BeatsVoice *v, void *sample, int length, int stereo,
                     v->cloud_owner = j;
                     v->cloud_age = 0;
                     v->spawn_in = 0;
-                } else if (v->fill == BEATS_PINGPONG && !g->pp_lo && g->a.dir > 0 &&
+                } else
+#endif
+                if (v->fill == BEATS_PINGPONG && !g->pp_lo && g->a.dir > 0 &&
                     g->a.pos >= g->end - 1 && due > 1.f) {
                     /* Out of audio: bounce over the tail until the next segment. */
                     int start = (int)starts[g->seg], span = v->pp_span;
@@ -373,6 +384,7 @@ void beats_process(BeatsVoice *v, void *sample, int length, int stereo,
                     g->a.pos -= g->a.dir; /* advanced below */
                 }
             }
+#ifndef BEATS_NO_CLOUD
             if (g->cloud && v->cloud_owner == j) {
                 /* Main head fades out over loop_xf while the cloud fades in. */
                 float cl, cr, c = v->cloud_age < v->loop_xf
@@ -382,6 +394,7 @@ void beats_process(BeatsVoice *v, void *sample, int length, int stereo,
                 ar = ar * (1.f - c) + cr * c;
                 v->cloud_age++;
             }
+#endif
             env = g->age < v->attack ? (float)(g->age + 1) / (float)v->attack : 1.f;
             if (g->fade_out > 0) {
                 int len = g->gated ? v->loop_xf : v->cut;

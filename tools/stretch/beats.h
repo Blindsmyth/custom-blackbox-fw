@@ -25,7 +25,12 @@
 #include <stdint.h>
 
 #define BEATS_HEADS     4     /* read heads: 2 grains x (head + loop crossfade) */
+#ifndef BEATS_CACHE
 #define BEATS_CACHE     64    /* samples cached per head and channel */
+#endif
+/* Device build (tools/stretch/bungee/lanes.cpp, one voice per lane): BEATS_NO_CLOUD leaves the
+ * granular fill out, BEATS_SHARED_SCRATCH makes the loop-match scratch a pointer the caller sets
+ * (it is only used inside one call, so every voice can share one). */
 #define BEATS_MATCH     128   /* loop-point match window */
 #define BEATS_LOOP_MAX  4800  /* longest tail loop (100 ms) */
 #define BEATS_LOOP_MIN  240   /* shortest tail loop (5 ms) */
@@ -92,8 +97,14 @@ typedef struct BeatsVoice {
     uint32_t rng;
     int32_t n_loops;      /* stats */
     BeatsGrain g[2];
+#ifndef BEATS_NO_CLOUD
     BeatsCloudGrain cloud[BEATS_CLOUD];
+#endif
+#ifdef BEATS_SHARED_SCRATCH
+    float *scratch;       /* BEATS_SCRATCH floats, kept across beats_init */
+#else
     float scratch[BEATS_SCRATCH];
+#endif
 } BeatsVoice;
 
 #define BEATS_MAGIC 0x42454154u /* 'BEAT' */

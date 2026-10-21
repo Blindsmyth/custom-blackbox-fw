@@ -177,7 +177,7 @@ def main():
     stretch = ROOT / "tools" / "stretch"
     blob, symbols = link_cave(
         [CAVE_S, stretch / "smooth.c", stretch / "smooth_fw.c",
-         stretch / "snap.c", stretch / "snap_fw.c",
+         stretch / "capi.c", stretch / "capi_fw.c",
          stretch / "vari.c", stretch / "vari_fw.c"],
         OBJ, CAVE_VA, includes=[stretch])
     if len(blob) > 0xE000 or CAVE_VA + len(blob) >= 0x080FFF00:

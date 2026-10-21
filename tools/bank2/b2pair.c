@@ -8,6 +8,12 @@
 #define RB_LABEL "Rubber"   /* the Warp list name; the Bungee build: "Bungee" */
 #endif
 
+/* Stock's SDRAM bump allocator (docs/map-319.md "SDRAM allocators"): permanent, from the bottom,
+ * below the sample stack. */
+typedef void *(*sdram_alloc_fn)(uint32_t);
+#define FW_SDRAM_ALLOC ((sdram_alloc_fn)0x0804436Du)
+#define RB_POOL_MAX    0x40000u     /* 256 KB: what a leaf may ask for */
+
 #define RCC_AHB4ENR (*(volatile uint32_t *)0x580244e0u)
 #define PWR_CR1     (*(volatile uint32_t *)0x58024800u)
 #define DCCMVAC     (*(volatile uint32_t *)0xe000ef68u)
@@ -141,6 +147,17 @@ void rb_pair(void)
             label(v, RB_LABEL "..");   /* intact, starting once the unit is up */
         v->state = ok ? RB_ST_PAIRED : RB_ST_ABSENT;
     }
+    v->pool = 0;
+    v->pool_bytes = 0;
+    if (ok) {
+        const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
+        const volatile RbExt *x = (const volatile RbExt *)h->ext;
+        uint32_t bytes = h->ext ? x->pool_bytes : 0u;
+        if (bytes && bytes <= RB_POOL_MAX) {
+            v->pool = (uint32_t)FW_SDRAM_ALLOC(bytes);
+            v->pool_bytes = v->pool ? bytes : 0u;
+        }
+    }
 }
 
 /* FreeRTOS v9 in stock 3.1.9 (docs/re-notes.md): xTaskCreate, a binary semaphore as a 1-item
@@ -217,6 +234,21 @@ int rb_ready(void)
 }
 
 #define DWT_CYCCNT (*(volatile uint32_t *)0xe0001004u)
+
+/* repitch.S hook_lane, Fill / Slice / Grain (3.1.T): the leaf renders this lane, 1 = done (stock's
+ * lane render is skipped), 0 = stock grains (bank 2 not running, no pool, or the leaf declined). */
+int rb_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
+{
+    const RbVoice *v = (const RbVoice *)RB_VOICE;
+    const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
+    const volatile RbExt *x;
+    if (!rb_ready() || !h->ext || !v->pool)
+        return 0;
+    x = (const volatile RbExt *)h->ext;
+    if (!x->lanes)
+        return 0;
+    return (int)rb_call_on_stack(x->lanes, clip, lane, mix, ctx);
+}
 
 void rb_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
 {

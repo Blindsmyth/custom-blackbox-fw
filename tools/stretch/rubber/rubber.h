@@ -20,6 +20,7 @@
 typedef int (*rb_boot_fn)(void);   /* 1 = started, 0 = not (out of memory) */
 typedef void (*rb_mix_fn)(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);
 typedef void (*rb_work_fn)(void);  /* the leaf's background task body, one wake (Bungee) */
+typedef int (*rb_lanes_fn)(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);   /* 1 = rendered */
 
 /* The first 32 bytes of bank 2 (one flash word). The loader writes it last. */
 typedef struct RbHeader {
@@ -30,8 +31,16 @@ typedef struct RbHeader {
     uint32_t boot;        /* rb_boot_fn | 1 */
     uint32_t mix;         /* rb_mix_fn | 1 */
     uint32_t work;        /* rb_work_fn | 1, or 0: the leaf has no background task (Rubber) */
-    uint32_t reserved;
+    uint32_t ext;         /* RbExt in bank 2, or 0 (Rubber, 3.1.B) */
 } RbHeader;
+
+/* What a leaf has beyond the voice (3.1.T): per-lane Warp modes, and the SDRAM it needs for them.
+ * rb_pair allocates the pool at boot, while the app is built, so it never competes with samples
+ * mid-load; the leaf finds it in RbVoice.pool. */
+typedef struct RbExt {
+    uint32_t lanes;       /* rb_lanes_fn | 1: render one lane of a Fill / Slice / Grain Clip */
+    uint32_t pool_bytes;  /* SDRAM to allocate at boot (stock FUN_0804436C), 0 = none */
+} RbExt;
 
 /* Voice header, SRAM4 (free on main; Capi used the same slot on warp-capi). */
 #define RB_VOICE       0x38007000u
@@ -54,6 +63,8 @@ typedef struct RbVoice {
     void *bg_task;        /* 68 its FreeRTOS handle */
     uint32_t prev_owner;  /* 72 the Clip a launch took the voice from (repitch.S SM_PREV); the
                              leaf ends its lanes and clears this */
+    uint32_t pool;        /* 76 RbExt.pool_bytes of SDRAM from rb_pair, or 0 */
+    uint32_t pool_bytes;  /* 80 */
 } RbVoice;
 
 #define RB_ST_UNKNOWN  0u

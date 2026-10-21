@@ -35,6 +35,12 @@
 #define START        2048    /* clip frame of the raw -> Bungee handoff (Bungee's ring frame 0) */
 #define XF           128     /* crossfade frames at the handoff */
 #define WAKE_GRAINS  3       /* grains per task wake at most: the UI and disk tasks get the CPU */
+/* Pitch (clip+0xA80 and the lane's pitch mods): Bungee renders at speed / pitch and the audio side
+ * reads its ring pitch frames per output frame, so the tempo stays and the pitch moves. Bungee's own
+ * resampling would need ~65-80 KB more RAM; this needs none, but pitch up costs Bungee's task that
+ * much more CPU (x1.5 at +7 st), so the range is -12..+7 semitones. */
+#define PITCH_MIN    0.5f
+#define PITCH_MAX    1.4983071f  /* 2^(7/12) */
 /* The grain input buffer (4096 frames x 2 channels, 32 KB) in SRAM4's top half, which nothing else
  * uses on this line (folders, Warp flags, Mix, looper end below 0x38006400; RbVoice and diag at
  * 0x38007000-0x38007148). SRAM1-3 holds Bungee's own ~0.25 MB and cannot spare it. */
@@ -58,56 +64,21 @@ struct RbHeaderInit {
     rb_boot_fn boot;
     rb_mix_fn mix;
     rb_work_fn work;
-    uint32_t reserved;
+    const void *ext;      /* RbExt: 3.1.T's per-lane modes (lanes.cpp), or none */
 };
+#ifdef WARP_LANES
+extern "C" const struct RbExtInit rb_ext;
+extern "C" void lanes_boot(void);
+#define RB_EXT &rb_ext
+#else
+#define RB_EXT nullptr
+#endif
 extern "C" __attribute__((used, section(".b2head")))
-const RbHeaderInit rb_header = { RB_MAGIC, RB_ID, 0, 0, rubber_boot, rubber_mix, rubber_work, 0 };
+const RbHeaderInit rb_header = { RB_MAGIC, RB_ID, 0, 0, rubber_boot, rubber_mix, rubber_work, RB_EXT };
 
-// Stock 3.1.9 functions, as used by Warp Rubber / Capi.
-typedef int (*pcm_read_fn)(void *, float *, int, int, int);
-typedef int (*pcm_len_fn)(void *);
-typedef int (*pcm_st_fn)(void *);
-typedef void *(*buf_slot_fn)(void *, int);
-typedef void (*buf_clear_fn)(void *);
-typedef void (*buf_setlen_fn)(void *, int);
-typedef int (*buf_len_fn)(void *);
-typedef void (*buf_planes_fn)(void *, float **, float **);
-typedef void (*buf_env_fn)(void *, void *);
-typedef void (*buf_mix_fn)(void *, void *);
-#define FW_PCM_READ   ((pcm_read_fn)0x08063635u)
-#define FW_PCM_LEN    ((pcm_len_fn)0x080636f1u)
-#define FW_PCM_STEREO ((pcm_st_fn)0x08063791u)
-#define FW_BUF_SLOT   ((buf_slot_fn)0x0805f3a5u)
-#define FW_BUF_CLEAR  ((buf_clear_fn)0x0804d8ddu)
-#define FW_BUF_LEN    ((buf_len_fn)0x0804d8e9u)
-#define FW_BUF_SETLEN ((buf_setlen_fn)0x0804d8d1u)
-#define FW_BUF_PLANES ((buf_planes_fn)0x0804d9c1u)
-#define FW_BUF_ENV    ((buf_env_fn)0x080762d9u)
-#define FW_BUF_MIX    ((buf_mix_fn)0x0804da6du)
-// The stock Clip lane's voice: what FUN_080667B8 (the per-lane render our hook replaces) does around
-// its grains. STOP, note-off and mute only arm a release or stop the grains; the lane render runs
-// the amp envelope, sees it finish, and deactivates the lane. Without this a Bungee Clip played on.
-typedef void (*env_apply_fn)(void *, float *, float *, int);
-typedef void (*obj_fn)(void *);
-#define FW_ENV_APPLY  ((env_apply_fn)0x0806a6c1u)   /* (lane+0x258, L, R, n): gains in place, advances stages */
-#define FW_ENV_REL    ((obj_fn)0x0806a63du)         /* release (stages 1-3 -> 4) */
-#define FW_ENV_FAST   ((obj_fn)0x0806a699u)         /* fast release, 256 samples */
-#define FW_ENV_RESET  ((obj_fn)0x0806a5d9u)
-#define FW_AUX_RESET  ((obj_fn)0x0806ef39u)         /* lane+0xF0 */
-#define FW_FILT_RESET ((obj_fn)0x08076705u)         /* lane+0x14C, the pad filter */
-// Pad feedback: stock's lane render posts these to the engine's outbox (ctx + 0x15238); the pads
-// view and the waveform playhead show "playing" only from them (0x4A every block, position and
-// permille; 0x1D when a quantised launch's delay is over).
-typedef void (*post_fn)(void *, const void *);
-typedef void (*tick_fn)(int64_t *, void *, int);
-#define FW_POST       ((post_fn)0x0804f505u)        /* (ctx + 0x15238, 24-byte message) */
-#define FW_TICK_AT    ((tick_fn)0x08069c45u)        /* (&tick, transport, offset): tick at now + offset */
-#define OUTBOX        0x15238u
-#define LANE_A        0x260u                        /* clip+0x260 and clip+0x670: a Clip's two lanes */
-#define LANE_B        0x670u
-#define L8(l, o)   (*(volatile uint8_t *)((l) + (o)))
-#define L16(l, o)  (*(volatile uint16_t *)((l) + (o)))
-#define L32(l, o)  (*(volatile int32_t *)((l) + (o)))
+// Stock 3.1.9 functions and the stock lane's voice (envelope, Level and pan, pad feedback, end of
+// voice): lane.h, shared with Fill / Slice / Grain (lanes.cpp).
+#include "lane.h"
 
 // The stock reader is not safe from two tasks (it bumps the stream cache's LRU counter and
 // request ring without a lock; stock calls it from the audio task only). The leaf task suspends
@@ -165,12 +136,16 @@ static uint32_t my_seq;        /* the launch the audio side plays */
 static bool launching;         /* raw Clip until the handoff */
 static bool playing;           /* a voice is on */
 static int raw_pos;            /* raw Clip frames played since the launch */
+static double rd_pos;          /* ring frame (fractional) the audio side reads next, after the launch */
+static float a_pitch = 1.f;    /* the Clip's Pitch: the ring is read this many frames per output frame */
+static bool priming;           /* a pitched launch: silence until Bungee's first frames are in */
 static void *a_sample;         /* the Clip the audio side reads (raw launch, crossfade) */
 static int a_length, a_stereo, a_base;
 static double anchor_tick;     /* the clock tick at the launch's first frame */
 static double lock_i;          /* the clock lock's integral term (removes a steady offset) */
 static bool anchored;
 static float xf_l[XF], xf_r[XF];
+static LaneGain gain;          /* the pad's Level and pan ramps (lane.h) */
 static uint32_t lbl_blocks, lbl_t0;
 
 static RbVoice *voice() { return (RbVoice *)RB_VOICE; }
@@ -263,6 +238,9 @@ int rubber_boot(void)
     for (void (**f)(void) = __b2_init_array_start; f < __b2_init_array_end; f++)
         (*f)();
     cur_ratio = 1.f;
+#ifdef WARP_LANES
+    lanes_boot();
+#endif
 
     DEMCR |= 1u << 24;   // TRCENA: DWT for the load figure
     DWT_CTRL |= 1u;      // CYCCNTENA
@@ -449,52 +427,6 @@ void rubber_work(void)
 
 // ---- audio task: the Clip's lanes, launch, ring --------------------------------------------
 
-static bool lane_on(unsigned lane) { return L8(lane, 0) && !L8(lane, 0x148); }
-
-// Stock's lane deactivate (FUN_080667B8 0x08066D2A-0x08066E78): the grains in the lane's list go
-// back to the Clip's four slots, the lane's fields clear, its envelope, aux and filter reset.
-static void lane_end(unsigned clip, unsigned lane, bool free_grains)
-{
-    if (free_grains) {
-        int count = L32(lane, 0xD8);
-        for (int g = 0; g < count && g < 4; g++) {
-            int idx = L32(lane, 0xC8 + 4 * g);
-            if (idx < 0 || idx > 3)
-                continue;
-            unsigned gr = clip + (unsigned)idx * 0x70u;
-            L16(gr, 0x30) = 0;
-            L32(gr, 0x68) = 0;
-            L8(gr, 0x6C) = 0;
-            *(volatile float *)(gr + 0x48) = 1.f;
-            L32(gr, 0x4C) = 0;
-            L32(gr, 0x50) = 0;
-            L32(gr, 0x54) = 0x100;
-            L32(gr, 0x58) = -1;
-            L32(gr, 0x5C) = 0x100;
-            L32(gr, 0x60) = 0;
-            L32(gr, 0x64) = 0;
-            for (int o = 0x38; o < 0x48; o += 4)
-                L32(gr, o) = 0;
-        }
-        L32(lane, 0xD8) = 0;
-    }
-    L8(lane, 0) = 0;
-    L32(lane, 4) = 0;
-    L16(lane, 8) = 0;
-    for (int o = 0xC8; o <= 0xD4; o += 4)
-        L32(lane, o) = -1;
-    L32(lane, 0x130) = 0;
-    L16(lane, 0x134) = 0;
-    L8(lane, 0x148) = 0;
-    for (int o = 0xE0; o < 0xF0; o += 4)
-        L32(lane, o) = 0;
-    for (int o = 0x138; o < 0x148; o += 4)
-        L32(lane, o) = 0;
-    FW_ENV_RESET((void *)(lane + 0x258));
-    FW_AUX_RESET((void *)(lane + 0xF0));
-    FW_FILT_RESET((void *)(lane + 0x14C));
-}
-
 // The lane Bungee renders: the newest active one (largest start tick, lane+0xE0). A relaunch
 // starts the new note on the other lane while the old one releases; Bungee is one voice, so the
 // old lane ends at once instead of hanging on unrendered.
@@ -552,21 +484,56 @@ static void play(float *l, float *r, int n)
         }
         DMB();
         r_frames = skip + (uint32_t)n;
+        rd_pos = r_frames;
         return;
     }
-    uint32_t rd = r_frames, avail = ring_seq == my_seq ? w_frames - rd : 0;
-    m = avail < (uint32_t)n ? (int)avail : n;
-    DMB();
-    for (i = 0; i < m; i++) {
-        l[i] = ring_l[(rd + i) % RING];
-        r[i] = ring_r[(rd + i) % RING];
+    if (a_pitch == 1.f && rd_pos == (double)(uint32_t)rd_pos) {
+        uint32_t rd = (uint32_t)rd_pos, avail = ring_seq == my_seq ? w_frames - rd : 0;
+        m = avail < (uint32_t)n ? (int)avail : n;
+        DMB();
+        for (i = 0; i < m; i++) {
+            l[i] = ring_l[(rd + i) % RING];
+            r[i] = ring_r[(rd + i) % RING];
+        }
+        rd_pos = rd + (uint32_t)m;
+    } else {
+        // At a pitch: the ring at rd_pos, rd_pos + pitch, ... (cubic Hermite over 4 frames).
+        uint32_t w = ring_seq == my_seq ? w_frames : 0;
+        DMB();
+        for (i = 0; i < n; i++) {
+            uint32_t k = (uint32_t)rd_pos;
+            if (k < 1u || k + 3u > w) {
+                if (k == 0u && w >= 3u) {          // the first frame: no frame before it
+                    l[i] = ring_l[0];
+                    r[i] = ring_r[0];
+                    rd_pos += a_pitch;
+                    continue;
+                }
+                break;
+            }
+            float t = (float)(rd_pos - k);
+            const float *rings[2] = { ring_l, ring_r };
+            float *dst[2] = { l, r };
+            for (int c = 0; c < 2; c++) {
+                const float *q = rings[c];
+                float y0 = q[(k - 1u) % RING], y1 = q[k % RING], y2 = q[(k + 1u) % RING], y3 = q[(k + 2u) % RING];
+                float c1 = 0.5f * (y2 - y0), c2 = y0 - 2.5f * y1 + 2.f * y2 - 0.5f * y3;
+                float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+                dst[c][i] = ((c3 * t + c2) * t + c1) * t + y1;
+            }
+            rd_pos += a_pitch;
+        }
+        m = i;
     }
-    for (; i < n; i++)
-        l[i] = r[i] = 0.f;   // the leaf task was late: silence, counted
-    if (m < n)
+    for (i = m; i < n; i++)
+        l[i] = r[i] = 0.f;   // the leaf task was late: silence, counted (not while a pitched launch primes)
+    if (m > 0)
+        priming = false;
+    if (m < n && !priming)
         underruns++;
     DMB();
-    r_frames = rd + (uint32_t)m;
+    uint32_t keep = (uint32_t)rd_pos;
+    r_frames = keep > 0u ? keep - 1u : 0u;   // the frame before is still read (cubic)
 }
 
 // The source frame (unwrapped) of the frame the audio side plays next.
@@ -574,36 +541,15 @@ static double src_pos()
 {
     if (launching)
         return a_base + raw_pos;
-    uint32_t r = r_frames, cnt = tr_count;
+    double r = rd_pos;
+    uint32_t cnt = tr_count;
     for (uint32_t i = 0; i < TRACK && i < cnt; i++) {
         uint32_t t = (cnt - 1 - i) % TRACK;
-        uint32_t st = tr_start[t];
-        if (r >= st && r - st <= (uint32_t)tr_n[t] && tr_n[t] > 0)
-            return tr_p0[t] + (tr_p1[t] - tr_p0[t]) * (double)(r - st) / tr_n[t];
+        double st = tr_start[t];
+        if (r >= st && r - st <= (double)tr_n[t] && tr_n[t] > 0)
+            return tr_p0[t] + (tr_p1[t] - tr_p0[t]) * (r - st) / tr_n[t];
     }
-    return a_base + START + (double)r * cur_ratio;
-}
-
-// The clock tick at output sample s (fractional): the transport's tempo map, 960 ticks per beat,
-// one tick = 3000 / BPM samples at 48 kHz (map anchor tick +0x08, sample +0x10, BPM +0x18).
-static double tick_at(void *transport, double s)
-{
-    const char *t = (const char *)transport;
-    double map_tick = (double)*(const volatile int64_t *)(t + 0x08);
-    double map_sample = (double)*(const volatile int64_t *)(t + 0x10);
-    double bpm = *(const volatile float *)(t + 0x18);
-    return map_tick + (s - map_sample) * bpm / 3000.;
-}
-
-// e mod len, into [-len/2, len/2): how far ahead the clock is, the short way round the loop.
-static double wrap_err(double e, int len)
-{
-    e = std::fmod(e, (double)len);
-    if (e >= len / 2.)
-        e -= len;
-    if (e < -len / 2.)
-        e += len;
-    return e;
+    return a_base + START + r * cur_ratio;
 }
 
 static void launch_voice(void *sample, int length, int stereo, int base)
@@ -619,10 +565,29 @@ static void launch_voice(void *sample, int length, int stereo, int base)
     req_stop = false;
     raw_pos = 0;
     r_frames = 0;
+    rd_pos = 0.;
     launching = true;
+    priming = false;
     playing = true;
     DMB();
     req_seq = ++my_seq;
+}
+
+// A launch at a pitch: no raw Clip first (it would be at the wrong pitch for the crossfade); Bungee
+// primes from `base` itself, and its output starts ~43 ms later.
+static void launch_pitched(void *sample, int length, int stereo, int base)
+{
+    launch_voice(sample, length, stereo, base - START);
+    launching = false;
+    priming = true;
+}
+
+static void launch_at(void *sample, int length, int stereo, int base)
+{
+    if (a_pitch == 1.f)
+        launch_voice(sample, length, stereo, base);
+    else
+        launch_pitched(sample, length, stereo, base);
 }
 
 static void stop_voice()
@@ -679,8 +644,7 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     if (ratio > RB_MAX_RATIO)
         ratio = RB_MAX_RATIO;
     void *transport = *(void **)ctx;
-    int64_t clip_ticks = *(volatile int64_t *)(clip + 0xBA8);
-    bool loops = *(volatile uint8_t *)(clip + 0x1F4) && *(volatile uint8_t *)(clip + 0x1F8) != 1;
+    bool loops = clip_loops(clip);
 
     int reset = v->reset_req;
     v->reset_req = 0;
@@ -688,33 +652,40 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     if ((a0 || a1) && !v->prev_active)
         reset = 1;
     v->prev_active = (a0 || a1) ? 1 : 0;
+    // The Clip's Pitch (param 0x5C, milli-semitones at clip+0xA80) and the lane's pitch mods
+    // (octaves), as stock's grain reader takes them.
+    float pitch = std::exp2((float)L32(clip, 0xA80) / 12000.f + FW_PARAM_VAL((void *)(lane + 0x94)));
+    if (!(pitch >= PITCH_MIN))
+        pitch = PITCH_MIN;
+    if (pitch > PITCH_MAX)
+        pitch = PITCH_MAX;
+    if (pitch > 0.9999f && pitch < 1.0001f)
+        pitch = 1.f;
+    a_pitch = pitch;
+    bool snap = false;               /* a new note: Level and pan start at their value */
     if (reset || !playing || sample != a_sample || stereo != a_stereo) {
-        launch_voice(sample, length, stereo, 0);
+        launch_at(sample, length, stereo, 0);
         anchored = false;
         lock_i = 0;
+        snap = true;
     }
     if (!anchored && transport) {
-        // The clock tick at the launch's first frame: the transport's sample count at launch
-        // (lane+0xE0) plus the quantise delay (lane+0x138, before this block counts it down).
-        int64_t s0 = *(volatile int64_t *)(lane + 0xE0) + L32(lane, 0x138);
-        anchor_tick = tick_at(transport, (double)s0);
+        anchor_tick = lane_launch_tick(lane, transport);
         anchored = true;
     }
 
     // Clock lock: where stock would be in the file now, against where Bungee is; the speed is
     // nudged (at most 2 %, no pitch change) so a long sample stays on the beat. A big jump (locate,
     // external clock) relaunches there instead.
-    double speed_now = ratio;
-    if (transport && *(volatile uint8_t *)((char *)transport + 0x38) && !launching && clip_ticks > 0 &&
-        ratio == want) {
-        double now = (double)*(volatile int64_t *)transport + (L32(lane, 0x138) > 0 ? L32(lane, 0x138) : 0);
-        double expect = (tick_at(transport, now) - anchor_tick) * (double)length / (double)clip_ticks;
+    double speed_now = ratio, expect;
+    if (!launching && !priming && ratio == want &&
+        lane_expect(clip, lane, transport, anchor_tick, length, &expect)) {
         double err = wrap_err(expect - src_pos(), length);
         if (err > 4800. || err < -4800.) {
             double at = std::fmod(expect, (double)length);
             if (at < 0)
                 at += length;
-            launch_voice(sample, length, stereo, (int)at);
+            launch_at(sample, length, stereo, (int)at);
         } else {
             // PI on the source-frame error, tuned with the ring's ~8-block delay in the loop
             // (bench): 2 ms of error asks the full 2 %, the integral takes over a steady
@@ -735,7 +706,7 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
             speed_now = ratio * (1. + c);
         }
     }
-    cur_ratio = (float)speed_now;
+    cur_ratio = (float)(speed_now / pitch);   // Bungee's speed: the ring is read `pitch` times faster
 
     // Launch pre-delay (lane+0x138: where in the block the note starts): silence before it.
     static float mono_r[SUB];   /* a buffer without a right plane: play() still writes one */
@@ -749,25 +720,15 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         play(dl + at, dr ? dr + at : mono_r, k);
     }
 
-    // As stock: the amp envelope once the pre-delay is over (R as the buffer has it, as stock
-    // passes it), then the pad filter, then the mix.
+    // As stock: the pad's Level and pan (the grain reader's step), the amp envelope once the
+    // pre-delay is over (R as the buffer has it, as stock passes it), then the pad filter, the mix.
+    lane_gain(clip, lane, &gain, dl, dr, n, snap);
     if (!L32(lane, 0x138))
         FW_ENV_APPLY((void *)(lane + 0x258), dl, dr, n);
 
     // Pad feedback, as stock's lane render posts it: "started" once a quantised launch's delay is
     // over, the playhead every block.
-    if (!L32(lane, 0x138) && L32(lane, 0xD8) > 0) {
-        int g = L32(lane, 0xC8);
-        unsigned gr = clip + (unsigned)g * 0x70u;
-        if (g >= 0 && g <= 3 && L8(gr, 0x6C)) {
-            uint32_t m[6] = { 0x1Du, *(volatile uint32_t *)(clip + 0x248), *(volatile uint32_t *)(clip + 0x18),
-                              *(volatile uint32_t *)(*(volatile uint32_t *)(clip + 0x24) + 0x24), 0, 0 };
-            FW_POST((void *)(ctx + OUTBOX), m);
-            if (transport)
-                FW_TICK_AT((int64_t *)(lane + 0x140), transport, from);
-            L8(gr, 0x6C) = 0;
-        }
-    }
+    lane_post_started(clip, lane, ctx, from);
     double here = src_pos();
     if (!loops && here >= length) {
         // Loop off, or Trigger: stock stops at the end of the file. Bungee reads wrap, so stop here.
@@ -781,43 +742,14 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         double at = std::fmod(here, (double)length);
         if (at < 0)
             at += length;
-        uint32_t pos = (uint32_t)at;
-        if (pos != *(volatile uint32_t *)(clip + 0x248)) {
-            uint32_t m[6] = { 0x4Au, 0, *(volatile uint32_t *)(clip + 0x18),
-                              *(volatile uint32_t *)(*(volatile uint32_t *)(clip + 0x24) + 0x24), pos, 0 };
-            *(int16_t *)&m[5] = (int16_t)(at * 1000. / length);
-            FW_POST((void *)(ctx + OUTBOX), m);
-            *(volatile uint32_t *)(clip + 0x248) = pos;
-        }
+        lane_post_pos(clip, ctx, at, length);
     }
     FW_BUF_ENV((void *)(lane + 0x14c), scratch);
     FW_BUF_MIX((void *)mix, scratch);
 
     // End of voice, as stock: the envelope finished (stop, note-off, mute), a quantised release
     // came due, or the grains were stopped.
-    bool ended = false;
-    if (L8(lane, 0x25C) == 5) {
-        lane_end(clip, lane, true);
-        ended = true;
-    } else {
-        if (L8(lane, 0x134)) {
-            if (L32(lane, 0x130) >= n) {
-                L32(lane, 0x130) -= n;
-            } else {
-                if (L8(lane, 0x135))
-                    FW_ENV_FAST((void *)(lane + 0x258));
-                else
-                    FW_ENV_REL((void *)(lane + 0x258));
-                FW_ENV_REL((void *)(lane + 0x258));
-                L8(lane, 0x134) = 0;
-            }
-        }
-        if (L8(lane, 9) && L32(lane, 0xD8) == 0) {
-            lane_end(clip, lane, false);
-            ended = true;
-        }
-    }
-    if (ended) {
+    if (lane_finish(clip, lane, n)) {
         stop_voice();
         set_label("Bungee");
         lbl_blocks = 0;
