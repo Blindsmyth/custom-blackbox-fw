@@ -26,6 +26,26 @@
 .equ LANE0,       0x260
 .equ LANE_STRIDE, 0x410
 
+@ Warp Rubber (3.1.R only: 3.1.9-mix-rubber/rubber_cave.S sets WARP_RUBBER).
+@ List is Stretch / Rubber only (no Repitch/Smooth/…). Value 1 hands a Clip's per-lane
+@ render to Rubber Band in flash bank 2 (tools/stretch/rubber, tools/bank2).
+.ifdef WARP_RUBBER
+.ifdef WARP_KEEP_REPITCH
+.equ WARP_RUBBER_V, 2               @ Stretch / Repitch / leaf (the Bungee build with --with-repitch)
+.else
+.equ WARP_RUBBER_V, 1
+.endif
+.equ SM_BASE,     0x38007000        @ RbVoice (tools/stretch/rubber/rubber.h)
+.equ SM_OWNER,    4
+.equ SM_RESET,    20
+.equ SM_BLOCK,    24
+.equ SM_LABEL,    32
+.equ SM_PREV,     72                @ RbVoice.prev_owner: the Clip a launch took the voice from
+.equ SM_AGE,      RP_STATE + 0x110  @ lane calls since the voice owner last mixed
+.equ LANE0,       0x260
+.equ LANE_STRIDE, 0x410
+.endif
+
 .global hook_register
 .global hook_template
 .global hook_clip_def
@@ -37,6 +57,9 @@
 .global hook_grain
 .global hook_lane
 .global state_init
+.ifdef WARP_RUBBER
+.global hook_lane
+.endif
 
 .thumb_func
 hook_register:
@@ -52,7 +75,15 @@ hook_register:
     movw    r1, #ID_REPITCH
     adr     r2, title_repitch
     adr     r3, labels_repitch
+.ifdef WARP_RUBBER
+.ifdef WARP_KEEP_REPITCH
+    movs    r4, #3                  @ Stretch, Repitch, leaf
+.else
+    movs    r4, #2                  @ Stretch, Rubber
+.endif
+.else
     movs    r4, #6
+.endif
     adr     r5, xml_repitch
     str     r4, [sp]
     str     r5, [sp, #4]
@@ -78,6 +109,12 @@ state_init:
     cmp     r2, #0x100
     blo     1b
 2:
+.ifdef WARP_RUBBER
+.ifdef WARP_RUBBER
+    @ Every boot: reset the Rubber voice, check bank 2, boot Rubber Band if it is intact.
+    bl      rb_pair
+.endif
+.else
     @ SRAM4 is random after power-on. Without this, SM_OWNER is garbage and
     @ hook_lane always falls through to stock grains (Smooth/Snap/Vari never run).
     ldr     r0, =SM_BASE
@@ -93,6 +130,7 @@ state_init:
     beq     3f
     bl      smooth_init
 3:
+.endif
     pop     {pc}
 
 .thumb_func
@@ -104,6 +142,12 @@ hook_template:
     movw    r1, #ID_REPITCH
     movs    r2, #0
     call    PARAM_ADD
+.ifdef MIX_EXT
+    mov     r0, r4                  @ 3.1.Q: Env Trig (adsr.S), default Note
+    movw    r1, #0x1A2
+    movs    r2, #0
+    call    PARAM_ADD
+.endif
     pop     {r4, pc}
 
 .thumb_func
@@ -160,6 +204,12 @@ hook_post:
     bl      pack_key_unpacked
     bl      flag_write
 1:
+.ifdef MIX_EXT
+    ldr     r1, [sp, #4]            @ 3.1.Q: Env Trig (adsr.S)
+    ldr     r2, [sp, #8]
+    ldr     r3, [sp, #12]
+    bl      envtrig_post
+.endif
     pop     {r0, r1, r2, r3, lr}
     push    {lr}
     sub     sp, #0x1C
@@ -171,7 +221,13 @@ hook_set:
     push    {r0, r1, r2, r3, lr}
     movw    r3, #ID_REPITCH
     cmp     r1, r3
+.ifdef MIX_EXT
+    beq     3f
+    movw    r3, #0x1A2              @ 3.1.Q: Env Trig, added like Warp when a preset lacks it
+    cmp     r1, r3
+.endif
     bne     1f
+3:
     bl      bag_has
     cmp     r0, #0
     bne     1f
@@ -201,6 +257,18 @@ hook_clip_param:
     bl      flag_write
     pop     {r0, r1, r2, r3, r4, pc}
 1:
+.ifdef MIX_EXT
+    movw    r3, #0x1A2              @ 3.1.Q: Env Trig (adsr.S), swallowed like Warp
+    cmp     r4, r3
+    bne     2f
+    ldr     r4, [r2, #0x10]
+    ldr     r1, [r0, #0x18]
+    bl      pack_key_unpacked
+    mov     r0, r4
+    bl      envtrig_write
+    pop     {r0, r1, r2, r3, r4, pc}
+2:
+.endif
     pop     {r0, r1, r2, r3, r4, lr}
     push    {r4, r5, r6, r7, lr}
     ldr.w   lr, [r2, #0xc]
@@ -216,6 +284,12 @@ hook_rate:
     ldrb    r0, [r4, #CLIP_FLAG]
     cmp     r0, #1
     beq     2f
+.ifdef WARP_RUBBER
+.ifdef WARP_RUBBER
+    cmp     r0, #WARP_RUBBER_V
+    beq     2f
+.endif
+.else
     cmp     r0, #2
     beq     2f
     cmp     r0, #3
@@ -224,6 +298,7 @@ hook_rate:
     beq     2f
     cmp     r0, #5
     beq     3f
+.endif
     ldr     r1, [r4, #0x18]
     bl      pack_key_unpacked
     bl      flag_read
@@ -231,12 +306,20 @@ hook_rate:
     beq     1f
     cmp     r0, #1
     beq     1f
+.ifdef WARP_RUBBER
+.ifdef WARP_RUBBER
+    cmp     r0, #WARP_RUBBER_V
+    beq     1f
+.endif
+    b       3f
+.else
     cmp     r0, #2
     beq     1f
     cmp     r0, #3
     beq     1f
     cmp     r0, #4
     bne     3f
+.endif
 1:
     strb    r0, [r4, #CLIP_FLAG]
     cmp     r0, #5
@@ -270,6 +353,23 @@ go_stock_rate:
 hook_main_rate:
     push    {r0, r1, lr}
     ldrb    r0, [r4, #CLIP_FLAG]
+.ifdef WARP_RUBBER
+    @ Rubber: a new grain is a new launch, so the voice restarts (rubber.cpp reset).
+    @ The latest launch takes the voice at once, so a choke switch between two leaf Clips has
+    @ no gap: the leaf ends the previous owner's lanes on its next mix (SM_PREV).
+    cmp     r0, #WARP_RUBBER_V
+    bne     1f
+    ldr     r1, =SM_BASE
+    movs    r0, #1
+    str     r0, [r1, #SM_RESET]
+    ldr     r0, [r1, #SM_OWNER]
+    cmp     r0, r4
+    beq     2f
+    str     r0, [r1, #SM_PREV]
+    str     r4, [r1, #SM_OWNER]
+    b       2f
+1:
+.else
     cmp     r0, #2
     beq     0f
     cmp     r0, #3
@@ -282,6 +382,7 @@ hook_main_rate:
     str     r0, [r1, #SM_RESET]
     b       2f
 1:
+.endif
     cmp     r0, #1
     bne     2f
     addw    r0, r4, #CLIP_SCALE
@@ -289,6 +390,7 @@ hook_main_rate:
     vmul.f32 s15, s15, s0
 2:
     vstr    s15, [r3, #0x48]
+.ifndef WARP_RUBBER
     ldrb    r0, [r4, #CLIP_FLAG]
     cmp     r0, #5
     bne     3f
@@ -302,6 +404,7 @@ hook_main_rate:
     str     r0, [r3, #0x54]
     str     r0, [r3, #0x5c]
 3:
+.endif
     pop     {r0, r1, pc}
 
 @ Slicer FUN_08065290 has 10 args (6 on the stack). Do not push before the
@@ -326,8 +429,15 @@ grain_after:
     cmp     r0, #0
     blt     1f
     ldrb    r2, [r1, #CLIP_FLAG]
+.ifdef WARP_RUBBER
+.ifdef WARP_RUBBER
+    cmp     r2, #WARP_RUBBER_V      @ Rubber on Slicer: stock grains, unscaled
+    beq     1f
+.endif
+.else
     cmp     r2, #5
     beq     2f
+.endif
     cmp     r2, #1
     bne     1f
     movs    r2, #0x70
@@ -356,15 +466,33 @@ grain_after:
 1:
     bx      lr
 
+.ifdef WARP_RUBBER
+@ Per-lane render FUN_080667B8(clip, ?, lane, ...; mix = arg 6, ctx = arg 7). Rubber on a Clip
+@ (not Slicer) renders the whole clip into the mix once per block from the voice owner's lane-0
+@ call and skips the stock grains, but only once bank 2 is paired and booted (rb_ready).
+@ One voice: a second Rubber pad plays stock grains until the first lets go; an owner that
+@ stops rendering (Warp changed, preset reload, clip freed) is replaced after 3 missed calls.
+.else
 @ Per-lane render. Smooth (2) / Snap (3) / Vari (4) on a Clip write one mix
 @ and return. Slicer, Stretch, Repitch, and Grain (5) fall through to stock
 @ grains (Grain only rewrote the window in hook_main_rate / grain_after).
 @ One shared SM_BASE voice: a second Smooth/Snap/Vari pad keeps stock grains.
+.endif
 .thumb_func
 hook_lane:
     push    {r0, r1, r2, r3, r4, lr}
     ldr     r4, [sp]
     ldrb.w  r0, [r4, #CLIP_FLAG]
+.ifdef WARP_RUBBER
+    cmp     r0, #WARP_RUBBER_V
+    bne     9f
+    ldrb.w  r0, [r4, #0x254]            @ Slicer: stock grains
+    cmp     r0, #0
+    bne     9f
+    bl      rb_ready
+    cmp     r0, #0
+    beq     9f
+.else
     cmp     r0, #2
     beq     5f
     cmp     r0, #3
@@ -404,6 +532,7 @@ hook_lane:
     mov     r0, r1
     bl      vari_init
 0:
+.endif
     addw    r0, r4, #LANE0
     ldr     r2, [sp, #8]
     cmp     r2, r0
@@ -437,12 +566,20 @@ hook_lane:
     ldr     r3, [r1, #SM_OWNER]
     cmp     r3, r4
     beq     4f
+.ifdef WARP_RUBBER
+    ldr     r0, [r1, #SM_PREV]
+    cmp     r0, r4
+    beq     8f                          @ lost the voice to a later launch: silent until ended
+    cmp     r3, #0
+    beq     12f
+.else
     cmp     r3, #0
     beq     12f
     @ The owner only lets go from its own lane-0 call with both lanes idle.
     @ If it stopped rendering first (Warp changed, preset reload, clip freed)
     @ the slot stayed taken and every Smooth pad played stock grains. Take it
     @ once the owner has missed a few blocks.
+.endif
     ldr     r0, =SM_AGE
     ldr     r3, [r0]
     adds    r3, #1
@@ -461,6 +598,11 @@ hook_lane:
     str     r3, [r1, #SM_BLOCK]
     ldr     r0, [sp]            @ clip
     ldr     r1, [sp, #8]        @ lane
+.ifdef WARP_RUBBER
+    ldr     r2, [sp, #28]       @ mix (arg 6)
+    ldr     r3, [sp, #32]       @ ctx (arg 7)
+    bl      rb_mix
+.else
     ldr     r2, [sp, #28]       @ mix (param_6)
     ldr     r3, [sp, #32]       @ ctx (param_7)
     ldrb.w  r4, [r0, #CLIP_FLAG]
@@ -475,6 +617,7 @@ hook_lane:
     b       8f
 11:
     bl      vari_mix
+.endif
 8:
     pop     {r0, r1, r2, r3, r4, pc}
 9:
@@ -563,8 +706,21 @@ str_grain:
 .align 2
 labels_repitch:
     .word   str_stretch
+.ifdef WARP_RUBBER
+.ifdef WARP_KEEP_REPITCH
+    .word   str_repitch
+.endif
+    .word   SM_BASE + SM_LABEL          @ RAM: "Rubber", "Rubber!" (bank 2 missing) or "Rubber 54%"
+.else
     .word   str_repitch
     .word   str_smooth
     .word   str_snap
     .word   str_vari
     .word   str_grain
+.endif
+.ifdef WARP_RUBBER
+.align 2
+.global warp_leaf_v
+warp_leaf_v:                            @ the leaf's Warp value, for the bench
+    .word   WARP_RUBBER_V
+.endif

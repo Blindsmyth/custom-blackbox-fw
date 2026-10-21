@@ -71,3 +71,7 @@ That is how 3.1.M became 3.1.N. On the device, every preset operation failed whi
 - `dosfstools` and `mtools` for the bench card images.
 - Ghidra and openjdk@21 (Homebrew) for the analysis.
 - clang for building `cave.S`.
+
+## Gotcha: unaligned LDM
+
+The Cortex-M7 hard-faults on an LDM/STM/LDRD/STRD at an address that isn't 4-byte aligned, even where a plain LDR would be fine. Unicorn executes it anyway, so the bench passes. Any word table a stock function reads (rects, vtables) needs `.align 2` before it, especially after `.hword` tables. 3.1.Q crashed on FX → Return because `fxr_bar_rect` followed a 5-halfword table; `firmware/patches/3.1.9-folders-repitch-mix/build_patch.py` now checks listed tables.

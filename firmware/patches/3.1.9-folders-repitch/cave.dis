@@ -205,7 +205,7 @@
 0x080f20ba: pop      {r4, r5, r6, pc}
 0x080f20bc: push     {r0, lr}
 0x080f20be: bl       #0x80f1e80
-0x080f20c2: bl       #0x80f2c98
+0x080f20c2: bl       #0x80f2cb4
 0x080f20c6: pop.w    {r0, lr}
 0x080f20ca: ldr.w    ip, [pc, #0x698]
 0x080f20ce: bx       ip

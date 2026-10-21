@@ -364,7 +364,9 @@ cache_add:
 fm_boot:
     push {r0, lr}
     bl fm_init
+.ifndef WARP_RUBBER
     bl sl_init
+.endif
     pop {r0, lr}
     ldr r12, =BOOT_NEXT
     bx r12
@@ -575,12 +577,14 @@ hook_mark:
 hook_dotdot:
     push {r0, r1, r2, r4, r5, lr}
     bl ensure
-    add r0, r0, #S_BROWSE
+.ifndef MIX_EXT
+    add r0, r0, #S_BROWSE                   @ 3.1.Q: no ".." row, the ^ button goes up (pset.S)
     bl is_top
     cbnz r0, 1f
     mov r0, r9
     ldr r1, =s_dotdot
     call LIST_ADD
+.endif
 1:
     bl ensure
     add r1, r0, #S_BROWSE
@@ -919,6 +923,37 @@ hook_ui_load:
 @ "..") so it still works if S_BROWSE was reset. Returns 0 if it posted.
 .thumb_func
 folder_back:
+.ifdef MIX_EXT
+@ 3.1.Q: on the preset screen (7) below the top level, BACK / ^ go up. The button scan and
+@ App_HandleInput type 7 both call this for one press, and the browse path only changes once
+@ pcmStreamer has run the check, so a second call within 300 ms is ignored.
+    push {r4, lr}
+    ldr r0, =0x24020088 + 0x8CA4            @ App screen byte
+    ldrb r0, [r0]
+    cmp r0, #7
+    bne 1f
+    bl ensure
+    add r0, r0, #S_BROWSE
+    bl is_top
+    cbnz r0, 1f
+    ldr r0, =0x24015CE4                     @ uwTick
+    ldr r0, [r0]
+    ldr r1, =0x38005180                     @ SRAM4: tick of the last up
+    ldr r2, [r1]
+    subs r2, r0, r2
+    cmp r2, #300
+    blo 2f
+    str r0, [r1]
+    ldr r0, =s_dotdot
+    movs r1, #0
+    bl post_check
+2:
+    movs r0, #0
+    pop {r4, pc}
+1:
+    movs r0, #1
+    pop {r4, pc}
+.else
     push {r4, lr}
     sub sp, #0x100
     ldr r0, =PM
@@ -943,6 +978,7 @@ folder_back:
     movs r0, #1
     add sp, #0x100
     pop {r4, pc}
+.endif
 
 @ Replaces ui_post_event_up for type-2 key 0x7f. Uses RequestList, not cmd 0x30: BACK
 @ runs in the key handler, and a custom command was easy to miss on the device.
@@ -1166,7 +1202,9 @@ s_presetxml:
 .ltorg
 
 .include "repitch.S"
+.ifndef WARP_RUBBER                     @ 2048 slices grow into SRAM1+2, which a bank-2 leaf owns
 .include "slice.S"
+.endif
 
 .align 2
 .ltorg

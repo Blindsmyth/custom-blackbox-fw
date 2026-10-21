@@ -1,0 +1,177 @@
+diff --git a/src/FastPhase.h b/src/FastPhase.h
+new file mode 100644
+index 0000000..0862600
+--- /dev/null
++++ b/src/FastPhase.h
+@@ -0,0 +1,57 @@
++// Blackbox (BUNGEE_FAST_PHASE): the per-bin trig in Stretcher without libm.
++// atan2 as an odd minimax polynomial on [0, 1] with octant folding (max error ~1e-5 rad, under
++// a tenth of one Phase::Type step, 9.6e-5 rad); the unit phasor exp(i r pi / 32768) of an int16
++// rotation by quarter-wave reduction and Taylor polynomials (error ~1e-6). On the Cortex-M7 these
++// replace atan2f/cexpf/sinf/cosf, ~25 % of the render's instructions, all of it libm in flash.
++#pragma once
++
++#include "Phase.h"
++
++#include <complex>
++#include <cstdint>
++#include <numbers>
++
++namespace Bungee::FastPhase {
++
++static inline float atan2(float y, float x)
++{
++	const float ax = x < 0.f ? -x : x, ay = y < 0.f ? -y : y;
++	const float mx = ax > ay ? ax : ay, mn = ax > ay ? ay : ax;
++	if (mx == 0.f)
++		return 0.f;
++	const float z = mn / mx, z2 = z * z;
++	float a = z * (0.99997726f + z2 * (-0.33262347f + z2 * (0.19354346f + z2 * (-0.11643287f + z2 * (0.05265332f + z2 * -0.01172120f)))));
++	if (ay > ax)
++		a = std::numbers::pi_v<float> / 2 - a;
++	if (x < 0.f)
++		a = std::numbers::pi_v<float> - a;
++	return y < 0.f ? -a : a;
++}
++
++// Phase::fromRadians(std::arg(c)), the same truncation.
++static inline Phase::Type fromComplex(std::complex<float> c)
++{
++	return Phase::fromRadians(atan2(c.imag(), c.real()));
++}
++
++// exp(i * rotation * pi / 32768) for an int16 rotation.
++static inline std::complex<float> unit(Phase::Type rotation)
++{
++	const uint16_t u = uint16_t(rotation);
++	const float x = float(u & 0x3fff) * (std::numbers::pi_v<float> / 32768.f), x2 = x * x;
++	const float s = x * (1.f + x2 * (-1.f / 6 + x2 * (1.f / 120 + x2 * (-1.f / 5040 + x2 * (1.f / 362880)))));
++	const float c = 1.f + x2 * (-0.5f + x2 * (1.f / 24 + x2 * (-1.f / 720 + x2 * (1.f / 40320 + x2 * (-1.f / 3628800)))));
++	switch (u >> 14)
++	{
++	case 0:
++		return {c, s};
++	case 1:
++		return {-s, c};
++	case 2:
++		return {-c, -s};
++	default:
++		return {s, -c};
++	}
++}
++
++} // namespace Bungee::FastPhase
+diff --git a/src/Grain.cpp b/src/Grain.cpp
+index 8b120ef..09c9639 100644
+--- a/src/Grain.cpp
++++ b/src/Grain.cpp
+@@ -21,7 +21,13 @@ Grain::Grain(int log2SynthesisHop, int channelCount) :
+ 	request.pitch = 1.;
+ 	Fourier::resize<true>(log2TransformLength, 1, energy);
+ 	Fourier::resize<true>(log2TransformLength, 1, rotation);
++#ifdef BUNGEE_FIXED_PITCH
++	// Blackbox: a partial spans at least two bins (Partials::enumerate), so a 2^k transform's
++	// 2^(k-1)+1 bins hold at most 2^(k-2)+1 of them. 1026 entries, not 4096 (12 KB per grain).
++	partials.reserve((1 << (log2TransformLength - 2)) + 2);
++#else
+ 	partials.reserve(1 << log2TransformLength);
++#endif
+ }
+ 
+ InputChunk Grain::specify(const Request &r, Grain &previous, SampleRates sampleRates, int log2SynthesisHop, double bufferStartPosition, Internal::Instrumentation &instrumentation)
+diff --git a/src/Grains.cpp b/src/Grains.cpp
+index fe428b3..f430b36 100644
+--- a/src/Grains.cpp
++++ b/src/Grains.cpp
+@@ -26,8 +26,13 @@ void Grains::prepare()
+ 	Fourier::resize<true>(log2TransformLength, 1, (*this)[1].energy);
+ 	Fourier::resize<true>(log2TransformLength, 1, (*this)[0].rotation);
+ 	Fourier::resize<true>(log2TransformLength, 1, (*this)[1].rotation);
++#ifdef BUNGEE_FIXED_PITCH
++	(*this)[0].partials.reserve((1 << (log2TransformLength - 2)) + 2); // see Grain::Grain
++	(*this)[1].partials.reserve((1 << (log2TransformLength - 2)) + 2);
++#else
+ 	(*this)[0].partials.reserve(1 << log2TransformLength);
+ 	(*this)[1].partials.reserve(1 << log2TransformLength);
++#endif
+ }
+ 
+ void Grains::rotate()
+diff --git a/src/Input.cpp b/src/Input.cpp
+index 3d4bda0..31d5467 100644
+--- a/src/Input.cpp
++++ b/src/Input.cpp
+@@ -20,11 +20,17 @@ static constexpr float gain = (3 * pi) / (3 * pi + 8);
+ Input::Input(int log2SynthesisHop, int channelCount, Fourier::Transforms &transforms) :
+ 	window(Window::fromFrequencyDomainCoefficients(transforms, log2SynthesisHop + 3, gain / (8 << log2SynthesisHop), {1.f, 0.5f})),
+ 	windowedInput{8 << log2SynthesisHop, channelCount},
++#ifdef BUNGEE_FIXED_PITCH
++	resampled(0, channelCount) // Blackbox: pitch 1, equal rates - input resampling never runs (33 KB)
++#else
+ 	resampled(8 << log2SynthesisHop, channelCount)
++#endif
+ {
+ 	windowedInput.setZero();
+ 	transforms.prepareForward(log2SynthesisHop + 3);
++#ifndef BUNGEE_FIXED_PITCH
+ 	resampled.frameCount = 8 << log2SynthesisHop;
++#endif
+ }
+ 
+ int Input::applyAnalysisWindow(const Eigen::Ref<const Eigen::ArrayXXf> &input, int muteFrameCountHead, int muteFrameCountTail)
+diff --git a/src/Output.cpp b/src/Output.cpp
+index bf6d022..4939e16 100644
+--- a/src/Output.cpp
++++ b/src/Output.cpp
+@@ -10,7 +10,11 @@ namespace Bungee {
+ Output::Output(Fourier::Transforms &transforms, int log2SynthesisHop, int channelCount, int maxOutputChunkSize, float windowGain, std::initializer_list<float> windowCoefficients) :
+ 	synthesisWindow{Window::fromFrequencyDomainCoefficients(transforms, log2SynthesisHop + 2, windowGain, windowCoefficients)},
+ 	inverseTransformed(8 << log2SynthesisHop, channelCount),
++#ifdef BUNGEE_FIXED_PITCH
++	bufferResampled(0, channelCount), // Blackbox: pitch 1 - output resampling never runs (32 KB)
++#else
+ 	bufferResampled(maxOutputChunkSize, channelCount),
++#endif
+ 	lappedSynthesisBuffer(1 << (log2SynthesisHop + 3), channelCount)
+ {
+ 	transforms.prepareInverse(log2SynthesisHop + 3);
+diff --git a/src/Stretcher.cpp b/src/Stretcher.cpp
+index a56941a..02774ef 100644
+--- a/src/Stretcher.cpp
++++ b/src/Stretcher.cpp
+@@ -4,6 +4,9 @@
+ #define BUNGEE_BASIC_CPP
+ 
+ #include "Stretcher.h"
++#ifdef BUNGEE_FAST_PHASE
++#include "FastPhase.h"
++#endif
+ #include "Assert.h"
+ #include "Instrumentation.h"
+ #include "Resample.h"
+@@ -76,7 +79,11 @@ void Internal::Stretcher::analyseGrain(const float *data, std::ptrdiff_t stride,
+ 		{
+ 			const auto x = transformed.row(i).sum();
+ 			grain.energy[i] = x.real() * x.real() + x.imag() * x.imag();
++#ifdef BUNGEE_FAST_PHASE
++			grain.phase[i] = FastPhase::fromComplex(x);
++#else
+ 			grain.phase[i] = Phase::fromRadians(std::arg(x));
++#endif
+ 		}
+ 
+ 		Partials::enumerate(grain.partials, grain.validBinCount, grain.energy);
+@@ -103,8 +110,13 @@ void Internal::Stretcher::synthesiseGrain(OutputChunk &outputChunk)
+ 
+ 		auto t = temporary.topRows(grain.validBinCount);
+ 
++#ifdef BUNGEE_FAST_PHASE
++		for (int i = 0; i < grain.validBinCount; ++i)
++			t[i] = FastPhase::unit(grain.rotation[i]);
++#else
+ 		t = grain.rotation.topRows(grain.validBinCount).cast<float>() * (std::complex<float>{0, std::numbers::pi_v<float> / 0x8000});
+ 		t = t.exp();
++#endif
+ 
+ 		if (grain.reverse())
+ 			transformed.topRows(grain.validBinCount) = transformed.topRows(grain.validBinCount).conjugate().colwise() * t;

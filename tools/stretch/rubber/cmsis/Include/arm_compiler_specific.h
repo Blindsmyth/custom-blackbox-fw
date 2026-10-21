@@ -1,0 +1,3 @@
+#ifndef ARM_COMPILER_SPECIFIC_H
+#define ARM_COMPILER_SPECIFIC_H
+#endif
