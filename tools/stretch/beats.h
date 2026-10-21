@@ -35,6 +35,8 @@
 #define BEATS_LOOP_MAX  4800  /* longest tail loop (100 ms) */
 #define BEATS_LOOP_MIN  240   /* shortest tail loop (5 ms) */
 #define BEATS_SCRATCH   (BEATS_LOOP_MAX + BEATS_MATCH)
+#define BEATS_BACK      1024  /* a step back past a segment's start by more than this is a jump */
+/* BEATS_LOOP_GROW (device): the longest tail loop grows with the gap, up to this many samples. */
 
 enum { BEATS_LOOP, BEATS_GATE, BEATS_RUNON, BEATS_PINGPONG, BEATS_GRANULAR };
 
@@ -63,6 +65,12 @@ typedef struct BeatsGrain {
     int32_t gated;
     int32_t pp_lo;        /* ping-pong: lower turn point, 0 when not bouncing */
     int32_t cloud;        /* granular fill running */
+    int32_t seg_start;    /* source start of its segment */
+    int32_t lp_state;     /* tail loop search (beats.c loop_step): idle, coarse, fine, done */
+    int32_t lp_lo, lp_hi; /* its candidate range */
+    int32_t lp_L, lp_c1;  /* the next candidate, the last of this pass */
+    int32_t lp_best;
+    float lp_best_s, lp_rr;
     BeatsHead a;          /* playing head */
     BeatsHead b;          /* loop head during a crossfade */
 } BeatsGrain;

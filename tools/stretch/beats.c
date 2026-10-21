@@ -138,65 +138,147 @@ static void cloud_sample(BeatsVoice *v, void *sample, int length, int stereo, Be
 }
 #endif
 
-/* Tail loop length for a segment [start, end): the lag L whose preceding
- * window best matches the window before the end (normalized correlation on
- * L+R), so jumping back by L continues the waveform. 0 = segment too short. */
-static int pick_loop(BeatsVoice *v, void *sample, int length, int stereo,
-                     BeatsReadFn read, int start, int end)
+/* Tail loop search for a grain's segment [start, end): the lag L whose preceding window best
+ * matches the window before the end (normalized correlation on L+R), so jumping back by L continues
+ * the waveform. 0 = segment too short.
+ *
+ * It runs a few candidates per beats_process call from the segment's start on (loop_step), so the
+ * search is spread over the segment instead of costing one block at its tail; the tail finishes
+ * whatever is left (loop_finish). The candidates, their order and the arithmetic are the same as
+ * one search at the tail, so the loop picked is too. */
+enum { LP_IDLE, LP_COARSE, LP_FINE, LP_DONE };
+#define LP_CHUNK 48 /* candidates per read: (LP_CHUNK - 1) x 8 + 2 x BEATS_MATCH scratch floats */
+#define LP_MIN_STEP 8 /* candidates per call at least */
+
+/* count frames of L+R (or L) from pos into dest. */
+static void read_mono(BeatsReadFn read, void *sample, int length, int stereo, float *dest, int pos,
+                      int count)
 {
-    int seg = end - start, lo = seg / 8, hi = seg / 2, span, i, L, best = 0, c0, c1;
-    float best_s = -2.f, *x = v->scratch;
-    if (lo < BEATS_LOOP_MIN)
-        lo = BEATS_LOOP_MIN;
-    if (hi > BEATS_LOOP_MAX)
-        hi = BEATS_LOOP_MAX;
-    if (hi > seg - BEATS_MATCH - v->loop_xf)
-        hi = seg - BEATS_MATCH - v->loop_xf;
-    if (hi < lo)
-        return 0;
-    span = hi + BEATS_MATCH;
-    /* x[span - 1] is the sample just before `end`. */
-    read_wrap(read, sample, length, x, end - span, span, 0);
+    int i;
+    read_wrap(read, sample, length, dest, pos, count, 0);
     if (stereo) {
         float tmp[BEATS_CACHE];
-        for (i = 0; i < span; i += BEATS_CACHE) {
-            int k, n = span - i < BEATS_CACHE ? span - i : BEATS_CACHE;
-            read_wrap(read, sample, length, tmp, end - span + i, n, 1);
+        for (i = 0; i < count; i += BEATS_CACHE) {
+            int k, n = count - i < BEATS_CACHE ? count - i : BEATS_CACHE;
+            read_wrap(read, sample, length, tmp, pos + i, n, 1);
             for (k = 0; k < n; k++)
-                x[i + k] += tmp[k];
+                dest[i + k] += tmp[k];
         }
     }
+}
+
+static void loop_begin(BeatsVoice *v, BeatsGrain *g, void *sample, int length, int stereo,
+                       BeatsReadFn read, float ratio)
+{
+    int seg = g->end - g->seg_start, lo = seg / 8, hi = seg / 2, longest = BEATS_LOOP_MAX, i;
+    float rr = 0.f, *ref = v->scratch;
+#ifdef BEATS_LOOP_GROW
+    /* The loop follows the gap to fill, so it repeats about twice at most: a short loop repeated
+     * many times is heard as a tone (at 1/16 on a 130 BPM Clip below ~87 BPM the gap is already
+     * longer than half a segment, the Lab's longest loop). The candidates are the loops from half
+     * the gap (or the upper half of the range) up to 3/4 of the segment, or BEATS_LOOP_GROW
+     * samples for a coarse Sync at a slow tempo, not BEATS_LOOP_MAX's 100 ms. */
     {
-        const float *ref = x + span - BEATS_MATCH;
-        float rr = 0.f;
-        for (i = 0; i < BEATS_MATCH; i++)
-            rr += ref[i] * ref[i];
-        if (rr < 1e-9f)
-            return (lo + hi) / 2; /* silence: any loop is seamless */
-        for (int pass = 0; pass < 2; pass++) {
-            int step = pass ? 1 : 8;
-            c0 = pass ? best - 8 : lo;
-            c1 = pass ? best + 8 : hi;
-            if (c0 < lo)
-                c0 = lo;
-            if (c1 > hi)
-                c1 = hi;
-            for (L = c0; L <= c1; L += step) {
-                const float *cand = ref - L;
-                float xy = 0.f, yy = 0.f, s;
-                for (i = 0; i < BEATS_MATCH; i++) {
-                    xy += ref[i] * cand[i];
-                    yy += cand[i] * cand[i];
-                }
-                s = yy > 1e-12f ? xy / __builtin_sqrtf(rr * yy) : -1.f;
-                if (s > best_s) {
-                    best_s = s;
-                    best = L;
-                }
+        float gap = (float)seg / ratio - (float)seg;
+        int want = gap > 0.f ? (int)(gap * 0.5f) : 0;
+        if (want > longest)
+            longest = want < BEATS_LOOP_GROW ? want : BEATS_LOOP_GROW;
+        hi = seg / 4 * 3;
+        if (hi > longest)
+            hi = longest;
+        if (want > hi / 2)
+            want = hi / 2;
+        if (lo > hi / 2)
+            lo = hi / 2;            /* a long segment: still a loop, not a gate */
+        if (lo < want)
+            lo = want;
+    }
+#else
+    (void)ratio;
+#endif
+    if (lo < BEATS_LOOP_MIN)
+        lo = BEATS_LOOP_MIN;
+    if (hi > longest)
+        hi = longest;
+    if (hi > seg - BEATS_MATCH - v->loop_xf)
+        hi = seg - BEATS_MATCH - v->loop_xf;
+    g->lp_state = LP_DONE;
+    g->lp_best = 0;
+    if (hi < lo)
+        return;
+    read_mono(read, sample, length, stereo, ref, g->end - BEATS_MATCH, BEATS_MATCH);
+    for (i = 0; i < BEATS_MATCH; i++)
+        rr += ref[i] * ref[i];
+    if (rr < 1e-9f) {
+        g->lp_best = (lo + hi) / 2; /* silence: any loop is seamless */
+        return;
+    }
+    g->lp_rr = rr;
+    g->lp_lo = lo;
+    g->lp_hi = hi;
+    g->lp_L = lo;
+    g->lp_c1 = hi;
+    g->lp_best_s = -2.f;
+    g->lp_state = LP_COARSE;
+}
+
+/* Up to `budget` candidates of grain g's search (budget < 0: all that is left). */
+static void loop_step(BeatsVoice *v, BeatsGrain *g, void *sample, int length, int stereo,
+                      BeatsReadFn read, float ratio, int budget)
+{
+    float *ref = v->scratch, *x = v->scratch + BEATS_MATCH;
+    int have_ref = 0;
+    if (g->lp_state == LP_IDLE)
+        loop_begin(v, g, sample, length, stereo, read, ratio);
+    while (g->lp_state != LP_DONE && budget != 0) {
+        int step = g->lp_state == LP_FINE ? 1 : 8, L0 = g->lp_L, L1, L, count;
+        if (L0 > g->lp_c1) {
+            if (g->lp_state == LP_FINE) {
+                g->lp_state = LP_DONE;
+                break;
+            }
+            g->lp_state = LP_FINE;
+            g->lp_L = g->lp_best - 8 < g->lp_lo ? g->lp_lo : g->lp_best - 8;
+            g->lp_c1 = g->lp_best + 8 > g->lp_hi ? g->lp_hi : g->lp_best + 8;
+            continue;
+        }
+        count = (g->lp_c1 - L0) / step + 1;
+        if (count > LP_CHUNK)
+            count = LP_CHUNK;
+        if (budget > 0 && count > budget)
+            count = budget;
+        L1 = L0 + (count - 1) * step;
+        if (!have_ref) {
+            read_mono(read, sample, length, stereo, ref, g->end - BEATS_MATCH, BEATS_MATCH);
+            have_ref = 1;
+        }
+        /* x[0] is the frame end - BEATS_MATCH - L1: candidate L starts at x + (L1 - L). */
+        read_mono(read, sample, length, stereo, x, g->end - BEATS_MATCH - L1, L1 - L0 + BEATS_MATCH);
+        for (L = L0; L <= L1; L += step) {
+            const float *cand = x + (L1 - L);
+            float xy = 0.f, yy = 0.f, s;
+            int i;
+            for (i = 0; i < BEATS_MATCH; i++) {
+                xy += ref[i] * cand[i];
+                yy += cand[i] * cand[i];
+            }
+            s = yy > 1e-12f ? xy / __builtin_sqrtf(g->lp_rr * yy) : -1.f;
+            if (s > g->lp_best_s) {
+                g->lp_best_s = s;
+                g->lp_best = L;
             }
         }
+        g->lp_L = L1 + step;
+        if (budget > 0)
+            budget -= count;
     }
-    return best;
+}
+
+static int loop_finish(BeatsVoice *v, BeatsGrain *g, void *sample, int length, int stereo,
+                       BeatsReadFn read, float ratio)
+{
+    loop_step(v, g, sample, length, stereo, read, ratio, -1);
+    return g->lp_best;
 }
 
 static int seg_end(const int32_t *starts, int n_starts, int k, int length)
@@ -236,6 +318,8 @@ static void start_grain(BeatsVoice *v, const int32_t *starts, int n_starts,
     g->active = 1;
     g->seg = k;
     g->end = seg_end(starts, n_starts, k, length);
+    g->seg_start = (int)starts[k];
+    g->lp_state = LP_IDLE;
     g->age = launch || seamless ? v->attack : 0;
     g->fade_out = 0;
     g->loop_len = 0;
@@ -288,6 +372,23 @@ void beats_process(BeatsVoice *v, void *sample, int length, int stereo,
         v->cut = cut;
         v->loop_xf = xf;
     }
+    if (v->fill == BEATS_LOOP && v->cur >= 0) {
+        /* The live segment's tail loop: its candidates spread evenly over the calls until the
+         * head reaches the tail (see loop_step). */
+        BeatsGrain *g = &v->g[v->live];
+        if (g->active && !g->gated && g->loop_len == 0 && g->lp_state != LP_DONE) {
+            int left, calls, budget;
+            if (g->lp_state == LP_IDLE)
+                loop_begin(v, g, sample, length, stereo, read, ratio);
+            left = g->lp_state == LP_COARSE ? (g->lp_c1 - g->lp_L) / 8 + 18 : g->lp_c1 - g->lp_L + 1;
+            calls = (g->end - v->loop_xf - g->a.pos) / n;
+            budget = calls > 1 ? (left + calls - 1) / calls : left;
+            if (budget < LP_MIN_STEP)
+                budget = LP_MIN_STEP;
+            if (g->lp_state != LP_DONE)
+                loop_step(v, g, sample, length, stereo, read, ratio, budget);
+        }
+    }
 
     for (i = 0; i < n; i++) {
         float yl = 0.f, yr = 0.f;
@@ -296,8 +397,17 @@ void beats_process(BeatsVoice *v, void *sample, int length, int stereo,
         float p = (float)v->host_i + v->host_f + (float)v->attack * ratio;
         if (p >= (float)length)
             p -= (float)length;
-        if (p < v->lead_prev)
-            v->cur = -2; /* loop wrap: a new pass starts at segment 0 */
+        /* A loop wrap (the position drops by more than half the loop): a new pass starts at
+         * segment 0. A small step back (a host clock's jitter, a lower ratio moving the pre-roll
+         * point back) keeps the segment that plays: restarting it would repeat its first frames
+         * every block, a buzz. A step back past the segment's start by more than BEATS_BACK is a
+         * jump (locate), and seeks. A host that runs forward at a steady ratio (the Lab's) sees none of it. */
+        if (p < v->lead_prev - 0.5f * (float)length)
+            v->cur = -2;
+        else if (v->cur >= 0 && p > v->lead_prev + 0.5f * (float)length)
+            p = v->lead_prev; /* a step back across the loop start: not a jump to the last segment */
+        else if (p < v->lead_prev && p < (float)v->seg_lo && p >= (float)v->seg_lo - BEATS_BACK)
+            p = (float)v->seg_lo;
         v->lead_prev = p;
         if (v->cur < 0 || p >= (float)v->seg_hi || p < (float)v->seg_lo) {
             int k = seg_of(starts, n_starts, p);
@@ -356,8 +466,7 @@ void beats_process(BeatsVoice *v, void *sample, int length, int stereo,
                            due > (float)(g->end - g->a.pos) + 1.f) {
                     /* Out of audio before the next segment: loop the tail or gate. */
                     if (v->fill == BEATS_LOOP && g->loop_len == 0)
-                        g->loop_len = pick_loop(v, sample, length, stereo, read,
-                                                (int)starts[g->seg], g->end);
+                        g->loop_len = loop_finish(v, g, sample, length, stereo, read, ratio);
                     if (v->fill == BEATS_LOOP && g->loop_len > 0) {
                         int xf = v->loop_xf < g->loop_len / 2 ? v->loop_xf : g->loop_len / 2;
                         if (g->a.pos >= g->end - xf) {

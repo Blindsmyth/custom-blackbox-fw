@@ -40,6 +40,7 @@ typedef struct {
     float speed, panrnd;
     int64_t now, base;
     double play;       /* playhead, source frames (unwrapped) */
+    int64_t play_at;   /* the time (now) play is at: the block's start */
     int64_t ref_play, ref_time;
     uint32_t seed;
     GranGrain g[GRAN_SLOTS];

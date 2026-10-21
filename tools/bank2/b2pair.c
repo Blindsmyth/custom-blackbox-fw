@@ -235,13 +235,19 @@ int rb_ready(void)
 
 #define DWT_CYCCNT (*(volatile uint32_t *)0xe0001004u)
 
-/* repitch.S hook_lane, Fill / Slice / Grain (3.1.T): the leaf renders this lane, 1 = done (stock's
- * lane render is skipped), 0 = stock grains (bank 2 not running, no pool, or the leaf declined). */
+/* repitch.S hook_lane, Stutter / Fill / Chop / Grain (3.1.T): the leaf renders this lane, 1 = done
+ * (stock's lane render is skipped), 0 = stock grains (bank 2 not running, no pool, or the leaf
+ * declined). Stutter renders there only with Sync = Slice: any other Stutter lane (every stock
+ * Clip's) returns here, before the stack switch. */
 int rb_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
 {
     const RbVoice *v = (const RbVoice *)RB_VOICE;
     const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
     const volatile RbExt *x;
+    if (*(volatile uint8_t *)(clip + 0xBB1) == 0 &&
+        !(*(volatile uint8_t *)(clip + 0x1F5) && *(volatile uint32_t *)(clip + 0x220) == 0xF0000u &&
+          *(volatile uint32_t *)(clip + 0x224) == 0 && *(volatile int32_t *)(clip + 0x250) > 0))
+        return 0;
     if (!rb_ready() || !h->ext || !v->pool)
         return 0;
     x = (const volatile RbExt *)h->ext;

@@ -1,5 +1,5 @@
 /* The stock Clip lane's voice, for bank-2 code that renders a lane itself instead of stock's
- * grains (bungee.cpp for Bungee, lanes.cpp for Fill / Slice / Grain).
+ * grains (bungee.cpp for Bungee, lanes.cpp for Stutter on slices / Fill / Chop / Grain).
  *
  * The per-lane render FUN_080667B8 (repitch.S hook_lane replaces it for those Clips) does more
  * than play grains: the grain reader FUN_08066454 applies the pad's Level (with velocity and its
@@ -243,7 +243,7 @@ static inline int lane_ticks(unsigned lane, void *transport, double anchor, doub
  * unit comes next: the note start's unit (Start, a cue launch, the editor's marker), Loop End -> Loop
  * Start, End, and a pending hot-cue jump on the next Quant boundary. It does that from stock's lane
  * render, which a lane rendered in bank 2 skips. DeckSeq runs the same sequence for those lanes, by
- * calling deck.c's own deck_limit / deck_wrap_unit at each unit, so Fill, Slice, Grain and Bungee follow
+ * calling deck.c's own deck_limit / deck_wrap_unit at each unit, so Fill, Chop, Grain and Bungee follow
  * the regions and cues as Stutter and Repitch do. Bank 2 calls into the cave directly (one link). */
 #ifdef __cplusplus
 extern "C" {
@@ -262,6 +262,7 @@ typedef struct DeckSeq {
     unsigned unit[SEQ_RING];  /* unit of sequence index i at [i % SEQ_RING] */
     int decided;              /* the last index whose unit is known */
     int stop_at;              /* the index where the note ends (End, Loop off), or -1 */
+    unsigned n_units;         /* units in the file (clip+0x240 + 0x244) */
     double ut;                /* ticks per unit (clip+0x208) */
     float spu;                /* file frames per unit (clip+0x1FC) */
     double units;             /* units since the launch, kept here while there is no clock */
@@ -288,7 +289,8 @@ static inline void seq_start(DeckSeq *q, unsigned clip, unsigned lane)
 {
     unsigned ut = 0;
     int g = L32(lane, 0xC8);
-    q->on = deck_units(clip, &ut) != 0;
+    q->n_units = deck_units(clip, &ut);
+    q->on = q->n_units != 0;
     q->unit[0] = g >= 0 && g <= 3 ? (unsigned)L32(clip + (unsigned)g * 0x70u, 0x64) : 0u;
     q->decided = 0;
     q->stop_at = -1;

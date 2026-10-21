@@ -93,7 +93,7 @@ B2_SOURCES = [RUBBER / "rubber.h"] + [BUNGEE / f for f in ("bungee.cpp", "lane.h
 # 3.1.T's per-lane modes: the Warp Lab's C, built for one voice per lane (beats.h, granular.c).
 LANE_SRC = [STRETCH / "beats.c", STRETCH / "granular.c"]
 LANE_DEFS = ["-DBEATS_NO_CLOUD", "-DBEATS_SHARED_SCRATCH", "-DBEATS_CACHE=32", "-DGRAN_FW_HANN", "-DGRAN_SRC=256",
-             "-DGRAN_NO_TABLES"]
+             "-DGRAN_NO_TABLES", "-DBEATS_LOOP_GROW=24000"]
 if LINEUP:
     B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", *LANE_SRC]
 BANK1_DEFS = ['-DRB_LABEL="Bungee"', f'-DRB_PAYLOAD_FILE="{PAYLOAD}.BIN"']

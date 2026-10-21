@@ -37,12 +37,13 @@
 .equ WARP_REPITCH_V, 1              @ Repitch: the grain rate scaled by the tempo ratio
 .ifdef WARP_RUBBER
 .ifdef WARP_LINEUP
-@ 3.1.T (3.1.9-mix-bungee --lineup): Stutter (stock Stretch) / Fill / Repitch / Slice / Grain /
-@ Bungee. Fill, Slice and Grain render each lane in bank 2 (tools/stretch/bungee/lanes.cpp, rb_lanes);
-@ Bungee is the one-voice leaf, last, so warp_count can leave it off a pad's list.
+@ 3.1.T (3.1.9-mix-bungee --lineup): Stutter (stock Stretch) / Fill / Repitch / Chop / Grain /
+@ Bungee. Fill, Chop and Grain render each lane in bank 2 (tools/stretch/bungee/lanes.cpp, rb_lanes),
+@ and Stutter with Sync = Slice (on a grid rb_lanes declines: stock grains); Bungee is the one-voice
+@ leaf, last, so warp_count can leave it off a pad's list.
 .equ WARP_FILL_V, 1
 .equ WARP_REPITCH_V, 2
-.equ WARP_SLICE_V, 3
+.equ WARP_CHOP_V, 3
 .equ WARP_GRAIN_V, 4
 .equ WARP_RUBBER_V, 5
 .else
@@ -93,7 +94,7 @@ hook_register:
     adr     r3, labels_repitch
 .ifdef WARP_RUBBER
 .ifdef WARP_LINEUP
-    movs    r4, #6                  @ Stutter, Fill, Repitch, Slice, Grain, Bungee
+    movs    r4, #6                  @ Stutter, Fill, Repitch, Chop, Grain, Bungee
 .else
 .ifdef WARP_KEEP_REPITCH
     movs    r4, #3                  @ Stretch, Repitch, leaf
@@ -349,8 +350,8 @@ hook_rate:
     mov     r5, r1
     bl      go_stock_rate
 .ifdef WARP_LINEUP
-    @ Every Warp but Stutter (0) follows the tempo ratio: Repitch scales its grain rate by it,
-    @ Fill / Slice / Grain / Bungee render from it in bank 2.
+    @ Every Warp gets the tempo ratio: Repitch scales its grain rate by it, Fill / Chop / Grain /
+    @ Bungee render from it in bank 2, and so does Stutter on slices (stock grains ignore it).
     ldrb    r0, [r4, #CLIP_FLAG]
     cmp     r0, #0
     bne     2f
@@ -358,7 +359,7 @@ hook_rate:
     bl      pack_key_unpacked
     bl      flag_read
     cmp     r0, #0
-    beq     3f
+    beq     2f
     cmp     r0, #WARP_RUBBER_V
     bhi     3f
     strb    r0, [r4, #CLIP_FLAG]
@@ -590,11 +591,13 @@ hook_lane:
     ldr     r4, [sp]
     ldrb.w  r0, [r4, #CLIP_FLAG]
 .ifdef WARP_LINEUP
-    @ Fill / Slice / Grain on a Clip: each lane renders itself in bank 2 (rb_lanes, 1 = done); a
-    @ Slicer, or bank 2 not running, plays stock grains.
+    @ Stutter / Fill / Chop / Grain on a Clip: each lane renders itself in bank 2 (rb_lanes, 1 =
+    @ done; Stutter only on slices); a Slicer, or bank 2 not running, plays stock grains.
+    cmp     r0, #0
+    beq     20f
     cmp     r0, #WARP_FILL_V
     beq     20f
-    cmp     r0, #WARP_SLICE_V
+    cmp     r0, #WARP_CHOP_V
     beq     20f
     cmp     r0, #WARP_GRAIN_V
     bne     21f
@@ -850,8 +853,8 @@ str_stutter:
 str_fill:
     .asciz  "Fill"
 .align 2
-str_slice:
-    .asciz  "Slice"
+str_chop:
+    .asciz  "Chop"
 .endif
 .align 2
 labels_repitch:
@@ -859,7 +862,7 @@ labels_repitch:
     .word   str_stutter
     .word   str_fill
     .word   str_repitch
-    .word   str_slice
+    .word   str_chop
     .word   str_grain
 .else
     .word   str_stretch

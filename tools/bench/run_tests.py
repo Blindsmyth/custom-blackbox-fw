@@ -2907,7 +2907,7 @@ def rb_leaf(bench):
     Rubber's ("Rubber", "BBRUBBER"). Same machinery, so the same tests; the names differ."""
     img = Path(bench.image_path)
     if img.with_name(img.name.replace("BLACKBOX", "BBWARP")).exists():
-        return "Bungee", "BBWARP"             # 3.1.T: Bungee plus Fill / Slice / Grain
+        return "Bungee", "BBWARP"             # 3.1.T: Bungee plus Fill / Chop / Grain
     if img.with_name(img.name.replace("BLACKBOX", "BBBUNGEE")).exists():
         return "Bungee", "BBBUNGEE"
     return "Rubber", "BBRUBBER"
@@ -2952,7 +2952,7 @@ def t_rubber_absent(bench, res):
     res.check(b.call(bench.sym["rb_ready"]) == 0, "rb_ready is 0")
     labels = bench.sym["labels_repitch"]
     if leaf_v(bench) == 5:                      # 3.1.T
-        want = ["Stutter", "Fill", "Repitch", "Slice", "Grain", rb_name(bench) + "!"]
+        want = ["Stutter", "Fill", "Repitch", "Chop", "Grain", rb_name(bench) + "!"]
     else:
         want = ["Stretch"] + (["Repitch"] if leaf_v(bench) == 2 else []) + [rb_name(bench) + "!"]
     got = [b.cstr(b.u32(labels + 4 * i)) for i in range(len(want))]
@@ -3834,12 +3834,120 @@ def t_lineup_deck(bench, res):
     b.unstub(0x0804436C)
 
 
+def t_lineup_bungee_sync(bench, res):
+    """3.1.T: Bungee at 90 BPM on a 130 BPM Clip (0.69x) under Clip Deck, transport running: a click
+    at every unit lands on the clock from the launch on (Bungee starts where the clock will be at
+    the handoff, not ~17 ms ahead), and through the file's own wrap (last unit -> first is straight
+    on, no relaunch)."""
+    pay = rb_payload(bench)
+    if pay is None or "_emu" not in bench.image_path or "str_stutter" not in bench.sym or "deck_init" not in bench.sym:
+        res.check(True, "3.1.T + Clip Deck emu build only (skipped)")
+        return
+    import math
+    b = bench.b
+    b.stub(0x0804436C, lambda bb: 0xC3000000)
+    b.mu.mem_write(RB_B2, bytes(pay))
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    b.call(bench.sym["rb_load_poll"], limit=2_000_000_000)
+    b.call(bench.sym["deck_init"])
+    if rb_state(bench) != 1:
+        res.check(False, f"bank 2 running ({rb_label(bench)!r})")
+        return
+    bpm, spu, units = 90.0, 48000 * 60 / 130.0 / 4, 16
+    n_src = int(spu * units)
+
+    def click(i):
+        f = i - int(int(i // spu) * spu)
+        return 0.6 * math.exp(-f / 80) * math.sin(2 * math.pi * 1000 * f / 48000) if f < 400 else 0.0
+
+    table = [click(i) for i in range(n_src)]
+    sample, clip, mixbuf, ctx, scratch = 0x2001C000, 0x2001C800, 0x2001E000, 0x2001E100, 0x2001E200
+    planes = (0x2001E400, 0x2001E800)
+    tp = 0x2001EC00
+    out = []
+
+    def pcm_read(bb):
+        dest, count, pos = bb.arg(1), bb.arg(2), bb.arg(3)
+        bb.mu.mem_write(dest, struct.pack(f"<{count}f", *[table[(pos + i) % n_src] for i in range(count)]))
+        return count
+
+    def buf_planes(bb):
+        bb.w32(bb.arg(1), planes[0])
+        bb.w32(bb.arg(2), planes[1])
+
+    def buf_clear(bb):
+        bb.mu.mem_write(planes[0], b"\0" * 1024)
+        bb.mu.mem_write(planes[1], b"\0" * 1024)
+
+    for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: 1),
+                     (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, buf_clear), (0x0804D8E8, lambda bb: 256),
+                     (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
+                     (0x0804DA6C, lambda bb: out.extend(struct.unpack("<256f", bytes(bb.mu.mem_read(planes[0], 1024))))),
+                     *LANE_STUBS):
+        b.stub(addr, fn)
+    b.w32(ctx, tp)
+    b.mu.mem_write(clip, b"\x00" * 0xC00)
+    clip_level(b, clip)
+    b.w32(clip + 0x18, 0x0100)
+    b.w32(clip + 0x24, sample)
+    b.w32(sample + 0x24, 7)
+    b.w32(clip + 0x248, 0xFFFFFFFF)
+    b.mu.mem_write(clip + 0xBB1, bytes([5]))
+    b.mu.mem_write(clip + 0xBB4, struct.pack("<f", bpm / 130.0))
+    b.mu.mem_write(clip + 0xBA8, struct.pack("<q", units * 240))
+    b.mu.mem_write(clip + 0x1F4, b"\x01\x01")
+    b.mu.mem_write(clip + 0x1F8, b"\x02")
+    b.w32(clip + 0x208, 240)
+    b.w32(clip + 0x220, 240)
+    b.w32(clip + 0x230, units * 240)
+    b.w32(clip + 0x240, units)
+    b.w32(clip + 0x210, units)
+    b.mu.mem_write(clip + 0x1FC, struct.pack("<f", float(spu)))
+    for i, v in enumerate((0, POS_END, 0, POS_END)):          # the whole file loops
+        b.call(bench.sym["deck_store_unpacked"], 0x0100, ID_DECK + i, v)
+    lane = clip + 0x260
+    b.mu.mem_write(lane, b"\x00" * 0x260)
+    lane_level(b, lane)
+    b.mu.mem_write(lane, b"\x01")
+    b.w32(lane + 0xD8, 1)
+    b.w32(lane + 0xC8, 0)
+    for o in (0xCC, 0xD0, 0xD4):
+        b.w32(lane + o, 0xFFFFFFFF)
+    b.w32(clip + 0x64, b.call(bench.sym["deck_note_unit"], clip, 0))
+    b.mu.mem_write(lane + 0xE0, struct.pack("<q", 0))
+    b.mu.mem_write(lane + 0x25C, b"\x03")
+    b.w32(RB_VOICE + 4, clip)
+    b.w32(RB_VOICE + 20, 1)
+    per = 3000 / bpm * 240                                     # 8000 output frames per unit
+    now = 0
+    for _ in range(int((units + 6) * per / 256)):              # past the wrap at unit 16
+        b.mu.mem_write(tp, struct.pack("<qqqf", now, 0, 0, bpm))
+        b.mu.mem_write(tp + 0x38, b"\x01")
+        b.call(bench.sym["rb_mix"], clip, lane, mixbuf, ctx, limit=400_000_000)
+        b.call(bench.sym["rb_work"], limit=400_000_000)
+        now += 256
+    offs = {}
+    for i in range(1, units + 5):
+        t0, t1 = int(i * per - per / 2), int(i * per + per / 2)
+        e = [out[t] ** 2 for t in range(t0, t1)]
+        if sum(e) > 1e-6:
+            offs[i] = (t0 + sum(k * x for k, x in enumerate(e)) / sum(e) - (i * per + 40)) / 48.0
+    early = [offs.get(i) for i in range(1, 7)]
+    wrap = [offs.get(i) for i in range(units - 1, units + 5)]
+    res.check(all(o is not None and abs(o) < 4.0 for o in early),
+              f"Bungee at 0.69x is on the clock from the launch: units 1-6 at {[None if o is None else round(o, 1) for o in early]} ms")
+    res.check(all(o is not None and abs(o) < 4.0 for o in wrap),
+              f"... and through the file's wrap: units {units - 1}-{units + 4} at {[None if o is None else round(o, 1) for o in wrap]} ms")
+    b.unstub(0x0804436C)
+
+
 def t_lineup_list(bench, res):
-    """3.1.T: Warp lists Stutter / Fill / Repitch / Slice / Grain / Bungee (the leaf's RAM label last)."""
+    """3.1.T: Warp lists Stutter / Fill / Repitch / Chop / Grain / Bungee (the leaf's RAM label last)."""
     b = bench.b
     words = [b.u32(bench.sym["labels_repitch"] + 4 * i) for i in range(6)]
     names = [bytes(b.mu.mem_read(w, 8)).split(b"\0")[0].decode() for w in words[:5]]
-    res.check(names == ["Stutter", "Fill", "Repitch", "Slice", "Grain"], f"names {names}")
+    res.check(names == ["Stutter", "Fill", "Repitch", "Chop", "Grain"], f"names {names}")
     res.check(words[5] == RB_VOICE + 32, f"Bungee's label is the voice's RAM label ({words[5]:#x})")
     if b.u32(REG_PTR) == 0:
         b.call(PARAM_REGISTER_ALL, 0)
@@ -3847,8 +3955,8 @@ def t_lineup_list(bench, res):
 
 
 def t_lineup_rate(bench, res):
-    """3.1.T hook_rate: every Warp but Stutter gets the tempo ratio (clip+0xBB4), also when the
-    Clip's flag comes from the per-pad table; Stutter keeps 1.0."""
+    """3.1.T hook_rate: every Warp gets the tempo ratio (clip+0xBB4), Stutter too (it renders from it
+    on slices), also when the Clip's flag comes from the per-pad table."""
     b = bench.b
     clip, tempo = 0x2001C800, 0x2001CC00
     b.stub(bench.sym["go_stock_rate"], lambda bb: 0)
@@ -3863,7 +3971,7 @@ def t_lineup_rate(bench, res):
         b.mu.mem_write(clip + 0xBB1, bytes([v]))
         b.call(bench.sym["hook_rate"], clip, tempo)
         got[v] = round(struct.unpack("<f", bytes(b.mu.mem_read(clip + 0xBB4, 4)))[0], 4)
-    res.check(got == {0: 1.0, 1: 0.8, 2: 0.8, 3: 0.8, 4: 0.8, 5: 0.8}, f"ratio per Warp {got}")
+    res.check(got == {0: 0.8, 1: 0.8, 2: 0.8, 3: 0.8, 4: 0.8, 5: 0.8}, f"ratio per Warp {got}")
     b.mu.mem_write(clip + 0xBB1, b"\x00")
     b.call(bench.sym["flag_write"], 4, 4)          # the pad table says Grain (key of pad 0x100)
     b.call(bench.sym["hook_rate"], clip, tempo)
@@ -3873,8 +3981,8 @@ def t_lineup_rate(bench, res):
 
 
 def t_lineup_lanes(bench, res):
-    """3.1.T: Fill, Slice and Grain render a Clip's lane in bank 2 (rb_lanes): segments on the Sync
-    grid locked to the clock, Fill's tail loop and Slice's gaps at a slower tempo, the pad's Level,
+    """3.1.T: Fill, Chop and Grain render a Clip's lane in bank 2 (rb_lanes): segments on the Sync
+    grid locked to the clock, Fill's tail loop and Chop's gaps at a slower tempo, the pad's Level,
     loop off, and Stutter left to stock."""
     pay = rb_payload(bench)
     if pay is None or "_emu" not in bench.image_path or "str_stutter" not in bench.sym:
@@ -3978,7 +4086,7 @@ def t_lineup_lanes(bench, res):
     run(lane, 120)
     w = windows()
     quiet = [i for i, x in enumerate(w) if x < 0.01]
-    res.check(len(quiet) >= 8, f"Slice at 0.8x: gaps at the segment ends ({len(quiet)} silent blocks)")
+    res.check(len(quiet) >= 8, f"Chop at 0.8x: gaps at the segment ends ({len(quiet)} silent blocks)")
     def onsets_of(w):
         on = []
         for i in range(2, len(w)):
@@ -3989,7 +4097,7 @@ def t_lineup_lanes(bench, res):
     onsets = onsets_of(w)
     off = [((o + 128) % 7500) for o in onsets]
     res.check(len(onsets) >= 3 and all(min(x, 7500 - x) < 600 for x in off),
-              f"Slice: segments start on the clock's grid (every 7500 frames; {onsets})")
+              f"Chop: segments start on the clock's grid (every 7500 frames; {onsets})")
 
     # Sync = Slice: the segments are the slice markers (0, 9000, 12000, 21000).
     table = 0x2001D800
@@ -4022,6 +4130,197 @@ def t_lineup_lanes(bench, res):
 
     lane = setup(0)
     res.check(run(lane, 2) == {0}, "Stutter: stock grains (rb_lanes declines)")
+    b.unstub(0x0804436C)
+
+
+def t_lineup_lanes_timing(bench, res):
+    """3.1.T, the unit's reports: Grain starts after a quantised launch's long pre-delay and lands on
+    the clock; Fill keeps playing through a jittery clock (no segment restarts) at a slow tempo, with
+    its tail loop search spread over the segment (no block-sized CPU spike); Stutter on slices runs on
+    like stock Stretch, with the segments at the slices."""
+    pay = rb_payload(bench)
+    if pay is None or "_emu" not in bench.image_path or "str_stutter" not in bench.sym:
+        res.check(True, "3.1.T emu build only (skipped)")
+        return
+    import math
+    from unicorn import UC_HOOK_BLOCK
+    b = bench.b
+    b.stub(0x0804436C, lambda bb: 0xC3000000)
+    b.mu.mem_write(RB_B2, bytes(pay))
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    b.call(bench.sym["rb_load_poll"], limit=2_000_000_000)
+    if rb_state(bench) != 1:
+        res.check(False, f"bank 2 running ({rb_label(bench)!r})")
+        return
+    spu = 48000 * 60 / 130.0 / 4                    # 1/16 of a 130 BPM Clip
+    units = 32
+    n_src = int(spu * units)
+    sample, clip, mixbuf, ctx, scratch = 0x2001C000, 0x2001C800, 0x2001E000, 0x2001E100, 0x2001E200
+    planes = (0x2001E400, 0x2001E800)
+    tp = 0x2001EC00
+    out = []
+    shape = {"f": None}
+
+    def click(i):                                   # a short 1 kHz click at each unit's start
+        f = i - int(int(i // spu) * spu)
+        return 0.6 * math.exp(-f / 80) * math.sin(2 * math.pi * 1000 * f / 48000) if f < 400 else 0.0
+
+    def ramp(i):                                    # each unit rises 0.1 -> 0.9
+        k = int(i // spu)
+        return (0.1 + 0.8 * (i - k * spu) / spu) * math.sin(2 * math.pi * 440 * i / 48000)
+
+    tables = {}
+
+    def pcm_read(bb):
+        dest, count, pos = bb.arg(1), bb.arg(2), bb.arg(3)
+        t = tables[shape["f"]]
+        bb.mu.mem_write(dest, struct.pack(f"<{count}f", *[t[(pos + i) % n_src] for i in range(count)]))
+        return count
+
+    def buf_planes(bb):
+        bb.w32(bb.arg(1), planes[0])
+        bb.w32(bb.arg(2), planes[1])
+
+    def buf_clear(bb):
+        bb.mu.mem_write(planes[0], b"\0" * 1024)
+        bb.mu.mem_write(planes[1], b"\0" * 1024)
+
+    for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: 1),
+                     (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, buf_clear), (0x0804D8E8, lambda bb: 256),
+                     (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
+                     (0x0804DA6C, lambda bb: out.extend(struct.unpack("<256f", bytes(bb.mu.mem_read(planes[0], 1024))))),
+                     *LANE_STUBS):
+        b.stub(addr, fn)
+    b.w32(ctx, tp)
+    now = [0]
+
+    def setup(mode, wave, bpm, predelay=0, sync=1, slices=None):
+        shape["f"] = wave
+        if wave not in tables:
+            tables[wave] = [wave(i) for i in range(n_src)]
+        b.mu.mem_write(clip, b"\x00" * 0xC00)
+        clip_level(b, clip)
+        b.w32(clip + 0x18, 0x107)
+        b.w32(clip + 0x24, sample)
+        b.w32(sample + 0x24, 7)
+        b.w32(clip + 0x248, 0xFFFFFFFF)
+        b.mu.mem_write(clip + 0xBB1, bytes([mode]))
+        b.mu.mem_write(clip + 0xBB4, struct.pack("<f", bpm / 130.0))
+        b.mu.mem_write(clip + 0xBA8, struct.pack("<q", units * 240))
+        b.mu.mem_write(clip + 0x1F4, b"\x01")
+        b.mu.mem_write(clip + 0x1F5, bytes([sync]))
+        b.mu.mem_write(clip + 0x220, struct.pack("<q", 240))
+        b.w32(clip + 0x210, units)
+        b.mu.mem_write(clip + 0x1FC, struct.pack("<f", float(spu)))
+        if slices:
+            table = 0x2001D800
+            b.mu.mem_write(table, struct.pack(f"<{len(slices)}I", *slices))
+            b.mu.mem_write(clip + 0x220, struct.pack("<q", 0xF0000))
+            b.w32(clip + 0x24C, table)
+            b.w32(clip + 0x250, len(slices))
+        lane = clip + 0x260
+        b.mu.mem_write(lane, b"\x00" * 0x260)
+        lane_level(b, lane)
+        b.mu.mem_write(lane, b"\x01")
+        b.w32(lane + 0xD8, 1)
+        b.w32(lane + 0xC8, 0)
+        b.mu.mem_write(lane + 0xE0, struct.pack("<q", now[0]))
+        b.w32(lane + 0x138, predelay)
+        b.mu.mem_write(lane + 0x25C, b"\x03")
+        return lane
+
+    cost = [0]
+    hook = [None]
+
+    def run(lane, blocks, bpm, jitter=0, count=False):
+        out.clear()
+        costs, rets = [], set()
+        rng = 12345
+        if count:
+            hook[0] = b.mu.hook_add(UC_HOOK_BLOCK, lambda mu, a, sz, d: cost.__setitem__(0, cost[0] + sz // 2),
+                                    begin=0x08000000, end=0x081FFFFF)
+        for _ in range(blocks):
+            rng = (rng * 1103515245 + 12345) & 0x7FFFFFFF
+            j = (rng >> 16) % (2 * jitter + 1) - jitter if jitter else 0
+            b.mu.mem_write(tp, struct.pack("<qqqf", now[0] + j, 0, 0, bpm))
+            b.mu.mem_write(tp + 0x38, b"\x01")
+            cost[0] = 0
+            rets.add(b.call(bench.sym["rb_lanes"], clip, lane, mixbuf, ctx, limit=400_000_000))
+            costs.append(cost[0])
+            now[0] += 256
+        if count:
+            b.mu.hook_del(hook[0])
+        return rets, costs
+
+    def rms(xs):
+        return math.sqrt(sum(x * x for x in xs) / max(1, len(xs)))
+
+    # Grain, launched with a 600-frame quantise delay (more than a block): the grains start.
+    lane = setup(4, ramp, 90.0, predelay=600)
+    rets, _ = run(lane, 40, 90.0)
+    loud = sum(1 for i in range(0, len(out) - 255, 256) if rms(out[i:i + 256]) > 0.02)
+    res.check(rets == {1} and rms(out[:512]) == 0.0 and loud >= 30,
+              f"Grain after a 600-frame pre-delay: silent first, then plays ({loud} of 40 blocks)")
+
+    # Grain at 90 BPM: each click's energy centre against where the clock has it.
+    def centres(bpm, first=2):
+        per = 3000 / bpm * 240
+        offs = []
+        i = first
+        while (i + 1) * per < len(out):
+            t0, t1 = int(i * per - per / 2), int(i * per + per / 2)
+            e = [out[t] ** 2 for t in range(t0, t1)]
+            if sum(e) > 1e-6:
+                offs.append((t0 + sum(k * x for k, x in enumerate(e)) / sum(e) - (i * per + 40)) / 48.0)
+            i += 1
+        return offs
+
+    lane = setup(4, click, 90.0)
+    run(lane, int(4 * 48000 / 256), 90.0)
+    offs = centres(90.0)
+    mean = sum(offs) / max(1, len(offs))
+    res.check(len(offs) >= 20 and abs(mean) < 3.0,
+              f"Grain at 0.69x lands on the clock: click centres {mean:+.1f} ms on average over {len(offs)} units "
+              f"(Window 100 spreads them {min(offs):+.0f}..{max(offs):+.0f} ms)")
+
+    # Fill at 70 BPM with the clock jittering +-3 frames: every unit still plays its rise from the start
+    # (a restart each time the clock steps back would hold it at the start's level, a buzz).
+    lane = setup(1, ramp, 70.0)
+    blocks = int(12 * spu / (70 / 130) / 256)
+    _, costs = run(lane, blocks, 70.0, jitter=3, count=True)
+    per = spu / (70 / 130)
+    rises = []
+    for u in range(1, 11):
+        s0 = int(u * per)
+        a, z = rms(out[s0 + 300:s0 + 556]), rms(out[s0 + int(spu) - 600:s0 + int(spu) - 344])
+        rises.append(round(z / max(a, 1e-6), 1))
+    res.check(all(r > 3 for r in rises), f"Fill at 0.54x, clock jitter +-3 frames: each unit rises (end / start {rises})")
+    costs = sorted(costs)
+    res.check(costs[-1] < 200_000, f"Fill's loop search is spread: max {costs[-1]} instructions per block "
+                                   f"(median {costs[len(costs) // 2]}; one search at the tail was ~490k)")
+
+    # Stutter with Sync = Slice: renders here, runs on at 0.69x (no gaps), and starts at the slices.
+    sl = [0, int(3 * spu), int(5 * spu), int(9 * spu)]
+    lane = setup(0, click, 90.0, slices=sl)
+    rets, _ = run(lane, int(14 * spu / (90 / 130) / 256), 90.0)
+    want = [x / (90 / 130) for x in sl[1:]]
+    ons = []
+    for x in want:
+        w = out[int(x) - 400:int(x) + 1200]
+        k = next((i for i, v in enumerate(w) if abs(v) > 0.2), None)
+        ons.append(None if k is None else int(x) - 400 + k)
+    res.check(rets == {1} and all(o is not None and abs(o - x) < 300 for o, x in zip(ons, want)),
+              f"Stutter, Sync = Slice: segments at the slices ({ons}, want {[round(x) for x in want]})")
+    # Run-on: segment 0 (source units 0-2) plays on at 1x past its end, into slice 1's audio: unit 3's
+    # click sounds at output frame 3 x spu, before slice 1 itself is due (3 x spu / 0.69). Chop would
+    # gate there.
+    t = int(3 * spu)
+    w = out[t - 100:t + 600]
+    res.check(max(abs(v) for v in w) > 0.2, "Stutter on slices runs on into the next slice's audio, as stock")
+    lane = setup(0, click, 90.0)
+    rets, _ = run(lane, 2, 90.0)
+    res.check(rets == {0}, "Stutter on a grid: stock grains (rb_lanes declines)")
     b.unstub(0x0804436C)
 
 
@@ -6182,9 +6481,12 @@ def main():
             ("Rubber/Bungee clock lock, pad feedback, pad switch (emu build)", t_bungee_clock_feedback_switch),
             ("Rubber/Bungee Warp list per pad (choke group)", t_warp_list_per_pad),
             *([("Lineup: Warp list", t_lineup_list), ("Lineup: tempo ratio per Warp", t_lineup_rate),
-               ("Lineup: Fill / Slice / Grain lanes (emu build)", t_lineup_lanes),
+               ("Lineup: Fill / Chop / Grain lanes (emu build)", t_lineup_lanes),
+               ("Lineup: Grain pre-delay and sync, Fill under clock jitter, Stutter on slices (emu build)",
+                t_lineup_lanes_timing),
                ("Lineup: Bungee Pitch and Level (emu build)", t_bungee_pitch_level),
-               ("Lineup: Fill / Grain / Bungee follow Clip Deck's loop (emu build)", t_lineup_deck)]
+               ("Lineup: Fill / Grain / Bungee follow Clip Deck's loop (emu build)", t_lineup_deck),
+               ("Lineup: Bungee on the clock at 0.69x, launch and file wrap (emu build)", t_lineup_bungee_sync)]
               if "str_stutter" in sym else []),
             ("Rubber/Bungee sample read retry", t_sd_read_retry),
             ("Rubber cost flat over tempo (emu build)", t_rubber_cost_flat),

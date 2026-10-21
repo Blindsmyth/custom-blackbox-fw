@@ -25,7 +25,7 @@
 #include <cmath>
 #include <cstdint>
 
-#define RB_MIN_RATIO 0.5f
+#define RB_MIN_RATIO 0.25f   /* as Fill / Chop / Grain (lanes.cpp): below it the clock lock is off */
 #define RB_MAX_RATIO 2.0f
 #define RB_BLOCKS_SEC 188    /* 48000 / 256: stats period */
 #define SUB          256     /* frames per audio block */
@@ -77,7 +77,7 @@ extern "C" __attribute__((used, section(".b2head")))
 const RbHeaderInit rb_header = { RB_MAGIC, RB_ID, 0, 0, rubber_boot, rubber_mix, rubber_work, RB_EXT };
 
 // Stock 3.1.9 functions and the stock lane's voice (envelope, Level and pan, pad feedback, end of
-// voice): lane.h, shared with Fill / Slice / Grain (lanes.cpp).
+// voice): lane.h, shared with Fill / Chop / Grain (lanes.cpp).
 #include "lane.h"
 
 // The stock reader is not safe from two tasks (it bumps the stream cache's LRU counter and
@@ -109,7 +109,7 @@ static volatile bool req_stop;              /* the voice ended: render nothing *
 static void *volatile l_sample;              /* the launch's Clip */
 static volatile int l_length, l_stereo;
 static volatile float cur_ratio = 1.f;       /* the speed: the Clip's ratio, clock-corrected */
-static volatile int l_base;                  /* the launch's first source frame (0, or a resync) */
+static volatile int l_base;                  /* Bungee's base: its ring frame 0 is source l_base + START */
 // Which source frames each ring chunk covers (one per grain), for the playhead and the clock lock.
 #define TRACK 8
 static volatile uint32_t tr_start[TRACK];    /* ring frame of the chunk's first frame */
@@ -141,7 +141,8 @@ static double rd_pos;          /* ring frame (fractional) the audio side reads n
 static float a_pitch = 1.f;    /* the Clip's Pitch: the ring is read this many frames per output frame */
 static bool priming;           /* a pitched launch: silence until Bungee's first frames are in */
 static void *a_sample;         /* the Clip the audio side reads (raw launch, crossfade) */
-static int a_length, a_stereo, a_base;
+static int a_length, a_stereo, a_base;   /* a_base: the raw Clip's first source frame (0, or a resync) */
+static int a_lead;             /* a_base - l_base: how far behind the raw Clip Bungee starts */
 static double anchor_tick;     /* the clock tick at the launch's first frame */
 static double lock_i;          /* the clock lock's integral term (removes a steady offset) */
 static bool anchored;
@@ -548,8 +549,12 @@ static void play(float *l, float *r, int n)
 // The source frame (unwrapped) of the frame the audio side plays next.
 static double src_pos()
 {
-    if (launching)
-        return a_base + raw_pos;
+    if (launching) {
+        // The raw Clip, less the part of Bungee's lead it has run up (Bungee takes over a_lead
+        // behind it): the playhead runs on into Bungee's position instead of stepping back.
+        int lead = raw_pos < START ? (int)((int64_t)a_lead * raw_pos / START) : a_lead;
+        return a_base + raw_pos - lead;
+    }
     double r = rd_pos;
     uint32_t cnt = tr_count;
     for (uint32_t i = 0; i < TRACK && i < cnt; i++) {
@@ -558,19 +563,20 @@ static double src_pos()
         if (r >= st && r - st <= (double)tr_n[t] && tr_n[t] > 0)
             return tr_p0[t] + (tr_p1[t] - tr_p0[t]) * (r - st) / tr_n[t];
     }
-    return a_base + START + r * cur_ratio;
+    return a_base - a_lead + START + r * cur_ratio;
 }
 
-static void launch_voice(void *sample, int length, int stereo, int base)
+static void launch_voice(void *sample, int length, int stereo, int base, int lead)
 {
     a_sample = sample;
     a_length = length;
     a_stereo = stereo;
     a_base = base;
+    a_lead = lead;
     l_sample = sample;
     l_length = length;
     l_stereo = stereo;
-    l_base = base;
+    l_base = base - lead;
     req_stop = false;
     raw_pos = 0;
     r_frames = 0;
@@ -586,15 +592,21 @@ static void launch_voice(void *sample, int length, int stereo, int base)
 // primes from `base` itself, and its output starts ~43 ms later.
 static void launch_pitched(void *sample, int length, int stereo, int base)
 {
-    launch_voice(sample, length, stereo, base - START);
+    launch_voice(sample, length, stereo, base - START, 0);
     launching = false;
     priming = true;
 }
 
-static void launch_at(void *sample, int length, int stereo, int base)
+// The raw Clip plays START frames at 1x before the handoff, while the clock moves on only START x
+// ratio. Bungee starts that much further back (its ring frame 0 is where the clock is at the
+// handoff), instead of ~START x (1 - ratio) ahead (13 ms at 0.69x, more at slower tempos) for the
+// ~1 s the 2 % clock lock took to pull it back, after every launch, loop wrap and cue jump. The
+// 128-frame crossfade is then between nearby frames, not the same ones. (Bench: within ~1 ms of
+// the clock from the first unit at 55, 90 and 120 BPM on a 130 BPM Clip.)
+static void launch_at(void *sample, int length, int stereo, int base, float ratio)
 {
     if (a_pitch == 1.f)
-        launch_voice(sample, length, stereo, base);
+        launch_voice(sample, length, stereo, base, (int)((float)START * (1.f - ratio)));
     else
         launch_pitched(sample, length, stereo, base);
 }
@@ -681,7 +693,7 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         if (dseq.on)
             first = seq_unit_frame(&dseq, clip, 0);
 #endif
-        launch_at(sample, length, stereo, first);
+        launch_at(sample, length, stereo, first, ratio);
         anchored = false;
         lock_i = 0;
         snap = true;
@@ -718,11 +730,15 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         if (i > dseq.decided)
             i = dseq.decided;
         if (i > dseq_i) {
-            bool straight = dseq.unit[i % SEQ_RING] == dseq.unit[dseq_i % SEQ_RING] + (unsigned)(i - dseq_i);
+            // Straight on, also from the file's last unit to its first: Bungee's reads wrap there.
+            unsigned next = dseq.unit[dseq_i % SEQ_RING] + (unsigned)(i - dseq_i);
+            if (dseq.n_units)
+                next %= dseq.n_units;
+            bool straight = dseq.unit[i % SEQ_RING] == next;
             dseq_i = i;
             if (!straight && !launching) {
                 double at = std::fmod(seq_pos, (double)length);
-                launch_at(sample, length, stereo, (int)(at < 0 ? at + length : at));
+                launch_at(sample, length, stereo, (int)(at < 0 ? at + length : at), ratio);
             }
         }
         if (dseq.spu * 0.5 < jump)
@@ -743,7 +759,7 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
             double at = std::fmod(expect, (double)length);
             if (at < 0)
                 at += length;
-            launch_at(sample, length, stereo, (int)at);
+            launch_at(sample, length, stereo, (int)at, ratio);
         } else {
             // PI on the source-frame error, tuned with the ring's ~8-block delay in the loop
             // (bench): 2 ms of error asks the full 2 %, the integral takes over a steady

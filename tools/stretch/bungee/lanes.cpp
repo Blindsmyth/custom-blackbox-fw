@@ -1,8 +1,9 @@
-// Warp Fill / Slice / Grain (3.1.T): the Warp Lab's segment player and synced Granular, rendering
-// a Clip's lanes in flash bank 2.
+// Warp Fill / Chop / Grain, and Stutter on slices (3.1.T): the Warp Lab's segment player and
+// synced Granular, rendering a Clip's lanes in flash bank 2.
 //
 // repitch.S hook_lane calls rubber_lanes (through b2pair.c rb_lanes) in the audio task for every
-// lane of a Fill, Slice or Grain Clip, in place of stock's lane render. Unlike Bungee there is no
+// lane of a Stutter, Fill, Chop or Grain Clip, in place of stock's lane render (Stutter only with
+// Sync = Slice: on a grid it declines, and stock's grains play). Unlike Bungee there is no
 // single voice: each lane has its own engine (LANE_SLOTS at once), so any number of pads can use
 // these modes, a relaunch can release on one lane while the new note starts on the other, and a
 // choke group behaves as stock. All of it is cheap enough to run in the audio block itself.
@@ -10,8 +11,10 @@
 //   Fill   tools/stretch/beats.c, Loop tail: segments start on the Sync grid (or at the slices
 //          with Sync = Slice) and play at 1x; at a slower tempo the gap until the next segment is
 //          filled by looping the segment's tail (loop length matched on the waveform).
-//   Slice  the same with Gate: the segment fades out where its audio ends, so a slower tempo
+//   Chop   the same with Gate: the segment fades out where its audio ends, so a slower tempo
 //          leaves a gap, a faster one cuts it (a sliced-loop player retriggering on the grid).
+//   Stutter with Sync = Slice: stock Stretch's run-on (a segment plays on into the next one's
+//          audio until that is due), with the segments at the slices. Stock gates the gap there.
 //   Grain  tools/stretch/granular.c, the stock Granular engine's model, synced: the playhead
 //          scans at the tempo ratio, locked to the clock. Fixed settings, the Warp Lab's for pads
 //          and melodic material: Size 200, Density 1000, Scatter 9, Window 100, Pan Rnd 300.
@@ -35,8 +38,9 @@ void lanes_boot(void);
 #include <cstdint>
 
 #define CLIP_FLAG   0xBB1u      /* repitch.S: the Clip's Warp value */
+#define WARP_STUTTER 0
 #define WARP_FILL   1
-#define WARP_SLICE  3
+#define WARP_CHOP   3
 #define WARP_GRAIN  4
 #define LANE_SLOTS  8           /* lanes rendering at once; a ninth plays stock grains */
 #define STARTS_MAX  2048        /* segment starts per Clip (longer grids are thinned) */
@@ -53,6 +57,7 @@ struct Slot {
     double anchor;              /* clock tick at the note's first frame */
     bool anchored;
     double played;              /* source frames since the launch (unwrapped), the segment clock */
+    bool pending;               /* the note's reset is not passed to the engine yet (launch pre-delay) */
     int seg;                    /* Grain: the segment the playhead last landed on */
     LaneGain gain;
 #ifdef WARP_DECK_SEQ
@@ -75,7 +80,7 @@ struct Pool {
     unsigned key_clip;
     uint32_t key[4];
 #ifdef WARP_DECK_SEQ
-    struct Virt {               /* Fill / Slice under Clip Deck: the virtual file the player reads */
+    struct Virt {               /* Fill / Chop under Clip Deck: the virtual file the player reads */
         void *sample;
         int length;
         unsigned clip;
@@ -114,7 +119,17 @@ void lanes_boot(void)
     p->magic = POOL_MAGIC;
 }
 
-static bool lane_mode(int m) { return m == WARP_FILL || m == WARP_SLICE || m == WARP_GRAIN; }
+// Sync = Slice with slices: the segments are the slice table (clip+0x24C, count +0x250).
+static bool sync_slices(unsigned clip)
+{
+    return L8(clip, 0x1F5) && L32(clip, 0x220) == SYNC_SLICE && L32(clip, 0x224) == 0 && L32(clip, 0x250) > 0;
+}
+
+// The Clip renders here: Fill, Chop, Grain, and Stutter on slices.
+static bool lane_mode(unsigned clip, int m)
+{
+    return m == WARP_FILL || m == WARP_CHOP || m == WARP_GRAIN || (m == WARP_STUTTER && sync_slices(clip));
+}
 
 // This lane's slot, or a free one: never used, its lane off, or its Clip no longer on these modes.
 static Slot *find_slot(Pool *p, unsigned lane)
@@ -124,7 +139,7 @@ static Slot *find_slot(Pool *p, unsigned lane)
             return &p->slot[i];
     for (int i = 0; i < LANE_SLOTS; i++) {
         Slot *s = &p->slot[i];
-        if (!s->lane || !lane_on(s->lane) || !lane_mode(L8(s->clip, CLIP_FLAG))) {
+        if (!s->lane || !lane_on(s->lane) || !lane_mode(s->clip, L8(s->clip, CLIP_FLAG))) {
             s->lane = 0;
             return s;
         }
@@ -138,7 +153,7 @@ static Slot *find_slot(Pool *p, unsigned lane)
 static const int32_t *segments(Pool *p, unsigned clip, int length, int *count)
 {
     bool sync = L8(clip, 0x1F5) != 0;
-    bool slices = sync && L32(clip, 0x220) == SYNC_SLICE && L32(clip, 0x224) == 0 && L32(clip, 0x250) > 0;
+    bool slices = sync_slices(clip);
     uint32_t key[4] = { (uint32_t)sync | (uint32_t)slices << 1, (uint32_t)L32(clip, 0x1FC),
                         (uint32_t)L32(clip, 0x210), slices ? (uint32_t)L32(clip, 0x250) : (uint32_t)length };
     if (p->key_clip == clip && p->key[0] == key[0] && p->key[1] == key[1] && p->key[2] == key[2] &&
@@ -186,7 +201,7 @@ static int seg_of(const int32_t *starts, int n, double pos)
 }
 
 #ifdef WARP_DECK_SEQ
-// Under Clip Deck, Fill and Slice play a virtual file of SEQ_RING units: virtual unit j is the sequence
+// Under Clip Deck, Fill and Chop play a virtual file of SEQ_RING units: virtual unit j is the sequence
 // index i with i % SEQ_RING == j, whatever unit deck.c chose for it. The player's segments, pre-roll
 // and tail loop then land on the right audio after a loop wrap or a cue jump, with the timeline still
 // running straight on. Reads map back to the file here.
@@ -221,6 +236,20 @@ static int virt_read(void *ctx, float *dest, int count, int pos, int chan)
 }
 #endif
 
+// The segment clock into Beats (h in [0, len)), only once it is off by more than HOST_SLACK frames
+// the short way round: Beats runs its own position on at the ratio, so a clock that steps back a
+// few frames (the tempo map's rounding, an external clock) leaves it be instead of moving it back.
+#define HOST_SLACK 64
+
+static void host_sync(BeatsVoice *b, double h, int len)
+{
+    double e = wrap_err(h - ((double)b->host_i + (double)b->host_f), len);
+    if (e > HOST_SLACK || e < -HOST_SLACK) {
+        b->host_i = (int32_t)h;
+        b->host_f = (float)(h - (double)b->host_i);
+    }
+}
+
 static void start_note(Slot *s, Pool *p, unsigned clip, unsigned lane, int mode, void *sample, int length,
                        int stereo)
 {
@@ -233,14 +262,15 @@ static void start_note(Slot *s, Pool *p, unsigned clip, unsigned lane, int mode,
     s->stereo = stereo;
     s->anchored = false;
     s->played = 0.;
+    s->pending = true;
     s->seg = 0;
     if (mode == WARP_GRAIN) {
         gran_init(&s->e.g);
         gran_set(&s->e.g, 200, 1000, 9, 100, 1000, 300, 0, 1);
     } else {
         s->e.b.scratch = p->scratch;
-        beats_init(&s->e.b);
-        s->e.b.fill = mode == WARP_FILL ? BEATS_LOOP : BEATS_GATE;   /* the Lab's other defaults */
+        beats_init(&s->e.b);            /* the Lab's defaults, but the fill */
+        s->e.b.fill = mode == WARP_FILL ? BEATS_LOOP : mode == WARP_CHOP ? BEATS_GATE : BEATS_RUNON;
     }
 }
 
@@ -251,7 +281,7 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         return 0;
     int mode = L8(clip, CLIP_FLAG);
     void *sample = *(void **)(clip + 0x24);
-    if (!lane_mode(mode) || !sample)
+    if (!lane_mode(clip, mode) || !sample)
         return 0;
     int length = FW_PCM_LEN(sample);
     int stereo = FW_PCM_STEREO(sample) ? 1 : 0;
@@ -318,6 +348,8 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         int from = d < n ? d : n;
         L32(lane, 0x138) = d > n ? d - n : 0;
         float *mono_r = p->mono_r;
+        // The note's reset goes with the first engine call that runs (not during a pre-delay).
+        bool first = s->pending;
         if (s->mode == WARP_GRAIN) {
             GranVoice *g = &s->e.g;
             gran_src_buf = p->gran_src;
@@ -325,7 +357,7 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
             for (int i = from; i < n; i += SUB) {
                 int k = n - i < SUB ? n - i : SUB;
                 gran_process(g, sample, length, stereo, (GranReadFn)FW_PCM_READ, dl + i, dr ? dr + i : mono_r,
-                             k, ratio, reset && i == from);
+                             k, ratio, first && i == from);
             }
         } else {
             Pool::Virt *v = &p->virt;
@@ -337,17 +369,20 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
                 v->starts[j] = (int32_t)((float)j * q->spu);
             v->vlen = (int)((float)SEQ_RING * q->spu);
             BeatsVoice *b = &s->e.b;
-            if (!reset) {
+            if (!first) {
                 double h = __builtin_fmod(u, (double)SEQ_RING) * q->spu;
-                b->host_i = (int32_t)h;
-                b->host_f = (float)(h - (double)b->host_i);
+                if (h >= v->vlen)
+                    h -= v->vlen;
+                host_sync(b, h, v->vlen);
             }
             for (int i = from; i < n; i += SUB) {
                 int k = n - i < SUB ? n - i : SUB;
                 beats_process(b, v, v->vlen, stereo, virt_read, v->starts, SEQ_RING, dl + i,
-                              dr ? dr + i : mono_r, k, ratio, reset && i == from);
+                              dr ? dr + i : mono_r, k, ratio, first && i == from);
             }
         }
+        if (from < n)
+            s->pending = false;
         if (!clocked)
             q->units = u + (double)(n - from) * ratio / q->spu;
         lane_gain(clip, lane, &s->gain, dl, dr, n, reset);
@@ -386,6 +421,7 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     int from = d < n ? d : n;
     L32(lane, 0x138) = d > n ? d - n : 0;
     float *mono_r = p->mono_r;
+    bool first = s->pending;            // the note's reset: with the first engine call that runs
     if (s->mode == WARP_GRAIN) {
         GranVoice *g = &s->e.g;
         gran_src_buf = p->gran_src;
@@ -396,32 +432,31 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
                 g->play += err;
         }
         if (n_starts > 1) {
-            // Sync: each segment's start, as the clock reaches it, is where the grains read.
+            // Sync: as the clock reaches each segment, the scan snaps to the clock (it was a block
+            // late when it snapped to the segment's start: the clock is up to a block past it).
             int k = seg_of(starts, n_starts, at);
             if (k != s->seg) {
-                double pass = g->play - __builtin_fmod(g->play, (double)length);
-                g->play = pass + starts[k];
+                g->play += wrap_err(at - __builtin_fmod(g->play, (double)length), length);
                 s->seg = k;
             }
         }
         for (int i = from; i < n; i += SUB) {
             int k = n - i < SUB ? n - i : SUB;
             gran_process(g, sample, length, stereo, (GranReadFn)FW_PCM_READ, dl + i, dr ? dr + i : mono_r, k,
-                         ratio, reset && i == from);
+                         ratio, first && i == from);
         }
     } else {
         BeatsVoice *b = &s->e.b;
-        if (!reset) {
-            // The segment clock into the player (only where segments start: its heads run at 1x).
-            b->host_i = (int32_t)at;
-            b->host_f = (float)(at - (double)b->host_i);
-        }
+        if (!first)
+            host_sync(b, at, length);   // the segment clock (only where segments start: heads run at 1x)
         for (int i = from; i < n; i += SUB) {
             int k = n - i < SUB ? n - i : SUB;
             beats_process(b, sample, length, stereo, (BeatsReadFn)FW_PCM_READ, starts, n_starts, dl + i,
-                          dr ? dr + i : mono_r, k, ratio, reset && i == from);
+                          dr ? dr + i : mono_r, k, ratio, first && i == from);
         }
     }
+    if (from < n)
+        s->pending = false;
     if (!clocked)
         s->played += (double)(n - from) * ratio;
 

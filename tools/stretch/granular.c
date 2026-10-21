@@ -167,7 +167,9 @@ static void grain_start(GranVoice *v, int k, int note_on, int length, float rati
     } else {
         t = v->base + (int64_t)k * s / n + (v->gap ? v->scatter : 0);
     }
-    double centre = v->play + (double)round64((double)(t - v->now) * x);
+    /* Sync: from the time the playhead is at (a grain restarting mid-block is `at` frames past it;
+     * stock's model counts from the block's start, ~2.7 ms late on average). */
+    double centre = v->play + (double)round64((double)(t - (v->sync ? v->play_at : v->now)) * x);
     if (v->window)
         centre += (double)((int64_t)((uint32_t)rnd(v) * (uint32_t)rnd(v)) % v->window) - v->window / 2;
     if (v->root) {
@@ -200,7 +202,11 @@ static void grain_start(GranVoice *v, int k, int note_on, int length, float rati
     g->gr = pan_r[pi];
 #endif
     int64_t lead = t - size / 2 - v->now;
-    int64_t start = (int64_t)centre - round64(x * size / 2.f);
+    /* Stock: the grain starts reading where the playhead is as it starts (t - size / 2), so at its
+     * window's peak it is (1 - Speed) x size / 2 ahead of the playhead. Sync: centred on it, so a
+     * hit plays on the beat at any tempo (at a slower tempo stock's way puts it ~(1 - ratio) x
+     * size / 2 early: 32 ms at Size 200 and 0.69x). */
+    int64_t start = (int64_t)centre - (v->sync ? (int64_t)(size / 2) : round64(x * size / 2.f));
     if (lead > 0) {
         g->delay = (int)lead;
         g->win = 0;
@@ -237,9 +243,11 @@ void gran_process(GranVoice *v, void *sample, int length, int stereo, GranReadFn
         return;
     if (n > GRAN_SRC)
         n = GRAN_SRC;
+    v->play_at = v->now;
     if (reset) {
+        /* The playhead stays where the caller put it (gran_init zeroes it): a synced launch starts
+         * at the clock's position, a Clip Deck Start or a cue at its unit. */
         v->now = 0;
-        v->play = 0.;
         v->seed = 1;
         v->ref_play = 0;
         v->ref_time = 0;
