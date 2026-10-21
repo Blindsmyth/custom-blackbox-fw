@@ -30,3 +30,8 @@ firmware/patches/*/BBRUBBER.BIN
 firmware/patches/*/BBBUNGEE.BIN
 firmware/patches/3.1.9-mix-bungee/repitch/BLACKBOX.BIN
 firmware/patches/3.1.9-mix-bungee/repitch/BBBUNGEE.BIN
+
+# Warp Lab builds (tools/lab/build.sh, rb/build.sh, bungee/build.sh)
+tools/lab/*.wasm
+tools/lab/*/m7/obj/
+tools/lab/*/m7/*.wav
