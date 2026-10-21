@@ -4,6 +4,8 @@ This image is 3.1.Z (preset folders, Clip/Slicer Warp, 2048 slices; see [../3.1.
 
 It also has phase 2 of the Clip overhaul: 8 DJ-style hot cues per Clip pad, played from MIDI notes. [docs/clip-deck.md](../../../docs/clip-deck.md) has the later phases (beat jump, master loop roll).
 
+Preset folder fixes of 2026-10-21 (no dropout entering big folders, marks kept for the last 8 folders, safe Save As in deep folders, errors shown on a failed save) are in this image too; see [../3.1.9-folders-repitch/README.md](../3.1.9-folders-repitch/README.md#folder-fixes-2026-10-21).
+
 ## What it does
 
 Open a Clip pad's waveform page. Stock leaves the four encoders empty on Clip; here they are (the main layer, no popup open):

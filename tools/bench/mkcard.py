@@ -1,4 +1,6 @@
 """Build a small FAT32 card image with a preset tree, using dosfstools + mtools (no mounting).
+build_exfat makes an exFAT image instead (macOS: hdiutil + newfs_exfat, mounted only to fill it
+and to read it back). The other helpers work on either.
 
 Default tree:
   Presets/Alpha/preset.xml
@@ -8,7 +10,10 @@ Default tree:
   Presets/_Test/Two/preset.xml
   Presets/_Test/Sub/Deep/preset.xml
 """
+import contextlib
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 
@@ -51,12 +56,70 @@ def build(path, tree=None, size_mb=64):
     return path
 
 
+# ---- exFAT (the format SDXC cards ship with; FatFs in 3.1.9 has FF_FS_EXFAT = 1)
+def exfat_available():
+    return all(shutil.which(t) for t in ("hdiutil", "newfs_exfat", "fsck_exfat"))
+
+
+def is_exfat(path):
+    with open(path, "rb") as f:
+        return f.read(11)[3:] == b"EXFAT   "
+
+
+def _attach(path, *opts):
+    r = subprocess.run(["hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage", *opts, path],
+                       check=True, capture_output=True, text=True)
+    return re.search(r"/dev/disk\d+", r.stdout).group(0)
+
+
+def _detach(dev):
+    subprocess.run(["hdiutil", "detach", dev], check=True, capture_output=True)
+
+
+@contextlib.contextmanager
+def _mounted(path, readonly=True):
+    with tempfile.TemporaryDirectory() as mnt:
+        dev = _attach(path, "-nobrowse", "-mountpoint", mnt, *(["-readonly"] if readonly else []))
+        try:
+            yield mnt
+        finally:
+            _detach(dev)
+
+
+def build_exfat(path, tree=None, size_mb=256, cluster_kb=32):
+    """An unpartitioned exFAT image with cluster_kb clusters (SD cards use 32-128 KB)."""
+    tree = DEFAULT_TREE if tree is None else tree
+    with open(path, "wb") as f:
+        f.truncate(size_mb << 20)
+    dev = _attach(path, "-nomount")
+    try:
+        run("newfs_exfat", "-c", str(cluster_kb * 2), "-v", "BENCH", dev)
+    finally:
+        _detach(dev)
+    with _mounted(path, readonly=False) as mnt:
+        for rel, content in sorted(tree.items()):
+            dest = os.path.join(mnt, *rel.split("/"))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(content.encode("latin1"))
+    return path
+
+
 def fsck(path):
+    if is_exfat(path):
+        dev = _attach(path, "-nomount")
+        try:
+            r = subprocess.run(["fsck_exfat", "-n", dev], capture_output=True, text=True)
+        finally:
+            _detach(dev)
+        return r.returncode == 0, (r.stdout + r.stderr).strip()
     r = subprocess.run(["fsck.fat", "-n", path], capture_output=True, text=True)
     return r.returncode == 0, (r.stdout + r.stderr).strip()
 
 
 def exists(path, rel):
+    if is_exfat(path):
+        return rel.replace("\\", "/") in listing(path)
     r = subprocess.run(["mdir", "-i", path, "-b", "::/" + rel.replace("\\", "/")],
                        capture_output=True, text=True)
     return r.returncode == 0
@@ -64,6 +127,14 @@ def exists(path, rel):
 
 def listing(path):
     """Every file and directory on the image, as paths like 'Presets/Alpha/preset.xml'."""
+    if is_exfat(path):
+        out = set()
+        with _mounted(path) as mnt:
+            for d, dirs, files in os.walk(mnt):
+                dirs[:] = [n for n in dirs if not n.startswith(".")]
+                for n in dirs + [n for n in files if not n.startswith(".")]:
+                    out.add(os.path.relpath(os.path.join(d, n), mnt).replace(os.sep, "/"))
+        return out
     r = subprocess.run(["mdir", "-i", path, "-/", "-b", "::/"], capture_output=True, text=True, check=True)
     out = set()
     for line in r.stdout.splitlines():
@@ -77,6 +148,10 @@ def listing(path):
 
 
 def read(path, rel):
+    if is_exfat(path):
+        with _mounted(path) as mnt:
+            with open(os.path.join(mnt, *rel.split("/")), "rb") as f:
+                return f.read()
     r = subprocess.run(["mtype", "-i", path, "::/" + rel], capture_output=True, check=True)
     return r.stdout
 

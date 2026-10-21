@@ -5,8 +5,8 @@
 @ stock references and needs no clock enable.
 @   +0x000 magic, +0x004 in_load, +0x008 app pointer, +0x00C Save As dest name,
 @   +0x100 browse path, +0x200 base path, +0x300 / +0x400 name buffers,
-@   +0x500 FILINFO + path scratch (so BuildList does not grow the pcmStreamer stack),
-@   +0x720 cached browse path / valid flag / group-name list.
+@   +0x010 mark-cache globals, +0x500 FILINFO + path scratch (so BuildList does not grow the
+@   pcmStreamer stack), +0x720 mark cache: NSLOTS folders, least recently used one reused.
 @ Both paths start as "Presets", which is the stock behaviour.
 @
 @ Repitch flags sit at 0x38005000 (past S_SIZE 0x4930) so fm_init's memset does not
@@ -15,6 +15,12 @@
 @ App_Update rebuilds the preset list on a timer even on the pads screen. 3.1.O called f_stat
 @ twice per row on every rebuild (4,227 sector reads for 146 rows) on pcmStreamer's 8 KB stack.
 @ 3.1.P stats each folder once per browse path, then reuses the cached "/name" marks.
+@ The scan lists only directories, so a row is a group when <browse>\name\preset.xml is missing:
+@ one f_stat per row. Each f_stat walks from the root, so a first visit to a folder of 88
+@ subfolders still starved sample streaming. Now a folder's marks are kept per folder (a slot
+@ of name hashes: preset / group / pending), BuildList checks at most MARK_INLINE new rows, and
+@ the rest are checked MARK_STEP at a time on idle dispatcher steps (hook_idle), with sample
+@ streaming in between. Marks only change the display: Delete and Clean check the card.
 @
 @ Task rules (docs/map-319.md): FatFs is only called from pcmStreamer (command dispatcher and
 @ BuildList). UI-task hooks only touch RAM and post commands. Card writes only come from the stock
@@ -30,23 +36,34 @@
 .equ S_INLOAD,    0x004
 .equ S_APP,       0x008
 .equ S_SAVENAME,  0x00C
+.equ S_STAMP,     0x010     @ LRU clock
+.equ S_CUR,       0x014     @ slot of the folder the last BuildList showed
+.equ S_BUDGET,    0x018     @ checks left in this BuildList
+.equ S_PEND,      0x01C     @ byte: the shown folder has pending rows (hook_idle runs mark_step)
+.equ S_BPEND,     0x01D     @ byte: this BuildList left rows pending
+.equ S_FOUND,     0x01E     @ byte: mark_step found a group since the last BuildList
+.equ S_SAVEFAIL,  0x01F     @ byte: doc_save failed in this Save / Save As
+.equ S_REFUSED,   0x020     @ byte: Save As / New wrote no preset.xml; load_saved answers its Load
 .equ S_BROWSE,    0x100
 .equ S_BASE,      0x200
 .equ S_NAME,      0x300
 .equ S_NAME2,     0x400
 .equ S_FILINFO,   0x500
 .equ S_PATHBUF,   0x620
-.equ S_CPATH,     0x720
-.equ S_CVALID,    0x820
-.equ S_GCNT,      0x824
-.equ S_GNAMES,    0x828
-.equ GNLEN,       64
-.equ GMAX,        128
-.equ S_PVALID,    0x2828
-.equ S_PGCNT,     0x282C
-.equ S_PPATH,     0x2830
-.equ S_PGNAMES,   0x2930
-.equ S_SIZE,      0x4930
+.equ S_SLOTS,     0x720
+.equ SLOT_HASH,   0x0       @ FNV-1a of the browse path
+.equ SLOT_STAMP,  0x4       @ 0 = empty
+.equ SLOT_COUNT,  0x8
+.equ SLOT_ENT,    0x10      @ words: FNV-1a of the row name, low 2 bits = M_*
+.equ SLOT_SIZE,   0x800
+.equ NSLOTS,      8
+.equ NENT,        508       @ (SLOT_SIZE - SLOT_ENT) / 4
+.equ M_PRESET,    1
+.equ M_GROUP,     2
+.equ M_PEND,      3
+.equ MARK_INLINE, 4
+.equ MARK_STEP,   2
+.equ S_SIZE,      0x4930    @ slots end at 0x4720
 
 .equ PM,          0x2401F508
 .equ SD,          0x240021A4
@@ -56,6 +73,11 @@
 .equ CMD_CHECK,   0x30
 .equ EVT_LOAD,    0x30
 .equ EVT_DONE,    0x27
+.equ EVT_SAVED,   0x26      @ +0x10 != 0: the preset screen shows "<title> Error" (UI event 0x148)
+.equ EVT_LOADED,  3         @ +0x10 = success
+.equ CMD_LOAD,    0x22
+.equ PATH_MAX,    255       @ path_join cuts every path here
+.equ BROWSE_MAX,  0xF1      @ path + name when entering: leaves room for "\x\preset.xml"
 
 .equ BOOT_NEXT,   0x080778D5
 .equ LIST_GET,    0x0804290D
@@ -92,6 +114,11 @@
 .equ STRLEN,      0x080C8E11
 .equ MEMSET,      0x080C8D5F
 .equ MEMCPY,      0x080C8D0D
+.equ DOC_SAVE,    0x08096755
+.equ COPYFILE,    0x08091D81
+.equ CUR_NAME,    0x08097AC9      @ (app, buf): the loaded preset's name
+.equ KB_SET,      0x080C42AD      @ (keyboard, text)
+.equ APP,         0x24020088
 
 .macro call addr
     ldr r12, =\addr
@@ -149,19 +176,11 @@ is_top:
     lsrs r0, r0, #5
     pop {r3, pc}
 
-@ Drops the last component of the browse path, never going above "Presets".
-@ r0 = path. Going up a browse level restores the parent folder's / marks.
+@ Drops the last component of the browse path, never going above "Presets". r0 = path.
 .thumb_func
 pop_comp:
-    push {r4, r5, lr}
+    push {r4, lr}
     mov r4, r0
-    ldr r0, =STATE
-    add r0, #S_BROWSE
-    cmp r4, r0
-    ite eq
-    moveq r5, #1
-    movne r5, #0
-    mov r0, r4
     call STRLEN
 1:
     subs r0, #1
@@ -178,31 +197,27 @@ pop_comp:
     mov r0, r4
     bl set_presets
 3:
-    cbz r5, 4f
-    bl cache_restore
-4:
-    pop {r4, r5, pc}
+    pop {r4, pc}
 
 @ Appends "\name" to the path if it fits. r0 = path, r1 = name. Returns r0 = 1 on success.
+@ The browse path stops at BROWSE_MAX: deeper, no preset.xml path would fit path_join's 255.
 .thumb_func
 push_comp:
     push {r4, r5, r6, lr}
     mov r4, r0
     mov r5, r1
-    ldr r0, =STATE
-    add r0, #S_BROWSE
-    cmp r4, r0
-    bne 0f
-    bl cache_save
-    bl cache_clear
-0:
     mov r0, r4
     call STRLEN
     mov r6, r0
     mov r0, r5
     call STRLEN
     add r0, r6
-    cmp r0, #0xFD
+    ldr r1, =STATE + S_BROWSE
+    cmp r4, r1
+    ite eq
+    moveq r1, #BROWSE_MAX
+    movne r1, #0xFD
+    cmp r0, r1
     bhi 1f
     adds r0, r4, r6
     movs r1, #0x5C
@@ -233,130 +248,289 @@ copy_name:
     mov r0, r4
     pop {r4, pc}
 
-@ Drops the current group-name cache. Clobbers r0-r3, r12.
-.thumb_func
-cache_clear:
-    push {lr}
-    bl ensure
-    movs r1, #0
-    strb r1, [r0, #S_CVALID]
-    str r1, [r0, #S_GCNT]
-    pop {pc}
+@ ---- mark cache (pcmStreamer)
 
-@ Current plus parent slot (rename / delete / new). Clobbers r0-r3, r12.
+@ FNV-1a. r0 = string. Returns r0 = hash. Clobbers r1-r3.
+.thumb_func
+fnv:
+    ldr r1, =0x811C9DC5
+    ldr r3, =0x01000193
+1:
+    ldrb r2, [r0], #1
+    cbz r2, 2f
+    eors r1, r2
+    muls r1, r3, r1
+    b 1b
+2:
+    mov r0, r1
+    bx lr
+
+@ Drops every folder's marks (Save As / Rename / New / Delete change what is on the card).
+@ Clobbers r0-r3, r12.
 .thumb_func
 cache_inval:
     push {r4, lr}
-    bl cache_clear
     bl ensure
+    mov r4, r0
     movs r1, #0
-    ldr r2, =S_PVALID
-    strb r1, [r0, r2]
+    str r1, [r4, #S_CUR]
+    strb r1, [r4, #S_PEND]
+    add r0, r4, #S_SLOTS
+    mov r2, #(NSLOTS * SLOT_SIZE)
+    call MEMSET
     pop {r4, pc}
 
-@ Copy current marks into the parent slot before entering a folder.
+@ Start of a BuildList: S_CUR = the browse path's slot, taking the least recently used one when
+@ it has none, and a fresh check budget. Clobbers r0-r3, r12.
 .thumb_func
-cache_save:
-    push {r4, lr}
+mark_begin:
+    push {r4, r5, r6, r7, r8, lr}
     bl ensure
     mov r4, r0
-    movs r1, #1
-    ldr r2, =S_PVALID
-    strb r1, [r4, r2]
-    ldr r1, [r4, #S_GCNT]
-    ldr r2, =S_PGCNT
-    str r1, [r4, r2]
-    ldr r2, =S_PPATH
-    add r0, r4, r2
-    add r1, r4, #S_BROWSE
-    movs r2, #0xff
-    call STRNCPY
-    ldr r2, =S_PGNAMES
-    add r0, r4, r2
-    add r1, r4, #S_GNAMES
-    mov.w r2, #0x2000
-    call MEMCPY
-    pop {r4, pc}
-
-@ After pop_comp the browse path is the parent. Reuse its marks if we saved them.
-.thumb_func
-cache_restore:
-    push {r4, lr}
-    bl ensure
-    mov r4, r0
-    ldr r2, =S_PVALID
-    ldrb r1, [r4, r2]
-    cbz r1, 1f
-    ldr r2, =S_PPATH
-    add r0, r4, r2
-    add r1, r4, #S_BROWSE
-    call STRCMP
-    cbnz r0, 1f
-    ldr r2, =S_PGCNT
-    ldr r1, [r4, r2]
-    str r1, [r4, #S_GCNT]
-    movs r1, #1
-    strb r1, [r4, #S_CVALID]
-    add r0, r4, #S_GNAMES
-    ldr r2, =S_PGNAMES
-    add r1, r4, r2
-    mov.w r2, #0x2000
-    call MEMCPY
-    add r0, r4, #S_CPATH
-    add r1, r4, #S_BROWSE
-    movs r2, #0xff
-    call STRNCPY
-    pop {r4, pc}
-1:
-    bl cache_clear
-    pop {r4, pc}
-
-@ r0 = name. Returns r0 = 1 when the name is in the group cache.
-.thumb_func
-cache_has:
-    push {r4, r5, r6, lr}
+    add r0, r4, #S_BROWSE
+    bl fnv
     mov r5, r0
-    bl ensure
-    ldr r6, [r0, #S_GCNT]
-    add r4, r0, #S_GNAMES
+    ldr r7, [r4, #S_STAMP]
+    adds r7, #1
+    it eq
+    addeq r7, #1
+    str r7, [r4, #S_STAMP]
+    add r0, r4, #S_SLOTS
+    movs r6, #0
+    mov r8, #NSLOTS
 1:
-    cbz r6, 2f
-    mov r0, r4
-    mov r1, r5
-    call STRCMP
-    cbz r0, 3f
-    add r4, #GNLEN
-    subs r6, #1
+    ldr r3, [r0, #SLOT_STAMP]
+    cbz r3, 2f
+    ldr r2, [r0, #SLOT_HASH]
+    cmp r2, r5
+    beq 4f
+2:
+    cbz r6, 3f
+    ldr r2, [r6, #SLOT_STAMP]
+    cmp r3, r2
+    bhs 5f
+3:
+    mov r6, r0
+5:
+    add r0, r0, #SLOT_SIZE
+    subs r8, #1
+    bne 1b
+    mov r0, r6
+    str r5, [r0, #SLOT_HASH]
+    movs r1, #0
+    str r1, [r0, #SLOT_COUNT]
+4:
+    str r7, [r0, #SLOT_STAMP]
+    str r0, [r4, #S_CUR]
+    movs r1, #MARK_INLINE
+    str r1, [r4, #S_BUDGET]
+    movs r1, #0
+    strb r1, [r4, #S_BPEND]
+    pop {r4, r5, r6, r7, r8, pc}
+
+@ r0 = slot, r1 = name hash with the low 2 bits clear. Returns r0 = entry address, or 0.
+@ Clobbers r2, r3.
+.thumb_func
+slot_find:
+    ldr r2, [r0, #SLOT_COUNT]
+    adds r0, #SLOT_ENT
+1:
+    cbz r2, 2f
+    ldr r3, [r0], #4
+    bic r3, r3, #3
+    cmp r3, r1
+    beq 3f
+    subs r2, #1
     b 1b
 3:
-    movs r0, #1
-    pop {r4, r5, r6, pc}
+    subs r0, #4
+    bx lr
 2:
     movs r0, #0
-    pop {r4, r5, r6, pc}
+    bx lr
 
-@ r0 = name. Stores it in the group cache when there is room.
+@ r0 = slot, r1 = entry word. Returns r0 = entry address, or 0 when the slot is full.
+@ Clobbers r2, r3.
 .thumb_func
-cache_add:
-    push {r4, r5, r6, lr}
-    mov r5, r0
-    bl cache_has
-    cbnz r0, 1f
-    bl ensure
-    ldr r6, [r0, #S_GCNT]
-    cmp r6, #GMAX
+slot_add:
+    ldr r2, [r0, #SLOT_COUNT]
+    cmp r2, #NENT
     bhs 1f
-    adds r1, r6, #1
-    str r1, [r0, #S_GCNT]
-    add r0, r0, #S_GNAMES
-    add r0, r0, r6, lsl #6
-    mov r1, r5
-    movs r2, #(GNLEN - 1)
-    call STRNCPY
-    movs r1, #0
-    strb r1, [r0, #(GNLEN - 1)]
+    adds r3, r2, #1
+    str r3, [r0, #SLOT_COUNT]
+    add r0, r0, #SLOT_ENT
+    add r0, r0, r2, lsl #2
+    str r1, [r0]
+    bx lr
 1:
-    pop {r4, r5, r6, pc}
+    movs r0, #0
+    bx lr
+
+@ r0 = directory row name. Returns r0 = 1 when it is a group folder (no preset.xml). The card is
+@ only read for a name this folder's slot does not know yet, while this BuildList has budget
+@ left; past that the row shows unmarked and stays pending for mark_step. A row that does not
+@ fit a full slot also shows unmarked.
+.thumb_func
+mark_row:
+    push {r4, r5, r6, r7, r8, lr}
+    mov r5, r0
+    bl ensure
+    mov r4, r0
+    ldr r6, [r4, #S_CUR]
+    cmp r6, #0
+    beq 9f
+    mov r0, r5
+    bl fnv
+    bic r7, r0, #3
+    mov r0, r6
+    mov r1, r7
+    bl slot_find
+    cbz r0, 1f
+    ldr r1, [r0]
+    and r1, r1, #3
+    cmp r1, #M_PEND
+    bne 5f
+    mov r6, r0
+    b 2f
+1:
+    mov r0, r6
+    orr r1, r7, #M_PEND
+    bl slot_add
+    cmp r0, #0
+    beq 8f
+    mov r6, r0
+2:
+    ldr r1, [r4, #S_BUDGET]
+    cmp r1, #0
+    beq 7f
+    subs r1, #1
+    str r1, [r4, #S_BUDGET]
+    mov r0, r5
+    bl no_xml
+    cmp r0, #0
+    ite ne
+    orrne r1, r7, #M_GROUP
+    orreq r1, r7, #M_PRESET
+    str r1, [r6]
+    pop {r4, r5, r6, r7, r8, pc}
+7:
+    movs r1, #1
+    strb r1, [r4, #S_BPEND]
+8:
+    movs r0, #0
+    pop {r4, r5, r6, r7, r8, pc}
+5:
+    cmp r1, #M_GROUP
+    ite eq
+    moveq r0, #1
+    movne r0, #0
+    pop {r4, r5, r6, r7, r8, pc}
+9:
+    mov r0, r5
+    pop {r4, r5, r6, r7, r8, lr}
+    b no_xml
+
+@ One idle dispatcher step (command ring empty, S_PEND set). Checks up to MARK_STEP pending rows
+@ of the shown folder; pcmStreamer streams samples between steps. When no row is pending any more
+@ and one was a group, rebuilds the list once so the marks show. r0 = pm.
+@ Reads the display list's names array ({count, cap, names 0x100 each, ptrs, dirty}) in add
+@ order, not list_get: list_get sorts a dirty list, and the UI task sorts it after a rebuild.
+.thumb_func
+mark_step:
+    push {r3, r4, r5, r6, r7, r8, r9, lr}
+    mov r8, r0
+    bl ensure
+    mov r4, r0
+    ldr r6, [r4, #S_CUR]
+    cmp r6, #0
+    beq 8f
+    add r0, r4, #S_BROWSE
+    bl fnv
+    ldr r1, [r6, #SLOT_HASH]
+    cmp r0, r1
+    bne 8f
+    movs r5, #MARK_STEP
+    movs r7, #0
+1:
+    add r0, r8, #0x32C
+    ldr r1, [r0]
+    cmp r7, r1
+    bhs 7f
+    ldr r0, [r0, #8]
+    add r0, r0, r7, lsl #8
+    adds r7, #1
+    ldrb r1, [r0]
+    cmp r1, #0x2F
+    beq 1b
+    bl fnv
+    bic r1, r0, #3
+    mov r0, r6
+    bl slot_find
+    cmp r0, #0
+    beq 1b
+    ldr r1, [r0]
+    and r1, r1, #3
+    cmp r1, #M_PEND
+    bne 1b
+    cmp r5, #0
+    beq 9f
+    subs r5, #1
+    mov r9, r0
+    add r0, r8, #0x32C
+    ldr r0, [r0, #8]
+    subs r1, r7, #1
+    add r0, r0, r1, lsl #8
+    bl no_xml
+    ldr r1, [r9]
+    bic r1, r1, #3
+    cbz r0, 2f
+    orr r1, r1, #M_GROUP
+    movs r0, #1
+    strb r0, [r4, #S_FOUND]
+    b 3f
+2:
+    orr r1, r1, #M_PRESET
+3:
+    str r1, [r9]
+    b 1b
+7:
+    movs r0, #0
+    strb r0, [r4, #S_PEND]
+    ldrb r0, [r4, #S_FOUND]
+    cmp r0, #0
+    beq 9f
+    add r0, r8, #0x394
+    call STR_CSTR
+    mov r1, r0
+    mov r0, r8
+    call BUILDLIST
+    b 9f
+8:
+    movs r0, #0
+    strb r0, [r4, #S_PEND]
+9:
+    pop {r3, r4, r5, r6, r7, r8, r9, pc}
+
+@ Replaces ldr.w r2, [r0, #0x124] at the top of preset_cmd_dispatch (r0 = pm), which pcmStreamer
+@ calls on every loop. With the command ring empty and rows pending, runs one mark_step.
+.thumb_func
+hook_idle:
+    ldr r2, =STATE
+    ldrb r2, [r2, #S_PEND]
+    cbnz r2, 1f
+    ldr.w r2, [r0, #0x124]
+    bx lr
+1:
+    ldr.w r2, [r0, #0x124]
+    ldr.w r3, [r0, #0x120]
+    cmp r2, r3
+    it ne
+    bxne lr
+    push {r0, lr}
+    bl mark_step
+    pop {r0, lr}
+    ldr.w r2, [r0, #0x124]
+    bx lr
 
 @ ---- boot (main, replaces its first call)
 
@@ -462,24 +636,44 @@ stat:
     call FSTAT
     pop {r4, r5, r6, pc}
 
+@ r0 = name (no marker). Returns r0 = 1 when <browse>\name\preset.xml is missing, 0 when it is
+@ there or the path does not fit. One f_stat. Uses SRAM4 scratch, not the stack.
+.thumb_func
+no_xml:
+    push {r4, r5, r6, lr}
+    mov r5, r0
+    bl ensure
+    mov r4, r0
+    add r0, r4, #S_PATHBUF
+    add r1, r4, #S_BROWSE
+    bl copy_name
+    mov r1, r5
+    bl push_comp
+    cbz r0, 1f
+    add r0, r4, #S_PATHBUF
+    ldr r1, =s_presetxml
+    bl push_comp
+    cbz r0, 1f
+    add r0, r4, #S_PATHBUF
+    add r1, r4, #S_FILINFO
+    bl stat
+    cmp r0, #0
+    ite ne
+    movne r0, #1
+    moveq r0, #0
+    pop {r4, r5, r6, pc}
+1:
+    movs r0, #0
+    pop {r4, r5, r6, pc}
+
 @ r0 = name (no marker). Returns r0 = 1 when <browse>\name is a directory without preset.xml.
-@ Uses SRAM4 scratch, not the stack. When the cache matches the browse path this is RAM only.
+@ Reads the card every time, never the mark cache: Delete and Clean refuse group folders by this.
 .thumb_func
 is_group:
     push {r4, r5, r6, lr}
     mov r5, r0
     bl ensure
     mov r4, r0
-    ldrb r1, [r4, #S_CVALID]
-    cbz r1, 3f
-    add r0, r4, #S_CPATH
-    add r1, r4, #S_BROWSE
-    call STRCMP
-    cbnz r0, 3f
-    mov r0, r5
-    pop {r4, r5, r6, lr}
-    b cache_has
-3:
     add r0, r4, #S_PATHBUF
     add r1, r4, #S_BROWSE
     bl copy_name
@@ -493,29 +687,21 @@ is_group:
     ldrb r0, [r4, #S_FILINFO + 0xC]
     tst r0, #0x10
     beq 1f
-    add r0, r4, #S_PATHBUF
-    ldr r1, =s_presetxml
-    bl push_comp
-    cbz r0, 1f
-    add r0, r4, #S_PATHBUF
-    add r1, r4, #S_FILINFO
-    bl stat
-    cmp r0, #0
-    ite ne
-    movne r0, #1
-    moveq r0, #0
-    b 2f
+    mov r0, r5
+    pop {r4, r5, r6, lr}
+    b no_xml
 1:
     movs r0, #0
-2:
     pop {r4, r5, r6, pc}
 
 @ ---- BuildList hooks (pcmStreamer)
 
 @ Root *.xml scan: only at the top level. The target list was already cleared.
+@ This is the start of every BuildList, so it also picks the folder's mark slot.
 .thumb_func
 hook_xml:
     push {r0, r1, r2, r3, r4, lr}
+    bl mark_begin
     bl ensure
     add r0, r0, #S_BROWSE
     bl is_top
@@ -546,14 +732,8 @@ hook_mark:
     mov r4, r0
     mov r5, r1
     mov r0, r5
-    bl is_group
+    bl mark_row
     cbz r0, 1f
-    bl ensure
-    ldrb r1, [r0, #S_CVALID]
-    cbnz r1, 2f
-    mov r0, r5
-    bl cache_add
-2:
     bl ensure
     add r6, r0, #S_NAME2
     movs r1, #0x2F
@@ -572,7 +752,7 @@ hook_mark:
     pop {r4, r5, r6, pc}
 
 @ After the directory rows: add ".." below the top level. Replaces ldr.w r3, [r7, #0x2ac].
-@ sb = display list, r7 = PresetMgr.
+@ sb = display list, r7 = PresetMgr. Rows this BuildList left pending go to mark_step.
 .thumb_func
 hook_dotdot:
     push {r0, r1, r2, r4, r5, lr}
@@ -587,13 +767,10 @@ hook_dotdot:
 .endif
 1:
     bl ensure
-    add r1, r0, #S_BROWSE
-    add r0, r0, #S_CPATH
-    movs r2, #0xff
-    call STRNCPY
-    ldr r0, =STATE
-    movs r1, #1
-    strb r1, [r0, #S_CVALID]
+    ldrb r1, [r0, #S_BPEND]
+    strb r1, [r0, #S_PEND]
+    movs r1, #0
+    strb r1, [r0, #S_FOUND]
     pop {r0, r1, r2, r4, r5, lr}
     ldr.w r3, [r7, #0x2ac]
     bx lr
@@ -688,6 +865,69 @@ post_evt:
     call RING_ADV
     pop {r4, pc}
 
+@ Posts an event with +0x10 = r2 (+8 and +0xC zero). r0 = pm, r1 = event id.
+.thumb_func
+post_evt_val:
+    push {r4, lr}
+    mov r4, r0
+    ldr.w r3, [r4, #0x2ac]
+    and r3, r3, #0xf
+    add.w r3, r3, r3, lsl #1
+    lsls r3, r3, #3
+    add.w r3, r3, #0x128
+    strb r1, [r4, r3]
+    adds r3, r4, r3
+    movs r1, #0
+    str r1, [r3, #8]
+    str r1, [r3, #0xc]
+    str r2, [r3, #0x10]
+    add r0, r4, #0x2ac
+    call RING_ADV
+    pop {r4, pc}
+
+@ r0 = new preset name (no marker). Returns r0 = 1 when <browse>\name\preset.xml fits in
+@ PATH_MAX and <browse>\name is not a group folder (saving there would hide its presets).
+@ Longer, path_join cuts the paths: Save As made the folder, then copied samples under cut
+@ names and wrote no preset.xml (or, before hook_pathjoin, overran the stack and reset).
+.thumb_func
+save_ok:
+    push {r4, r5, r6, lr}
+    mov r5, r0
+    ldrb r0, [r5]
+    cbz r0, 1f
+    bl ensure
+    add r0, r0, #S_BROWSE
+    call STRLEN
+    mov r4, r0
+    mov r0, r5
+    call STRLEN
+    add r0, r4
+    adds r0, #12
+    cmp r0, #PATH_MAX
+    bhi 1f
+    mov r0, r5
+    bl is_group
+    eor r0, r0, #1
+    pop {r4, r5, r6, pc}
+1:
+    movs r0, #0
+    pop {r4, r5, r6, pc}
+
+@ Saving wrote no preset.xml: show the stock error and answer the Load the UI posts next
+@ (load_saved). r0 = pm. Clobbers r0-r3, r12.
+.thumb_func
+save_failed:
+    push {r4, lr}
+    mov r4, r0
+    bl ensure
+    movs r1, #1
+    strb r1, [r0, #S_REFUSED]
+    mov r0, r4
+    movs r1, #EVT_SAVED
+    movs r2, #1
+    bl post_evt_val
+    pop {r4, pc}
+
 @ Replaces PresetMgr_SaveAs(pm, new, old) for cmd 0x21. The new name goes through a private
 @ buffer so hook_join can tell the destination (browse folder) from the sample sources (loaded
 @ preset's folder) even when both names are equal. Plain Save (cmd 0x20) is not hooked.
@@ -697,11 +937,18 @@ hook_saveas:
     mov r4, r0
     mov r5, r1
     mov r6, r2
+    bl cache_inval
     bl ensure
     mov r7, r0
+    movs r0, #0
+    strb r0, [r7, #S_SAVEFAIL]
+    strb r0, [r7, #S_REFUSED]
     add r0, r7, #S_NAME
     mov r1, r5
     bl copy_name
+    bl save_ok
+    cbz r0, 2f
+    add r0, r7, #S_NAME
     str r0, [r7, #S_SAVENAME]
     mov r1, r0
     mov r0, r4
@@ -709,10 +956,180 @@ hook_saveas:
     call SAVEAS
     movs r0, #0
     str r0, [r7, #S_SAVENAME]
+    ldrb r0, [r7, #S_SAVEFAIL]
+    cbz r0, 3f
+    b 4f
+2:
+    mov r0, r4                              @ refused: nothing written; stock's done event
+    movs r1, #EVT_DONE
+    movs r2, #0
+    bl post_evt_val
+4:
+    mov r0, r4
+    bl save_failed
+3:
     pop {r3, r4, r5, r6, r7, pc}
 
+@ Replaces PresetMgr_SaveAs(pm, name, 0) for cmd 0x20 (Save). The path is the loaded preset's
+@ folder, as stock; a failed doc_save now shows the error instead of only logging.
+.thumb_func
+hook_save:
+    push {r4, r5, r6, lr}
+    mov r4, r0
+    mov r5, r1
+    mov r6, r2
+    bl ensure
+    movs r1, #0
+    strb r1, [r0, #S_SAVEFAIL]
+    mov r0, r4
+    mov r1, r5
+    mov r2, r6
+    call SAVEAS
+    bl ensure
+    ldrb r1, [r0, #S_SAVEFAIL]
+    cbz r1, 1f
+    mov r0, r4
+    movs r1, #EVT_SAVED
+    movs r2, #1
+    bl post_evt_val
+1:
+    pop {r4, r5, r6, pc}
+
+@ Wraps both doc_save calls in PresetMgr_SaveAs (r0 = path, r1-r3 = session). Stock only logs
+@ when f_open fails. Returns doc_save's result.
+.thumb_func
+hook_docsave:
+    push {r4, lr}
+    call DOC_SAVE
+    cbnz r0, 1f
+    ldr r1, =STATE
+    movs r2, #1
+    strb r2, [r1, #S_SAVEFAIL]
+1:
+    pop {r4, pc}
+
+@ Wraps PresetMgr_CopyFile(pm, src, dst) in Save As. A path of PATH_MAX characters was cut by
+@ path_join, so the copy would land under the wrong name: fail it instead. Stock then stops
+@ copying and posts EVT_SAVED with an error.
+.thumb_func
+hook_copy:
+    push {r4, r5, r6, lr}
+    mov r4, r0
+    mov r5, r1
+    mov r6, r2
+    mov r0, r5
+    call STRLEN
+    cmp r0, #PATH_MAX
+    bhs 1f
+    mov r0, r6
+    call STRLEN
+    cmp r0, #PATH_MAX
+    bhs 1f
+    mov r0, r4
+    mov r1, r5
+    mov r2, r6
+    call COPYFILE
+    pop {r4, r5, r6, pc}
+1:
+    movs r0, #0
+    pop {r4, r5, r6, pc}
+
+@ cmd 0x22 after a Save As or New that wrote no preset.xml. The UI posts RequestLoad(new name)
+@ after both; stock's Load would fail and fall back to the first row that loads, replacing the
+@ session with another preset. Answer it from memory instead: PresetMgr still holds the session
+@ the request copied, and event 3 success hands it back under the old name. r0 = pm.
+@ Returns r0 = 1 when the command was answered.
+.thumb_func
+load_saved:
+    push {r4, r5, r6, lr}
+    mov r4, r0
+    bl ensure
+    mov r5, r0
+    ldrb r0, [r5, #S_REFUSED]
+    cbz r0, 1f
+    movs r0, #0
+    strb r0, [r5, #S_REFUSED]
+    add r0, r4, #0x18
+    call STR_CSTR
+    mov r1, r0
+    add r0, r5, #S_NAME2
+    bl copy_name
+    add r1, r5, #S_NAME
+    call STRCMP
+    cbnz r0, 1f
+    add r0, r4, #0x394
+    call STR_CSTR
+    mov r1, r0
+    add r0, r4, #0x390
+    call STR_ASSIGN
+    mov r0, r4
+    movs r1, #EVT_LOADED
+    movs r2, #1
+    bl post_evt_val
+    movs r0, #1
+    pop {r4, r5, r6, pc}
+1:
+    movs r0, #0
+    pop {r4, r5, r6, pc}
+
+@ Replaces path_join(dest, unused, base, comp) (0x080431A4): dest = base + '\' + comp, cut at
+@ PATH_MAX characters like stock. Stock built the result with strncat in a 256-byte stack buffer,
+@ which overran it (and the return address) once base + comp passed ~280 characters, e.g. a
+@ sample copied by Save As in a deep folder. Any task; stack only.
+.thumb_func
+hook_pathjoin:
+    push {r4, r5, r6, lr}
+    sub sp, #0x100
+    mov r4, r0
+    mov r5, r3
+    movs r6, #0
+    cbz r2, 2f
+1:
+    ldrb r3, [r2], #1
+    cbz r3, 2f
+    strb r3, [sp, r6]
+    adds r6, #1
+    cmp r6, #PATH_MAX
+    blo 1b
+2:
+    cbz r6, 3f
+    add r3, sp, r6
+    ldrb r3, [r3, #-1]
+    cmp r3, #0x5C
+    beq 4f
+3:
+    cmp r6, #PATH_MAX
+    bhs 4f
+    movs r3, #0x5C
+    strb r3, [sp, r6]
+    adds r6, #1
+4:
+    cbz r5, 6f
+    ldrb r3, [r5]
+    cmp r3, #0x5C
+    it eq
+    addeq r5, #1
+5:
+    cmp r6, #PATH_MAX
+    bhs 6f
+    ldrb r3, [r5], #1
+    cbz r3, 6f
+    strb r3, [sp, r6]
+    adds r6, #1
+    b 5b
+6:
+    movs r3, #0
+    strb r3, [sp, r6]
+    mov r0, r4
+    mov r1, sp
+    adds r2, r6, #1
+    call MEMCPY
+    mov r0, r4
+    add sp, #0x100
+    pop {r4, r5, r6, pc}
+
 @ Replaces the preset.als export that follows Save As (r0 = pm, r1 = new name): it belongs
-@ next to the new preset.xml in the browse folder.
+@ next to the new preset.xml in the browse folder. Skipped when Save As wrote no preset.xml.
 .thumb_func
 hook_saveas_als:
     push {r4, r5, r6, lr}
@@ -720,6 +1137,8 @@ hook_saveas_als:
     mov r6, r1
     bl ensure
     mov r4, r0
+    ldrb r0, [r4, #S_REFUSED]
+    cbnz r0, 1f
     movs r0, #1
     strb r0, [r4, #S_INLOAD]
     mov r0, r5
@@ -727,18 +1146,21 @@ hook_saveas_als:
     call ALS_EXPORT
     movs r0, #0
     strb r0, [r4, #S_INLOAD]
+1:
     pop {r4, r5, r6, pc}
 
 @ Replaces the Delete handler call (cmd 0x17). r0 = pm, r1 = row name.
 .thumb_func
 hook_delete:
-    push {r4, lr}
+    push {r4, r5, r6, lr}
     mov r4, r0
     mov r0, r1
     movs r1, #1
     bl row_begin
     cbz r0, 1f
-    mov r1, r0
+    mov r5, r0
+    bl cache_inval
+    mov r1, r5
     mov r0, r4
     call DELETE
     b 2f
@@ -749,7 +1171,7 @@ hook_delete:
     bl post_evt
 2:
     bl row_end
-    pop {r4, pc}
+    pop {r4, r5, r6, pc}
 
 @ Replaces the Clean handler call (cmd 0x24). r0 = pm, r1 = command (name string at +8).
 @ The stock handler posts no event, so a rejected Clean posts none either.
@@ -773,16 +1195,33 @@ hook_clean:
 @ Replaces the New-preset handler call (cmd 0x15). r0 = pm, r1 = name.
 .thumb_func
 hook_new:
-    push {r4, lr}
+    push {r4, r5, r6, lr}
     mov r4, r0
     mov r0, r1
     movs r1, #0
     bl row_begin
     cbz r0, 1f
-    mov r1, r0
+    mov r5, r0
+    bl ensure
+    movs r1, #0
+    strb r1, [r0, #S_REFUSED]
+    strb r1, [r0, #S_SAVEFAIL]
+    mov r0, r5
+    bl save_ok
+    cbz r0, 3f
+    bl cache_inval
+    mov r1, r5
     mov r0, r4
     call NEWPRESET
+    bl ensure
+    ldrb r0, [r0, #S_SAVEFAIL]
+    cbz r0, 2f
+    mov r0, r4
+    bl save_failed
     b 2f
+3:
+    mov r0, r4
+    bl save_failed
 1:
     mov r0, r4
     movs r1, #EVT_DONE
@@ -790,7 +1229,7 @@ hook_new:
     bl post_evt
 2:
     bl row_end
-    pop {r4, pc}
+    pop {r4, r5, r6, pc}
 
 @ Replaces the Rename handler call (cmd 0x14). r0 = pm, r1 = old row name, r2 = new name.
 @ Folders may be renamed; ".." may not. Renaming a marked row rebuilds the list so the marker
@@ -816,6 +1255,7 @@ hook_rename:
     ldr r1, =s_dotdot
     call STRCMP
     cbz r0, 1f
+    bl cache_inval
     mov r0, r4
     mov r1, r5
     mov r2, r6
@@ -823,7 +1263,6 @@ hook_rename:
     bl row_end
     cmp r7, #0x2F
     bne 2f
-    bl cache_inval
     add r0, r4, #0x394
     call STR_CSTR
     mov r1, r0
@@ -1062,6 +1501,42 @@ hook_back_evt:
     ldr r12, =KEY_EXIT
     bx r12
 
+@ Replaces keyboard_set_text(kb, row) where Save As pre-fills the keyboard with the selected row
+@ (preset_screen_key case 0x21). A group row ("/name") would save into that group folder; pre-fill
+@ the loaded preset's name instead. UI task, RAM only.
+.thumb_func
+hook_kb_saveas:
+    ldrb r2, [r1]
+    cmp r2, #0x2F
+    bne 1f
+    push {r0, r1, r4, lr}
+    ldr r0, =APP
+    call CUR_NAME
+    pop {r0, r1, r4, lr}
+1:
+    ldr r12, =KB_SET
+    bx r12
+
+@ Replaces list_get(display list, i, buf) in unique_name (0x08091244), which numbers a typed
+@ Save As / New name that clashes with a row ("Sub" -> "Sub 1"). Rows come back without the
+@ group marker, so a name that matches a group folder is numbered too. UI task, RAM only.
+.thumb_func
+hook_uname_get:
+    push {r2, lr}
+    call LIST_GET
+    pop {r2, lr}
+    cbz r0, 2f
+    ldrb r1, [r2]
+    cmp r1, #0x2F
+    bne 2f
+1:
+    ldrb r1, [r2, #1]
+    strb r1, [r2], #1
+    cmp r1, #0
+    bne 1b
+2:
+    bx lr
+
 @ ---- command dispatcher (pcmStreamer)
 
 @ Replaces ldrb r3, [r4, #0x14]; subs r3, #4 (r4 = PresetMgr). CMD_CHECK is handled here
@@ -1071,8 +1546,23 @@ hook_disp:
     ldrb r3, [r4, #0x14]
     cmp r3, #CMD_CHECK
     beq 1f
+    cmp r3, #CMD_LOAD
+    beq 2f
+3:
     subs r3, #4
     bx lr
+2:
+    push {r0, r1, r2, lr}
+    mov r0, r4
+    bl load_saved
+    mov r3, r0
+    pop {r0, r1, r2, lr}
+    cbz r3, 4f
+    movs r3, #(CMD_CHECK - 4)
+    bx lr
+4:
+    ldrb r3, [r4, #0x14]
+    b 3b
 1:
     push {r3, lr}
     mov r0, r4
@@ -1141,9 +1631,7 @@ fm_check:
     beq 5f
     add r0, r5, #S_BROWSE
     add r1, sp, #0x120
-    bl push_comp
-    cmp r0, #0
-    beq 5f
+    bl push_comp                            @ too deep: stay (a load would fall back to row 0)
 4:
     add r0, r4, #0x394
     call STR_CSTR
