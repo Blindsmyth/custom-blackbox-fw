@@ -338,7 +338,7 @@ def _u16s(img, va, n):
 def t_repitch_pos_id(bench, res):
     img = bench.b.image
     clip = _u16s(img, CLIP_POS, 6)
-    res.check(clip[:5] == [0x8D, 0xD2, 0x47, 0x94, ID_REPITCH] and clip[5] in (0, 0x19D, 0x1A1),
+    res.check(clip[:5] == [0x8D, 0xD2, 0x47, 0x94, ID_REPITCH] and clip[5] in (0, 0x19D, 0x1A1, ID_CUEMODE),
               f"Clip Pos ids {clip}")
     slicer = _u16s(img, SLICER_POS, 9)
     res.check(slicer == [0x8D, 0xF2, 0xD2, 0xF3, 0xF4, 0x4E, 0xA2, ID_REPITCH, 0],
@@ -1229,7 +1229,7 @@ def t_mix_hooks(bench, res):
                             (0x080F0F44, "mix_on_event", 0x080B5C71)):
         word = struct.unpack_from("<I", img, va - bd.BASE)[0]
         res.check(word == bench.sym[name] | 1, f"Mix vtable {va:#x} -> {name} ({word:#x}, stock {stock:#x})")
-    res.check(img[VERSION_OFF] in (ord("Q"), ord("R"), ord("B"), ord("T")), f"menu letter is {chr(img[VERSION_OFF])}")
+    res.check(menu_letter(img) in ("Q", "R", "B", "T"), f"menu letter is {menu_letter(img)}")
 
 
 def t_mix_pads(bench, res):
@@ -3501,6 +3501,139 @@ def t_bungee_pitch_level(bench, res):
     b.unstub(0x0804436C)
 
 
+def t_lineup_deck(bench, res):
+    """3.1.T with Clip Deck: Fill, Grain and Bungee follow the Clip's Loop Start / Loop End (deck.c
+    steers the unit sequence through lane.h DeckSeq): units 0..7, then 4..7 again."""
+    pay = rb_payload(bench)
+    if pay is None or "_emu" not in bench.image_path or "str_stutter" not in bench.sym or "deck_init" not in bench.sym:
+        res.check(True, "3.1.T + Clip Deck emu build only (skipped)")
+        return
+    import math
+    b = bench.b
+    b.stub(0x0804436C, lambda bb: 0xC3000000)
+    b.mu.mem_write(RB_B2, bytes(pay))
+    rb_bkp(bench)
+    b.call(bench.sym["rb_pair"])
+    b.call(bench.sym["rb_load_poll"], limit=2_000_000_000)
+    b.call(bench.sym["deck_init"])
+    if rb_state(bench) != 1:
+        res.check(False, f"bank 2 running ({rb_label(bench)!r})")
+        return
+    spu, units = 6000, 32
+    n_src = spu * units
+    sample, clip, mixbuf, ctx, scratch = 0x2001C000, 0x2001C800, 0x2001E000, 0x2001E100, 0x2001E200
+    planes = (0x2001E400, 0x2001E800)
+    tp = 0x2001EC00
+    out = []
+
+    def amp(k):
+        return 0.05 + 0.02 * k
+
+    def src(i):
+        return amp((i % n_src) // spu) * math.sin(2 * math.pi * 440 * i / 48000)
+
+    def pcm_read(bb):
+        dest, count, pos = bb.arg(1), bb.arg(2), bb.arg(3)
+        bb.mu.mem_write(dest, struct.pack(f"<{count}f", *[src(pos + i) for i in range(count)]))
+        return count
+
+    def buf_planes(bb):
+        bb.w32(bb.arg(1), planes[0])
+        bb.w32(bb.arg(2), planes[1])
+
+    def buf_clear(bb):
+        bb.mu.mem_write(planes[0], b"\0" * 1024)
+        bb.mu.mem_write(planes[1], b"\0" * 1024)
+
+    for addr, fn in ((0x08063634, pcm_read), (0x080636F0, lambda bb: n_src), (0x08063790, lambda bb: 1),
+                     (0x0805F3A4, lambda bb: scratch), (0x0804D8DC, buf_clear), (0x0804D8E8, lambda bb: 256),
+                     (0x0804D8D0, lambda bb: 0), (0x0804D9C0, buf_planes), (0x080762D8, lambda bb: 0),
+                     (0x0804DA6C, lambda bb: out.extend(struct.unpack("<256f", bytes(bb.mu.mem_read(planes[0], 1024))))),
+                     *LANE_STUBS):
+        b.stub(addr, fn)
+    now = [0]
+    b.w32(ctx, tp)
+
+    def setup(mode):
+        b.mu.mem_write(clip, b"\x00" * 0xC00)
+        clip_level(b, clip)
+        b.w32(clip + 0x18, 0x0100)                        # row 1, col 0 (deck pad 4)
+        b.w32(clip + 0x24, sample)
+        b.w32(sample + 0x24, 7)
+        b.w32(clip + 0x248, 0xFFFFFFFF)
+        b.mu.mem_write(clip + 0xBB1, bytes([mode]))
+        b.mu.mem_write(clip + 0xBB4, struct.pack("<f", 0.8))
+        b.mu.mem_write(clip + 0xBA8, struct.pack("<q", units * 240))
+        b.mu.mem_write(clip + 0x1F4, b"\x01\x01")         # loop on, Sync on
+        b.mu.mem_write(clip + 0x1F8, b"\x02")
+        b.w32(clip + 0x208, 240)                          # 1/16 units
+        b.w32(clip + 0x220, 240)
+        b.w32(clip + 0x230, units * 240)
+        b.w32(clip + 0x240, units)
+        b.mu.mem_write(clip + 0x1FC, struct.pack("<f", float(spu)))
+        for i, v in enumerate((0, POS_END, 4, 8)):        # Loop Start unit 4, Loop End unit 8
+            b.call(bench.sym["deck_store_unpacked"], 0x0100, ID_DECK + i, v)
+        lane = clip + 0x260
+        b.mu.mem_write(lane, b"\x00" * 0x260)
+        lane_level(b, lane)
+        b.mu.mem_write(lane, b"\x01")
+        b.w32(lane + 0xD8, 1)
+        b.w32(lane + 0xC8, 0)                             # grain 0: its unit at clip+0x64
+        b.w32(clip + 0x64, b.call(bench.sym["deck_note_unit"], clip, 0))   # stock's note start
+        b.mu.mem_write(lane + 0xE0, struct.pack("<q", now[0] + 1))
+        b.mu.mem_write(lane + 0x25C, b"\x03")
+        return lane
+
+    def run(fn, lane, blocks):
+        out.clear()
+        POSTS.clear()
+        for _ in range(blocks):
+            b.mu.mem_write(tp, struct.pack("<qqqf", now[0], 0, 0, 96.0))
+            b.mu.mem_write(tp + 0x38, b"\x01")
+            fn(lane)
+            now[0] += 256
+
+    unit_out = int(spu / 0.8)                             # 7500 output frames per unit at 96 BPM
+    blocks = 10 * unit_out // 256 + 2
+
+    def seq_from_level():
+        ks = []
+        for u in range(10):
+            w = out[u * unit_out + 1000: (u + 1) * unit_out - 1000]
+            r = math.sqrt(sum(x * x for x in w) / max(1, len(w)))
+            ks.append(round((r * math.sqrt(2) - 0.05) / 0.02))
+        return ks
+
+    want = [0, 1, 2, 3, 4, 5, 6, 7, 4, 5]
+    lane = setup(1)
+    run(lambda ln: b.call(bench.sym["rb_lanes"], clip, ln, mixbuf, ctx, limit=400_000_000), lane, blocks)
+    got = seq_from_level()
+    res.check(got == want, f"Fill follows the loop: units {got} (want {want})")
+
+    def last_pos():
+        ups = [struct.unpack_from("<I", m, 0x10)[0] for m in POSTS if m[0] == 0x4A]
+        return ups[-60:]
+
+    lane = setup(4)
+    run(lambda ln: b.call(bench.sym["rb_lanes"], clip, ln, mixbuf, ctx, limit=400_000_000), lane, blocks)
+    tail = last_pos()
+    res.check(tail and all(4 * spu - 600 <= p < 8 * spu + 600 for p in tail),
+              f"Grain stays in the loop after Loop End (playhead {min(tail) if tail else None}..{max(tail) if tail else None})")
+
+    def bungee(ln):
+        b.call(bench.sym["rb_mix"], clip, ln, mixbuf, ctx, limit=400_000_000)
+        b.call(bench.sym["rb_work"], limit=400_000_000)
+
+    lane = setup(5)
+    b.w32(RB_VOICE + 4, clip)
+    b.w32(RB_VOICE + 20, 1)
+    run(bungee, lane, blocks)
+    tail = last_pos()
+    res.check(tail and all(4 * spu - 600 <= p < 8 * spu + 600 for p in tail),
+              f"Bungee relaunches into the loop at Loop End (playhead {min(tail) if tail else None}..{max(tail) if tail else None})")
+    b.unstub(0x0804436C)
+
+
 def t_lineup_list(bench, res):
     """3.1.T: Warp lists Stutter / Fill / Repitch / Slice / Grain / Bungee (the leaf's RAM label last)."""
     b = bench.b
@@ -4363,7 +4496,10 @@ def _deck_stub_args(bench, res, hook, unit_in, unit_out, prep):
               f"{hook} r0-r2 {seen}")
     res.check(seen.get("r3") == unit_out, f"{hook} unit {seen.get('r3')} (want {unit_out})")
     res.check([seen.get(k) for k in ("a5", "a6", "a7")] == [0x51, 0x52, 0x53], f"{hook} stack args")
-    res.check(seen.get("lr", 0) | 1 == bd.STOP | 1, f"{hook} return address")
+    # 3.1.T: the next-grain stub goes on through the Mix line's env_slice, which calls the grain
+    # start itself and then returns to our caller.
+    via = bench.sym.get("env_slice_after") if hook == "hook_wrap_grain" and "str_stutter" in bench.sym else None
+    res.check(seen.get("lr", 0) | 1 in (bd.STOP | 1, (via or 0) | 1), f"{hook} return address")
     res.check(b.mu.reg_read(A.UC_ARM_REG_SP) == sp, f"{hook} sp restored")
 
 
@@ -5630,7 +5766,7 @@ def t_deck_bag_size(bench, res):
     rows = b.mu.mem_read(b.u32(bag + 4), n * 8)
     ids = {int.from_bytes(rows[i * 8:i * 8 + 2], "little") for i in range(n)}
     res.check(cap == 0x60, f"template capacity {cap:#x}")
-    missing = [hex(i) for i in range(0x19D, 0x1AD) if i not in ids]
+    missing = [hex(i) for i in range(ID_DECK, ID_DECK + 16) if i not in ids]
     res.check(not missing and n < cap, f"Clip template {n} rows, missing {missing}")
 
 
@@ -5810,6 +5946,12 @@ def main():
         cases += [("stock cell list stays at 128", t_slice_stock_cap)]
         extra_reads.append(("stock XML keeps 128 tags and ignores ext", t_slice_stock_xml, SLICE_TREE))
     print(f"image {image} menu letter {menu_letter(probe)!r} ({kind})")
+    if "deck_id_v" in sym:                      # 3.1.T: Clip Deck's ids moved past the Mix line's
+        global ID_DECK, ID_CUEMODE, ID_CUENOTE, ID_CUE1, ID_GRID, ID_GRIDOFS
+        at = int(sym["deck_id_v"], 16) if isinstance(sym["deck_id_v"], str) else sym["deck_id_v"]
+        first = int.from_bytes(probe[at - 0x08040000:at - 0x08040000 + 4], "little")
+        ID_DECK, ID_CUEMODE, ID_CUENOTE, ID_CUE1 = first, first + 4, first + 5, first + 6
+        ID_GRID, ID_GRIDOFS = first + 14, first + 15
     if "rb_pair" in sym:
         cases += [
             ("Rubber absent: label and fallback", t_rubber_absent),
@@ -5825,7 +5967,9 @@ def main():
             ("Rubber/Bungee Warp list per pad (choke group)", t_warp_list_per_pad),
             *([("Lineup: Warp list", t_lineup_list), ("Lineup: tempo ratio per Warp", t_lineup_rate),
                ("Lineup: Fill / Slice / Grain lanes (emu build)", t_lineup_lanes),
-               ("Lineup: Bungee Pitch and Level (emu build)", t_bungee_pitch_level)] if "str_stutter" in sym else []),
+               ("Lineup: Bungee Pitch and Level (emu build)", t_bungee_pitch_level),
+               ("Lineup: Fill / Grain / Bungee follow Clip Deck's loop (emu build)", t_lineup_deck)]
+              if "str_stutter" in sym else []),
             ("Rubber/Bungee sample read retry", t_sd_read_retry),
             ("Rubber cost flat over tempo (emu build)", t_rubber_cost_flat),
             ("Rubber takes over bank 2 only with RBTAKE.TXT", t_rubber_takeover),

@@ -21,13 +21,16 @@
 #define DK_MAGIC     0x34434544u  /* 'DEC4': positions in 1/16 notes; 'DEC3' was beats */
 #define DK_PADS      16           /* the 4 x 4 pad grid */
 #define GRID_MAX     64           /* grid markers drawn at once */
-#define ID_START     0x19D
-#define ID_CUEMODE   0x1A1
-#define ID_CUENOTE   0x1A2
-#define ID_CUE1      0x1A3
-#define ID_GRID      0x1AB     /* Grid size: GRID_* list index */
-#define ID_GRIDOFS   0x1AC     /* grid offset, samples */
-#define DECK_IDS     16        /* 0x19D..0x1AC */
+#ifndef DECK_ID_BASE
+#define DECK_ID_BASE 0x19D     /* 3.1.E; the combined 3.1.T build moves them past the Mix line's ids */
+#endif
+#define ID_START     (DECK_ID_BASE + 0)
+#define ID_CUEMODE   (DECK_ID_BASE + 4)
+#define ID_CUENOTE   (DECK_ID_BASE + 5)
+#define ID_CUE1      (DECK_ID_BASE + 6)
+#define ID_GRID      (DECK_ID_BASE + 14)   /* Grid size: GRID_* list index */
+#define ID_GRIDOFS   (DECK_ID_BASE + 15)   /* grid offset, samples */
+#define DECK_IDS     16        /* 0x19D..0x1AC on 3.1.E */
 #define TICKS_S16    240       /* positions are 1/16 notes */
 #define POS_END      0xFFFFu   /* End / Loop End: the end of the file */
 #define POS_MAX      0xFFFEu

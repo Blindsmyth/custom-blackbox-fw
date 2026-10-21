@@ -25,6 +25,7 @@ SECTIONS {
     KEEP(*b2pair.o(.text .text.* .rodata .rodata.*))
     KEEP(*b2load.o(.text .text.* .rodata .rodata.*))
     KEEP(*diag.o(.text .text.* .rodata .rodata.*))
+    KEEP(*deck.o(.text .text.* .rodata .rodata.*))   /* 3.1.T: Clip Deck */
   } > CAVE
 
   .b2head : { KEEP(*(.b2head)) } > BANK2

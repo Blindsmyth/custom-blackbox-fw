@@ -226,6 +226,128 @@ static inline int lane_expect(unsigned clip, unsigned lane, void *transport, dou
 /* Loop Mode on and not Trigger: the Clip loops; otherwise stock stops at the end of the file. */
 static inline int clip_loops(unsigned clip) { return L8(clip, 0x1F4) && L8(clip, 0x1F8) != 1; }
 
+/* The clock ticks since the launch (anchor), now, while the transport plays: 1, else 0. */
+static inline int lane_ticks(unsigned lane, void *transport, double anchor, double *out)
+{
+    double now;
+    if (!transport || !*(volatile uint8_t *)((char *)transport + 0x38))
+        return 0;
+    now = (double)*(volatile int64_t *)transport + (L32(lane, 0x138) > 0 ? L32(lane, 0x138) : 0);
+    *out = tick_at(transport, now) - anchor;
+    return 1;
+}
+
+#ifdef WARP_DECK_SEQ
+/* ---- Clip Deck (the combined 3.1.T build) ------------------------------------------------------
+ * Stock plays a Clip as one grain per Sync unit, and Clip Deck (3.1.9-clip-deck/deck.c) steers which
+ * unit comes next: the note start's unit (Start, a cue launch, the editor's marker), Loop End -> Loop
+ * Start, End, and a pending hot-cue jump on the next Quant boundary. It does that from stock's lane
+ * render, which a lane rendered in bank 2 skips. DeckSeq runs the same sequence for those lanes, by
+ * calling deck.c's own deck_limit / deck_wrap_unit at each unit, so Fill, Slice, Grain and Bungee follow
+ * the regions and cues as Stutter and Repitch do. Bank 2 calls into the cave directly (one link). */
+#ifdef __cplusplus
+extern "C" {
+#endif
+unsigned deck_limit(void *clip, unsigned next);
+unsigned deck_wrap_unit(void *clip, unsigned unit, const long long *tick);
+int deck_grain_start(void *clip, int frame);
+#ifdef __cplusplus
+}
+#endif
+
+#define SEQ_RING 4
+
+typedef struct DeckSeq {
+    int on;                   /* the Clip is on a note-value Sync grid: deck.c steers it */
+    unsigned unit[SEQ_RING];  /* unit of sequence index i at [i % SEQ_RING] */
+    int decided;              /* the last index whose unit is known */
+    int stop_at;              /* the index where the note ends (End, Loop off), or -1 */
+    double ut;                /* ticks per unit (clip+0x208) */
+    float spu;                /* file frames per unit (clip+0x1FC) */
+    double units;             /* units since the launch, kept here while there is no clock */
+} DeckSeq;
+
+/* Units on a note-value Sync grid, as deck.c grid_units, or 0 (Slicer, Sync None, Sync Slice). */
+static inline unsigned deck_units(unsigned clip, unsigned *ut)
+{
+    unsigned n;
+    if (L8(clip, 0x254) || !L8(clip, 0x1F5))
+        return 0;
+    if ((L32(clip, 0x220) == 0xF0000 && L32(clip, 0x224) == 0) || L32(clip, 0x20C) != 0)
+        return 0;
+    *ut = (unsigned)L32(clip, 0x208);
+    n = (unsigned)L32(clip, 0x240) + (unsigned)L32(clip, 0x244);
+    if (*ut == 0 || *ut > 0xFFFF || n < 2)
+        return 0;
+    return n;
+}
+
+/* A new note: its first unit is the one stock's note start gave the lane's first grain (deck.c
+ * deck_note_unit already chose it: Start, a cue, the editor's marker). */
+static inline void seq_start(DeckSeq *q, unsigned clip, unsigned lane)
+{
+    unsigned ut = 0;
+    int g = L32(lane, 0xC8);
+    q->on = deck_units(clip, &ut) != 0;
+    q->unit[0] = g >= 0 && g <= 3 ? (unsigned)L32(clip + (unsigned)g * 0x70u, 0x64) : 0u;
+    q->decided = 0;
+    q->stop_at = -1;
+    q->ut = ut;
+    q->spu = LF(clip, 0x1FC);
+    q->units = 0.;
+}
+
+/* The next index's unit, as stock's lane render chooses it at that grain (0x08066C46 limit, the
+ * re-sync to unit 0 that deck_wrap_unit turns into Loop Start, the jump at 0x08066CF2). */
+static inline void seq_decide(DeckSeq *q, unsigned clip, double anchor)
+{
+    int i = q->decided + 1;
+    unsigned next = q->unit[(i - 1) % SEQ_RING] + 1u;
+    if (next >= deck_limit((void *)clip, next)) {
+        if (!clip_loops(clip)) {
+            q->stop_at = i;
+            q->unit[i % SEQ_RING] = q->unit[(i - 1) % SEQ_RING];
+            q->decided = i;
+            return;
+        }
+        next = 0;
+    }
+    long long tick = (long long)(anchor + (double)i * q->ut + 0.5);
+    q->unit[i % SEQ_RING] = deck_wrap_unit((void *)clip, next, &tick);
+    q->decided = i;
+}
+
+/* Decide every unit that starts before u + lead (units), at most two ahead (the ring keeps one behind). */
+static inline void seq_advance(DeckSeq *q, unsigned clip, double anchor, double u, double lead)
+{
+    int now = u > 0. ? (int)u : 0, want = u + lead > 0. ? (int)(u + lead) : 0;
+    if (want > now + 2)
+        want = now + 2;
+    while (q->stop_at < 0 && q->decided < want)
+        seq_decide(q, clip, anchor);
+}
+
+static inline int seq_ended(const DeckSeq *q, double u) { return q->stop_at >= 0 && u >= (double)q->stop_at; }
+
+/* The first file frame of index i's unit (with the pad's grid offset, as Clip_StartGrain). */
+static inline int seq_unit_frame(const DeckSeq *q, unsigned clip, int i)
+{
+    return deck_grain_start((void *)clip, (int)((float)q->unit[i % SEQ_RING] * q->spu));
+}
+
+/* The file frame at u units since the launch. */
+static inline double seq_frame(const DeckSeq *q, unsigned clip, double u)
+{
+    int i = u > 0. ? (int)u : 0;
+    if (i > q->decided)
+        i = q->decided;
+    double f = u - (double)i;
+    if (f < 0.)
+        f = 0.;
+    return (double)seq_unit_frame(q, clip, i) + f * q->spu;
+}
+#endif
+
 /* ---- pad feedback ------------------------------------------------------------------------- */
 
 /* "Started", once a quantised launch's delay is over (from: the frame of this block it starts at). */

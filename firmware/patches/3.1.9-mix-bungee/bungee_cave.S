@@ -9,6 +9,10 @@
 #ifdef WITH_LINEUP
 .set WARP_LINEUP, 1                     @ build_patch.py --lineup (3.1.T): Stutter / Fill / Repitch / Slice / Grain / Bungee
 #endif
+#ifdef WITH_DECK
+.set WARP_DECK, 1                       @ 3.1.T: Clip Deck (../3.1.9-clip-deck deck.S, deck.c)
+.set ID_DECK, DECK_ID_BASE
+#endif
 .include "mix_cave.S"
 
 .align 2

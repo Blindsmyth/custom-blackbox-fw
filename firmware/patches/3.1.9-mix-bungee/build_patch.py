@@ -35,6 +35,8 @@ spec = importlib.util.spec_from_file_location("mix_build", MIX_DIR / "build_patc
 mix = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mix)
 base = mix.base
+sys.path.insert(0, str(ROOT / "tools"))
+from version_text import VERSION_REFS, STOCK_VERSION_VA, set_version  # noqa: E402
 
 RUBBER = ROOT / "tools" / "stretch" / "rubber"      # rubber.h (the bank-2 ABI), CMSIS
 BUNGEE = ROOT / "tools" / "stretch" / "bungee"
@@ -47,6 +49,10 @@ STRETCH = ROOT / "tools" / "stretch"
 LINEUP = "--lineup" in sys.argv
 if LINEUP:
     BUILD = BUNGEE / "build-lineup"
+# The combined 3.1.T build has Clip Deck (../3.1.9-clip-deck: Start/End/Loop, hot cues, the waveform
+# editor) too. Its param ids move past the Mix line's (0x19D-0x1A9: Seq Rec, Env Trig, Master).
+DECK_DIR = HERE.parent / "3.1.9-clip-deck"
+DECK_ID_BASE = 0x1B0
 T = Path(os.environ.get("ARM_GNU", Path.home() / ".local" / "arm-gnu-15.3" / "bin"))
 GCC, GXX = T / "arm-none-eabi-gcc", T / "arm-none-eabi-g++"
 
@@ -116,14 +122,17 @@ def compile_all(rb_id):
     objs = []
     cave_o = BUILD / "bungee_cave.o"
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
-         *(["-DWITH_REPITCH"] if REPITCH else []), *(["-DWITH_LINEUP"] if LINEUP else []),
-         "-I", MIX_DIR, "-I", mix.BASE_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
+         *(["-DWITH_REPITCH"] if REPITCH else []),
+         *(["-DWITH_LINEUP", "-DWITH_DECK", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}"] if LINEUP else []),
+         "-I", MIX_DIR, "-I", mix.BASE_DIR, "-I", DECK_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
     objs.append(cave_o)
-    for src in (BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"):
+    bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + ([DECK_DIR / "deck.c"] if LINEUP else [])
+    for src in bank1:
         o = BUILD / (src.stem + ".o")
-        run([GCC, *BANK1_C, *BANK1_DEFS, "-I", BANK2, "-I", RUBBER, "-c", "-o", o, src])
+        run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-I", BANK2, "-I", RUBBER,
+             "-c", "-o", o, src])
         objs.append(o)
-    defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", *LANE_DEFS] if LINEUP else [])]
+    defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]
     inc = ["-I", RUBBER, "-I", BG, "-I", BG / "submodules" / "eigen", "-I", CMSIS / "Include", "-I", STRETCH]
     srcs = [f for f in sorted((BG / "src").glob("*.cpp")) if f.name != "Fourier.cpp"]
     for src in srcs + [BUNGEE / "Fourier_cmsis.cpp", BUNGEE / "bungee.cpp"] + ([BUNGEE / "lanes.cpp"] if LINEUP else []):
@@ -147,7 +156,7 @@ def compile_all(rb_id):
 
 def bank1_has_no_ram(objs):
     """Cave code has nowhere to keep .data/.bss: they would land in bank 2's SRAM1 block."""
-    for o in objs[:4]:
+    for o in objs[:5 if LINEUP else 4]:
         out = subprocess.check_output([str(T / "arm-none-eabi-size"), "-A", str(o)], text=True)
         for line in out.splitlines():
             parts = line.split()
@@ -227,8 +236,30 @@ SLICE_SITES = {"hook_slices_max", "hook_slice_max", "hook_engine_cap", "hook_cel
                "hook_save_bag", "hook_cell_ext", "hook_pad_slice", "hook_pad_done"}
 
 
+def deck_parts():
+    """Clip Deck's own sites, vtable slot and tables (its build lists them on top of 3.1.Z's), with
+    the param ids in the Clip Pos lists moved to DECK_ID_BASE."""
+    spec = importlib.util.spec_from_file_location("deck_build", DECK_DIR / "build_patch.py")
+    deck = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(deck)
+    shared = {va for va, *_ in base.SITES}
+    sites = [s for s in deck.SITES if s[0] not in shared and s[1] not in SLICE_SITES]
+    ids = (DECK_ID_BASE + 4, DECK_ID_BASE + 5, DECK_ID_BASE + 14) + tuple(range(DECK_ID_BASE + 6, DECK_ID_BASE + 14))
+    tables = [(at + 2 * i, struct.pack("<H", pid).hex(), "0000")
+              for at in (0x080EF99A, 0x080EF292) for i, pid in enumerate(ids)]
+    tables += [(0x080A5594, "0922", "0c22"), (0x080A55A0, "1580", "1880")]   # 9-char name label (deck)
+    return sites, deck.VTABLE, tables
+
+
 def add_rubber_sites(stock):
     mix.SITES[:] = [site for site in mix.SITES if site[1] not in SLICE_SITES]
+    if LINEUP:
+        sites, vtable, tables = deck_parts()
+        # 0x08066CF2 (next grain) is the Mix line's env_slice site too: hook_wrap_grain jumps on to it.
+        mix.SITES[:] = [site for site in mix.SITES if not (site[0] == 0x08066CF2 and site[1] == "env_slice")]
+        mix.SITES.extend(sites)
+        mix.VTABLE.extend(vtable)
+        base.TABLES.extend(tables)
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves
         mix.SITES.append((0x080667B8, "hook_lane", False, "2de9f04f"))   # per-lane render: the leaf renders
     mix.SITES.extend([
@@ -304,9 +335,17 @@ def main():
         if image[off:off + len(new) // 2].hex() != orig:
             raise SystemExit(f"{va:#x}: stock bytes {image[off:off + len(new) // 2].hex()} != {orig}")
         image[off:off + len(new) // 2] = bytes.fromhex(new)
-    if image[base.VERSION_OFF] != ord("9"):
-        raise SystemExit(f"version byte is {image[base.VERSION_OFF]:#x}, expected '9'")
-    image[base.VERSION_OFF] = ord(LETTER)
+    if LINEUP:
+        # "3.1.T" after the cave and the version display repointed at it: stock's '9' stays, as the
+        # naming keyboard's 9 key shares it (tools/version_text.py, as Clip Deck does).
+        set_version(image, LETTER)
+        version_va = struct.unpack_from("<I", image, VERSION_REFS[0] - base.BASE)[0]
+        symbols["__version"] = version_va
+        mix.WORDS.extend((ref, "__version", STOCK_VERSION_VA) for ref in VERSION_REFS)
+    else:
+        if image[base.VERSION_OFF] != ord("9"):
+            raise SystemExit(f"version byte is {image[base.VERSION_OFF]:#x}, expected '9'")
+        image[base.VERSION_OFF] = ord(LETTER)
 
     mix.verify(image, stock, symbols)
     OUT.write_bytes(image)

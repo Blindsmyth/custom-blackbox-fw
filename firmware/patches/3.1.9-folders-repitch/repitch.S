@@ -16,6 +16,11 @@
 .equ CLIP_GRAIN,  0x08065291
 
 .equ ID_REPITCH,  0x19C
+.ifdef WARP_DECK
+@ Clip Deck (3.1.9-clip-deck/deck.c): Start/End/Loop, cues, grid, 16 ids from ID_DECK. The combined
+@ build (3.1.9-mix-bungee --lineup) sets ID_DECK past the Mix line's own ids (0x19D-0x1A9).
+.equ DECK_IDS,    16
+.endif
 .equ CLIP_FLAG,   0xBB1
 .equ CLIP_SCALE,  0xBB4
 .equ SM_BASE,     0x38007000
@@ -107,6 +112,10 @@ hook_register:
     str     r4, [sp]
     str     r5, [sp, #4]
     call    PARAM_ENUM
+.ifdef WARP_DECK
+    mov     r0, r8
+    bl      deck_register
+.endif
     add     sp, #8
     pop     {r4, r5, r6, r7, r8, pc}
 
@@ -152,6 +161,9 @@ state_init:
 3:
 .endif
 .endif
+.ifdef WARP_DECK
+    bl      deck_init
+.endif
     pop     {pc}
 
 .thumb_func
@@ -163,6 +175,11 @@ hook_template:
     movw    r1, #ID_REPITCH
     movs    r2, #0
     call    PARAM_ADD
+.ifdef WARP_DECK
+    mov     r0, r4
+    movs    r1, #0
+    bl      deck_bag_defaults
+.endif
 .ifdef MIX_EXT
     mov     r0, r4                  @ 3.1.Q: Env Trig (adsr.S), default Note
     movw    r1, #0x1A2
@@ -193,6 +210,11 @@ hook_clip_def:
     mov     r1, r6
     bl      pack_key_packed
     bl      flag_write
+.ifdef WARP_DECK
+    mov     r0, r4
+    movs    r1, #1
+    bl      deck_bag_defaults
+.endif
     pop     {r4, r5, r6, pc}
 
 .thumb_func
@@ -218,6 +240,13 @@ bag_has:
 .thumb_func
 hook_post:
     push    {r0, r1, r2, r3, lr}
+.ifdef WARP_DECK
+    mov     r0, r1
+    mov     r1, r2
+    mov     r2, r3
+    bl      deck_store_unpacked
+    ldmia   sp, {r0, r1, r2, r3}
+.endif
     movw    r0, #ID_REPITCH
     cmp     r2, r0
     bne     1f
@@ -240,6 +269,12 @@ hook_post:
 .thumb_func
 hook_set:
     push    {r0, r1, r2, r3, lr}
+.ifdef WARP_DECK
+    movw    r3, #ID_DECK            @ Clip Deck ids, added like Warp when a preset lacks them
+    subs    r3, r1, r3
+    cmp     r3, #DECK_IDS
+    blo     3f
+.endif
     movw    r3, #ID_REPITCH
     cmp     r1, r3
 .ifdef MIX_EXT
@@ -278,6 +313,17 @@ hook_clip_param:
     bl      flag_write
     pop     {r0, r1, r2, r3, r4, pc}
 1:
+.ifdef WARP_DECK
+    movw    r3, #ID_DECK
+    subs    r3, r4, r3
+    cmp     r3, #DECK_IDS
+    bhs     6f
+    mov     r1, r4
+    ldr     r2, [r2, #0x10]
+    bl      deck_clip_param
+    pop     {r0, r1, r2, r3, r4, pc}
+6:
+.endif
 .ifdef MIX_EXT
     movw    r3, #0x1A2              @ 3.1.Q: Env Trig (adsr.S), swallowed like Warp
     cmp     r4, r3
@@ -388,6 +434,10 @@ hook_rate:
     addw    r1, r4, #CLIP_SCALE
     str     r0, [r1]
 4:
+.ifdef WARP_DECK
+    mov     r0, r4
+    bl      deck_rate
+.endif
     pop     {r0, r1, r2, r3, r4, r5, pc}
 
 .thumb_func
@@ -829,6 +879,12 @@ labels_repitch:
     .word   str_vari
     .word   str_grain
 .endif
+.endif
+.ifdef WARP_DECK
+.align 2
+.global deck_id_v
+deck_id_v:                              @ Clip Deck's first param id, for the bench
+    .word   ID_DECK
 .endif
 .ifdef WARP_RUBBER
 .align 2

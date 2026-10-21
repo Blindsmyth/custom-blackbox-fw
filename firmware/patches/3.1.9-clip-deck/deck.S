@@ -54,7 +54,14 @@ hook_wrap_grain:
     mov     r3, r0
     ldr     r12, =DK_SAVE
     ldmia   r12, {r0, r1, r2, lr}
+.ifdef MIX_EXT
+    @ The combined 3.1.T build: the Mix line's Env Trig hook (adsr.S env_slice) owns this call too;
+    @ it starts the grain itself and returns to our caller (neither stub moves sp).
+    ldr     r12, =env_slice
+    orr     r12, r12, #1
+.else
     ldr     r12, =CLIP_STARTGRAIN
+.endif
     bx      r12
 
 @ 0x080683AE / 0x08068656 / 0x080686CC in FUN_08067FA4: voice start FUN_08065908(clip, transport,

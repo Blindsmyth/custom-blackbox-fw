@@ -1209,6 +1209,9 @@ s_presetxml:
 .include "slice.S"
 .endif
 .endif
+.ifdef WARP_DECK                        @ Clip Deck in the combined 3.1.T build (-I ../3.1.9-clip-deck)
+.include "deck.S"
+.endif
 
 .align 2
 .ltorg

@@ -1,6 +1,12 @@
-# 3.1.T Warp lineup
+# 3.1.T: Warp lineup + Clip Deck
 
-3.1.B (`..`, Bungee in flash bank 2) with Warp **Stutter / Fill / Repitch / Slice / Grain / Bungee**. The menu version reads `3.1.T`. Built with `build_patch.py --lineup`.
+One image with everything on this line:
+- **The base:** 3.1.Q: folders, the Mix screen, Seq Rec, the looper, Tools → Master.
+- **Bungee** in flash bank 2 (3.1.B, `..`).
+- **Clip Deck** (3.1.E, `../../3.1.9-clip-deck`): Start / End / Loop, 8 hot cues, the waveform editor.
+- **Warp Stutter / Fill / Repitch / Slice / Grain / Bungee.**
+
+The menu version reads `3.1.T`. Built with `build_patch.py --lineup`.
 
 ## Install
 
@@ -12,6 +18,7 @@
 4. Presets saved on 3.1.B load with their old Warp numbers, which mean different modes here:
    - Bungee was 1 (2 in the Repitch build), which is now Fill (or Repitch).
    - Set Warp again on those pads.
+5. Presets saved on 3.1.E keep their Start / End / Loop and cues: they're stored by name, and only the internal ids moved.
 
 ## The modes
 
@@ -44,6 +51,28 @@ Fill, Slice and Grain follow the clock while the transport runs: the launch's ti
 - STOP, mute, release, and Loop off / Trigger ending at the end of the file.
 
 If bank 2 isn't running (`Bungee!` on the list), Fill, Slice and Grain play stock grains, like Stutter.
+
+## Clip Deck in this build
+
+Clip Deck works as on 3.1.E (`../../3.1.9-clip-deck/README.md`), on **every** Warp mode, wherever the Clip is on a note-value Sync grid (as on 3.1.E: not with Sync None or Sync = Slice).
+
+- **Stutter and Repitch** are stock's grains, so Clip Deck steers them as it does on 3.1.E.
+- **Fill, Slice, Grain and Bungee** render in bank 2, without stock's lane render. A sequencer (`tools/stretch/bungee/lane.h`, `DeckSeq`) calls Clip Deck's own `deck_limit` / `deck_wrap_unit` at each unit, as the lane render does. It covers:
+  - Start, or a cue launch;
+  - Loop End → Loop Start;
+  - End with Loop off / Trigger;
+  - a pending cue jump on the next Quant boundary;
+  - the grid offset.
+- **Fill / Slice:** they play a virtual file of the next few units, so their segments, pre-roll and tail loop land on the right audio after a wrap or a jump. The next unit is decided ~320 frames (~7 ms) before it starts, for the pre-roll, so a cue pressed in those last ms takes the next Quant boundary.
+- **Grain:** the playhead follows the sequence.
+- **Bungee:** a wrap or a jump re-launches at the target on the unit it happens, the instant way a locate does: the raw Clip first, then Bungee 43 ms later.
+  - Fixed on the way, in 3.1.B too: after a re-launch to an earlier frame, Bungee's first output chunk still came from before the reset. It was taken for the new launch, and a second re-launch followed.
+
+What changes against 3.1.E:
+- **Param ids:** Clip Deck's ids move from `0x19D`–`0x1AC` to `0x1B0`–`0x1BF`, past the Mix line's own (`0x19D`–`0x1A9`: Seq Rec, Env Trig, Master). Presets store them by name.
+- **Slices:** 3.1.Y's 2048 slices are not in this build. Their tables would sit in the RAM bank 2 uses, so stock's 128 slices apply.
+- **Version text:** "3.1.T" goes after the cave, as on 3.1.E (`tools/version_text.py`). The '9' of "3.1.9" stays, so the naming keyboard's 9 key types 9. 3.1.Q and 3.1.B overwrite it.
+- **Next-grain hook:** the call at `0x08066CF2` belongs to both Clip Deck and the Mix line's Env Trig. `hook_wrap_grain` chooses the unit, then jumps on to `env_slice`, which starts the grain.
 
 ## Bungee in this build (and in 3.1.B)
 
@@ -83,4 +112,4 @@ If bank 2 isn't running (`Bungee!` on the list), Fill, Slice and Grain play stoc
 ## Not done yet
 
 - **Pitch on Fill / Slice / Grain:** the Pitch knob doesn't change them; their heads play at 1x.
-- **Clip Deck (3.1.E):** it's on this branch as its own build (`../../3.1.9-clip-deck`), not part of this image. Both builds use the folders/Warp cave, and Clip Deck keeps 3.1.Y's 2048 slices in the RAM bank 2 uses, so combining them needs that resolved first.
+- **Preset folder fixes:** they're on their own branch (`claude/sad-germain-3000f6`), not in this image yet.

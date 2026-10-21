@@ -55,6 +55,9 @@ struct Slot {
     double played;              /* source frames since the launch (unwrapped), the segment clock */
     int seg;                    /* Grain: the segment the playhead last landed on */
     LaneGain gain;
+#ifdef WARP_DECK_SEQ
+    DeckSeq seq;                /* Clip Deck's unit sequence (lane.h), on a note-value Sync grid */
+#endif
     union {
         BeatsVoice b;
         GranVoice g;
@@ -71,6 +74,16 @@ struct Pool {
     int n_starts;
     unsigned key_clip;
     uint32_t key[4];
+#ifdef WARP_DECK_SEQ
+    struct Virt {               /* Fill / Slice under Clip Deck: the virtual file the player reads */
+        void *sample;
+        int length;
+        unsigned clip;
+        const DeckSeq *q;
+        int32_t starts[SEQ_RING];
+        int vlen;
+    } virt;
+#endif
     Slot slot[LANE_SLOTS];
 };
 #define POOL_MAGIC 0x4C4E4153u      /* "SANL" */
@@ -172,6 +185,42 @@ static int seg_of(const int32_t *starts, int n, double pos)
     return lo;
 }
 
+#ifdef WARP_DECK_SEQ
+// Under Clip Deck, Fill and Slice play a virtual file of SEQ_RING units: virtual unit j is the sequence
+// index i with i % SEQ_RING == j, whatever unit deck.c chose for it. The player's segments, pre-roll
+// and tail loop then land on the right audio after a loop wrap or a cue jump, with the timeline still
+// running straight on. Reads map back to the file here.
+#define SEQ_LEAD (256 + 64)     /* frames ahead the next unit is decided: Beats' pre-roll and a margin */
+
+static int virt_read(void *ctx, float *dest, int count, int pos, int chan)
+{
+    const Pool::Virt *v = (const Pool::Virt *)ctx;
+    int i = 0;
+    while (i < count) {
+        int vp = (pos + i) % v->vlen;
+        if (vp < 0)
+            vp += v->vlen;
+        int j = SEQ_RING - 1;
+        while (j > 0 && v->starts[j] > vp)
+            j--;
+        int end = j + 1 < SEQ_RING ? v->starts[j + 1] : v->vlen;
+        int k = count - i < end - vp ? count - i : end - vp;
+        int real = seq_unit_frame(v->q, v->clip, j) + (vp - v->starts[j]);
+        while (k > 0) {
+            int at = real % v->length;
+            if (at < 0)
+                at += v->length;
+            int kk = v->length - at < k ? v->length - at : k;
+            FW_PCM_READ(v->sample, dest + i, kk, at, chan);
+            i += kk;
+            real += kk;
+            k -= kk;
+        }
+    }
+    return count;
+}
+#endif
+
 static void start_note(Slot *s, Pool *p, unsigned clip, unsigned lane, int mode, void *sample, int length,
                        int stereo)
 {
@@ -241,6 +290,78 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     if (ratio > 4.f)
         ratio = 4.f;
 
+#ifdef WARP_DECK_SEQ
+    DeckSeq *q = &s->seq;
+    if (reset)
+        seq_start(q, clip, lane);
+    if (q->on) {
+        // Clip Deck: units since the launch, from the clock (else on at the ratio), and the units
+        // deck.c chooses for them.
+        double ticks, u = q->units;
+        bool clocked = lane_ticks(lane, transport, s->anchor, &ticks);
+        if (clocked)
+            u = ticks / q->ut;
+        if (u < 0.)
+            u = 0.;
+        seq_advance(q, clip, s->anchor, u, (double)(n + SEQ_LEAD) * ratio / q->spu);
+        if (seq_ended(q, u)) {
+            lane_end(clip, lane, 1);    // End with Loop off / Trigger, as deck_limit stops stock
+            s->lane = 0;
+            return 1;
+        }
+        double pos = seq_frame(q, clip, u), at = __builtin_fmod(pos, (double)length);
+        if (at < 0.)
+            at += length;
+        int d = L32(lane, 0x138);
+        if (d < 0)
+            d = 0;
+        int from = d < n ? d : n;
+        L32(lane, 0x138) = d > n ? d - n : 0;
+        float *mono_r = p->mono_r;
+        if (s->mode == WARP_GRAIN) {
+            GranVoice *g = &s->e.g;
+            gran_src_buf = p->gran_src;
+            g->play = pos;              // the grains read where the sequence is
+            for (int i = from; i < n; i += SUB) {
+                int k = n - i < SUB ? n - i : SUB;
+                gran_process(g, sample, length, stereo, (GranReadFn)FW_PCM_READ, dl + i, dr ? dr + i : mono_r,
+                             k, ratio, reset && i == from);
+            }
+        } else {
+            Pool::Virt *v = &p->virt;
+            v->sample = sample;
+            v->length = length;
+            v->clip = clip;
+            v->q = q;
+            for (int j = 0; j < SEQ_RING; j++)
+                v->starts[j] = (int32_t)((float)j * q->spu);
+            v->vlen = (int)((float)SEQ_RING * q->spu);
+            BeatsVoice *b = &s->e.b;
+            if (!reset) {
+                double h = __builtin_fmod(u, (double)SEQ_RING) * q->spu;
+                b->host_i = (int32_t)h;
+                b->host_f = (float)(h - (double)b->host_i);
+            }
+            for (int i = from; i < n; i += SUB) {
+                int k = n - i < SUB ? n - i : SUB;
+                beats_process(b, v, v->vlen, stereo, virt_read, v->starts, SEQ_RING, dl + i,
+                              dr ? dr + i : mono_r, k, ratio, reset && i == from);
+            }
+        }
+        if (!clocked)
+            q->units = u + (double)(n - from) * ratio / q->spu;
+        lane_gain(clip, lane, &s->gain, dl, dr, n, reset);
+        if (!L32(lane, 0x138))
+            FW_ENV_APPLY((void *)(lane + 0x258), dl, dr, n);
+        lane_post_started(clip, lane, ctx, from);
+        lane_post_pos(clip, ctx, at, length);
+        FW_BUF_ENV((void *)(lane + 0x14c), scratch);
+        FW_BUF_MIX((void *)mix, scratch);
+        if (lane_finish(clip, lane, n))
+            s->lane = 0;
+        return 1;
+    }
+#endif
     // The segment clock: from the transport while it runs, else on at the ratio.
     double expect;
     bool clocked = lane_expect(clip, lane, transport, s->anchor, length, &expect);

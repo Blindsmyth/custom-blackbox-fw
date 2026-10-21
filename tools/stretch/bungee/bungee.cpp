@@ -126,6 +126,7 @@ static int win_begin;          /* clip frame (unwrapped) of in_buf[0], when win_
 static bool win_ok;            /* in_buf holds [win_begin, win_begin + GRAIN_IN) */
 static bool unity_hop;         /* the preroll grain's hop runs at speed 1 */
 static bool active;            /* rendering a launch */
+static bool started;           /* the launch's first chunk is in the ring */
 static uint32_t cur_seq;       /* the launch the task is on */
 static int bg_channels;        /* the stretcher's channel count: 2, or 1 for a mono Clip */
 static void *t_sample;         /* the task's copy of the launch parameters */
@@ -146,6 +147,10 @@ static double lock_i;          /* the clock lock's integral term (removes a stea
 static bool anchored;
 static float xf_l[XF], xf_r[XF];
 static LaneGain gain;          /* the pad's Level and pan ramps (lane.h) */
+#ifdef WARP_DECK_SEQ
+static DeckSeq dseq;           /* Clip Deck's unit sequence for the voice's note (lane.h) */
+static int dseq_i;             /* the sequence index the voice is on */
+#endif
 static uint32_t lbl_blocks, lbl_t0;
 
 static RbVoice *voice() { return (RbVoice *)RB_VOICE; }
@@ -357,6 +362,9 @@ static void grain()
     double p0 = o.request[Bungee::OutputChunk::begin]->position;
     if (std::isnan(p0) || p0 < t_base + START)
         return;   // preroll and the grains before the handoff
+    if (!started && p0 > t_base + START + 4 * GRAIN_IN)
+        return;   // still the grains from before the reset (a relaunch to an earlier frame: a loop wrap)
+    started = true;
     const float *r = bg_channels == 2 ? o.data + o.channelStride : o.data;
     uint32_t w = w_frames;
     uint32_t t = tr_count % TRACK;
@@ -398,6 +406,7 @@ static void start_launch()
     win_ok = false;
     w_frames = 0;
     tr_count = 0;
+    started = false;
     active = true;
 }
 
@@ -664,7 +673,15 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     a_pitch = pitch;
     bool snap = false;               /* a new note: Level and pan start at their value */
     if (reset || !playing || sample != a_sample || stereo != a_stereo) {
-        launch_at(sample, length, stereo, 0);
+        int first = 0;
+#ifdef WARP_DECK_SEQ
+        // Clip Deck: the note starts at the unit stock's note start chose (Start, a cue launch).
+        seq_start(&dseq, clip, lane);
+        dseq_i = 0;
+        if (dseq.on)
+            first = seq_unit_frame(&dseq, clip, 0);
+#endif
+        launch_at(sample, length, stereo, first);
         anchored = false;
         lock_i = 0;
         snap = true;
@@ -673,15 +690,56 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         anchor_tick = lane_launch_tick(lane, transport);
         anchored = true;
     }
+    double jump = 4800.;             /* an error this big relaunches instead of being chased */
+    bool sequenced = false;
+    double seq_pos = 0., seq_u = 0.;
+    bool seq_clocked = false;
+#ifdef WARP_DECK_SEQ
+    if (dseq.on) {
+        // Clip Deck: where the sequence is (loop wraps, cue jumps, End). A wrap or a jump is a big
+        // error against Bungee's own position, so the clock lock below relaunches there.
+        double ticks;
+        seq_clocked = lane_ticks(lane, transport, anchor_tick, &ticks);
+        seq_u = seq_clocked ? ticks / dseq.ut : dseq.units;
+        if (seq_u < 0.)
+            seq_u = 0.;
+        seq_advance(&dseq, clip, anchor_tick, seq_u, (double)n * ratio / dseq.spu);
+        if (seq_ended(&dseq, seq_u)) {
+            lane_end(clip, lane, true);
+            stop_voice();
+            set_label("Bungee");
+            lbl_blocks = 0;
+            return;
+        }
+        seq_pos = seq_frame(&dseq, clip, seq_u);
+        sequenced = true;
+        // A wrap or a cue jump: relaunch there on the unit it happens, not once the error is large.
+        int i = (int)seq_u;
+        if (i > dseq.decided)
+            i = dseq.decided;
+        if (i > dseq_i) {
+            bool straight = dseq.unit[i % SEQ_RING] == dseq.unit[dseq_i % SEQ_RING] + (unsigned)(i - dseq_i);
+            dseq_i = i;
+            if (!straight && !launching) {
+                double at = std::fmod(seq_pos, (double)length);
+                launch_at(sample, length, stereo, (int)(at < 0 ? at + length : at));
+            }
+        }
+        if (dseq.spu * 0.5 < jump)
+            jump = dseq.spu * 0.5;
+        if (!seq_clocked)
+            dseq.units = seq_u + (double)n * ratio / dseq.spu;
+    }
+#endif
 
     // Clock lock: where stock would be in the file now, against where Bungee is; the speed is
     // nudged (at most 2 %, no pitch change) so a long sample stays on the beat. A big jump (locate,
     // external clock) relaunches there instead.
-    double speed_now = ratio, expect;
+    double speed_now = ratio, expect = seq_pos;
     if (!launching && !priming && ratio == want &&
-        lane_expect(clip, lane, transport, anchor_tick, length, &expect)) {
+        (sequenced || lane_expect(clip, lane, transport, anchor_tick, length, &expect))) {
         double err = wrap_err(expect - src_pos(), length);
-        if (err > 4800. || err < -4800.) {
+        if (err > jump || err < -jump) {
             double at = std::fmod(expect, (double)length);
             if (at < 0)
                 at += length;
@@ -730,7 +788,7 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     // over, the playhead every block.
     lane_post_started(clip, lane, ctx, from);
     double here = src_pos();
-    if (!loops && here >= length) {
+    if (!loops && !sequenced && here >= length) {
         // Loop off, or Trigger: stock stops at the end of the file. Bungee reads wrap, so stop here.
         lane_end(clip, lane, true);
         stop_voice();
