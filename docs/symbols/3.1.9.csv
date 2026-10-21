@@ -302,3 +302,16 @@ address,name,comment
 0x080ECC70,QuantTable,data; floats, beats per 0x46 option
 0x080EEF28,SeqPage0Ids,data; Duty, Quant Size, Step Mode, MIDI Out (+ Rec Len)
 0x080EED60,ToolsRecIds,data; RecToPlay, RecConfig, Lead In (+ Seq Rec Len)
+0x08044708,Midi_UsbPacketsIn,USB-MIDI packets -> manager ring +0x4660 (map-319 MIDI note path)
+0x0804CB1C,Pcm_PollMidi,MIDI events -> engine msgs 5/6/7/8/9/0xB/0xC via router 0x400
+0x0804C61C,Engine_PostNoteOn,engine msg 0x42 (UI pad press; note 0)
+0x0804F744,MidiMap_PadNoteOn,builds pad event type 2 (+4 offset +8 key +0xC note +0x10 vel) or 0x18 for idx >= 20
+0x0804F908,MidiMap_PadNoteOff,pad event type 3 / 0x19
+0x0804FC9C,MidiMap_RebuildChannels,node+0x334[16] channel roles: 1 pad MIDI In; 2 Global In; 3 Keys; 4 Seq
+0x0804FE18,MidiMap_NoteOn,msg 5: pad MIDI In channel passes the note; Global In padnote/default map pass note 0
+0x08050464,MidiMap_Process,MIDI map node: tbh on msg type - 5; per-pad rows node+0x24+12*idx (midimode; padnote; key)
+0x08065908,Clip_VoiceStart,(clip; transport; offset; note; [sp] velocity; [sp+4] router); 3.1.E hook_voice
+0x08067FA4,Clip_Process,per-pad event loop of the Clip/Slicer engine object
+0x08093E6A,Param_BagAlloc,(bag; n rows) allocates n*8 once; capacity at +0xC; 3.1.E hook_bag_size 64->96
+0x080C6338,Wave_Draw,(wave; ctx) waveform widget draw; vtable 0x080F1968; 3.1.E deck_wave_draw
+0x080C6C34,Wave_Tick,waveform widget tick: scroll/playhead follow; applies zoom target wave+0x24C

@@ -1,5 +1,5 @@
-/* Clip mix hook for Warp Snap. Same stock scratch + envelope + accumulate as Smooth. */
-#include "snap.h"
+/* Clip mix hook for Warp Capi (Capicola keyframe stretch). Same stock scratch + envelope + accumulate as Smooth. */
+#include "capi.h"
 
 typedef int (*pcm_read_fn)(void *, float *, int, int, int);
 typedef int (*pcm_len_fn)(void *);
@@ -18,9 +18,9 @@ static int fw_read(void *sample, float *dest, int count, int pos, int chan)
     return fn(sample, dest, count, pos, chan);
 }
 
-void snap_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
+void capi_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
 {
-    SnapVoice *v = (SnapVoice *)SNAP_BASE;
+    CapiVoice *v = (CapiVoice *)CAPI_BASE;
     void *sample;
     void *scratch;
     float *dl;
@@ -28,14 +28,12 @@ void snap_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     int length, stereo, n, reset;
     float ratio;
     unsigned char a0, a1;
-    const uint32_t *slices;
-    int n_slices;
 
-    if (v->magic != SNAP_MAGIC) {
+    if (v->magic != CAPI_MAGIC) {
         unsigned owner = v->owner;
         int block = v->block_done;
         int req = v->reset_req;
-        snap_init(v);
+        capi_init(v);
         v->owner = owner;
         v->block_done = block;
         v->reset_req = req;
@@ -47,15 +45,6 @@ void snap_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         return;
     length = ((pcm_len_fn)0x080636f1u)(sample);
     stereo = ((pcm_st_fn)0x08063791u)(sample) ? 1 : 0;
-    /* clip+0x24C → uint32[] sample positions; count at +0x250. */
-    slices = *(const uint32_t **)(clip + 0x24C);
-    n_slices = *(int *)(clip + 0x250);
-    if (!slices || n_slices <= 0) {
-        slices = 0;
-        n_slices = 0;
-    } else if (n_slices > 2048) {
-        n_slices = 2048;
-    }
     scratch = ((buf_slot_fn)0x0805f3a5u)((void *)ctx, 1);
     if (!scratch)
         return;
@@ -79,8 +68,7 @@ void snap_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     if ((a0 || a1) && !v->prev_active)
         reset = 1;
     v->prev_active = (a0 || a1) ? 1 : 0;
-    snap_process(v, sample, length, stereo, fw_read, slices, n_slices,
-                 dl, dr, n, ratio, reset);
+    capi_process(v, sample, length, stereo, fw_read, dl, dr, n, ratio, reset);
     ((buf_env_fn)0x080762d9u)((void *)(lane + 0x14c), scratch);
     ((buf_mix_fn)0x0804da6du)((void *)mix, scratch);
 }
