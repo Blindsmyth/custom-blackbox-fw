@@ -545,7 +545,8 @@ def t_smooth_enum_labels(bench, res):
         res.check(b.cstr(b.u32(labels)) == "Stretch", "label0 Stretch")
         res.check(b.cstr(b.u32(labels + 4)) == "Repitch", "label1 Repitch")
         res.check(b.cstr(b.u32(labels + 8)) == "Smooth", "label2 Smooth")
-        res.check(b.cstr(b.u32(labels + 12)) == "Capi", "label3 Capi")
+        if "capi_mix" in bench.sym:                  # 3.1.Z still builds Snap here; only 3.1.E has Capi
+            res.check(b.cstr(b.u32(labels + 12)) == "Capi", "label3 Capi")
         res.check(b.cstr(b.u32(labels + 16)) == "Vari", "label4 Vari")
         res.check(b.cstr(b.u32(labels + 20)) == "Grain", "label5 Grain")
         if leaf:
@@ -5623,7 +5624,7 @@ def main():
             ("Smooth lane hook present", t_smooth_lane_hook),
             ("Capi clip-engine flag", t_capi_clip_flag),
             ("Capi grain store sets reset", t_capi_main_rate_sets_reset),
-            ("Capi lane symbols present", t_capi_lane_hook),
+            *([("Capi lane symbols present", t_capi_lane_hook)] if "capi_mix" in sym else []),
             ("Vari clip-engine flag", t_vari_clip_flag),
             ("Vari grain store sets reset", t_vari_main_rate_sets_reset),
             ("Vari lane symbols present", t_vari_lane_hook),
