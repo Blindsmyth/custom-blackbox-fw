@@ -74,6 +74,14 @@ Measured on the bench at 90 BPM on a 130 BPM Clip (0.69x), with a click at every
 - **Sequenced cue notes on Bungee, Fill and Grain** (second unit test): a cue note from the sequencer on the bar comes in just after the bar's first unit was chosen, so the jump waited a whole Quant (the first repeat sounded ignored, later ones a bar late). A cue note up to 32 ms after a Quant boundary now takes that boundary (`deck_cue_late`); if the unit already plays, Bungee re-launches at the cue, plus the time since the bar.
 - **Stutter with Sync = Slice** now runs on like stock Stretch does on the grid, with the slices as segments. Stock gates the gap there.
 
+**Diagnostic label (this build):** while Bungee plays, its Warp list label reads like `r49e+0j0u0d` instead of the CPU figures, once a second:
+- `r`: the tempo ratio × 100 that stock gives the Clip (tempo ÷ Clip tempo);
+- `e`: the clock lock's last error in ms (+ = Bungee behind the clock);
+- `j`: re-launches in the last second (loop and cue jumps, big errors);
+- `u`: blocks Bungee was late for;
+- `d`: Clip Deck sequences the Clip.
+`BG_DIAG 0` in `bungee.cpp` brings the CPU label back.
+
 ## Clip Deck in this build
 
 Clip Deck works as on 3.1.E (`../../3.1.9-clip-deck/README.md`), on **every** Warp mode, wherever the Clip is on a note-value Sync grid (as on 3.1.E: not with Sync None or Sync = Slice).

@@ -96,6 +96,9 @@ typedef int (*rtos_ret_fn)(void);
 #ifndef BG_PROFILE
 #define BG_PROFILE 1   /* Warp label "B40a19s19u0": task CPU %, analysis, synthesis, underruns */
 #endif
+#ifndef BG_DIAG
+#define BG_DIAG 1      /* Warp label "r49e+0j0u0d": sync diagnostics instead (label_diag) */
+#endif
 
 // ---- shared between the audio task (rubber_mix) and the leaf task (rubber_work) -------------
 // The audio task asks for a launch by publishing its parameters and then a new req_seq; the leaf
@@ -190,6 +193,53 @@ static void label_profile(uint32_t total, uint32_t an, uint32_t syn, uint32_t un
     p = put_pct(p, syn);
     *p++ = 'u';
     p = put_pct(p, under);
+    *p = 0;
+    set_label(s);
+}
+
+// "r49e+0j0u0d", for finding a sync fault on the unit: r the Clip's tempo ratio x 100 (clip+0xBB4,
+// as stock's tempo / clip tempo gives it), e the clock lock's last error in ms (+: Bungee behind the
+// clock's position), j the re-launches in the last second (cue/loop jumps and big errors), u the
+// underruns, d when Clip Deck sequences the Clip.
+static float dbg_want;
+static double dbg_err;
+static uint32_t dbg_jumps;
+static bool dbg_deck;
+
+static char *put_int(char *p, int v, bool sign)
+{
+    char t[8];
+    int n = 0;
+    if (v < 0) {
+        *p++ = '-';
+        v = -v;
+    } else if (sign) {
+        *p++ = '+';
+    }
+    if (v > 9999)
+        v = 9999;
+    do {
+        t[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    while (n)
+        *p++ = t[--n];
+    return p;
+}
+
+static void label_diag(uint32_t under)
+{
+    char s[24], *p = s;
+    *p++ = 'r';
+    p = put_int(p, (int)(dbg_want * 100.f + 0.5f), false);
+    *p++ = 'e';
+    p = put_int(p, (int)(dbg_err / 48.), true);
+    *p++ = 'j';
+    p = put_int(p, (int)dbg_jumps, false);
+    *p++ = 'u';
+    p = put_int(p, (int)under, false);
+    if (dbg_deck)
+        *p++ = 'd';
     *p = 0;
     set_label(s);
 }
@@ -659,6 +709,7 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         return;
 
     float want = *(float *)(clip + 0xBB4);   // tempo / clip tempo (repitch.S hook_rate)
+    dbg_want = want;
     float ratio = want;
     if (!(ratio >= RB_MIN_RATIO))
         ratio = RB_MIN_RATIO;
@@ -704,6 +755,7 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     }
     double jump = 4800.;             /* an error this big relaunches instead of being chased */
     bool sequenced = false;
+    dbg_deck = false;
     double seq_pos = 0., seq_u = 0.;
     bool seq_clocked = false;
 #ifdef WARP_DECK_SEQ
@@ -733,6 +785,7 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         }
         seq_pos = seq_frame(&dseq, clip, seq_u);
         sequenced = true;
+        dbg_deck = true;
         // A wrap or a cue jump: relaunch there on the unit it happens, not once the error is large.
         int i = (int)seq_u;
         if (i > dseq.decided)
@@ -747,6 +800,7 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
             if (!straight && !launching) {
                 double at = std::fmod(seq_pos, (double)length);
                 launch_at(sample, length, stereo, (int)(at < 0 ? at + length : at), ratio);
+                dbg_jumps++;
             }
         }
         if (dseq.spu * 0.5 < jump)
@@ -763,11 +817,13 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     if (!launching && !priming && ratio == want &&
         (sequenced || lane_expect(clip, lane, transport, anchor_tick, length, &expect))) {
         double err = wrap_err(expect - src_pos(), length);
+        dbg_err = err;
         if (err > jump || err < -jump) {
             double at = std::fmod(expect, (double)length);
             if (at < 0)
                 at += length;
             launch_at(sample, length, stereo, (int)at, ratio);
+            dbg_jumps++;
         } else {
             // PI on the source-frame error, tuned with the ring's ~8-block delay in the loop
             // (bench): 2 ms of error asks the full 2 %, the integral takes over a steady
@@ -845,7 +901,11 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
     }
     if (++lbl_blocks > RB_BLOCKS_SEC) {
         uint32_t wall = DWT_CYCCNT - lbl_t0, per = wall / 100u + 1u;
-#if BG_PROFILE
+#if BG_DIAG
+        (void)per;
+        label_diag(underruns);
+        dbg_jumps = 0;
+#elif BG_PROFILE
         label_profile(task_cyc / per, task_an / per, task_syn / per, underruns);
 #else
         label_load(task_cyc / per);
