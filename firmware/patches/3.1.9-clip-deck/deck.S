@@ -241,5 +241,25 @@ hook_song_scene:
     pop     {r0, r1, r2, r3, r12, lr}
     ldr.w   r0, [r4, #0xC20]
     bx      lr
+
+@ Clip pad event switch (FUN_08067FA4): its jump-table entry for msg 0x8B (0x0806823C) points here.
+@ r4 = the clip, all other registers and the stack are the switch's. song_pad_start returns 1 when
+@ the event became a pending cue jump: skip it (the switch's loop, as an unhandled type does).
+.equ PAD_8B_STOCK, 0x080683B5
+.equ PAD_EVT_NEXT, 0x08067FF5
+.global hook_pad_start
+.thumb_func
+hook_pad_start:
+    push    {r0, r1, r2, r3, r12, lr}
+    mov     r0, r4
+    bl      song_pad_start
+    cmp     r0, #0
+    pop     {r0, r1, r2, r3, r12, lr}
+    bne     1f
+    ldr     r12, =PAD_8B_STOCK
+    bx      r12
+1:
+    ldr     r12, =PAD_EVT_NEXT
+    bx      r12
 .ltorg
 .endif

@@ -6466,16 +6466,20 @@ def t_song_engine(bench, res):
     res.check(b.u8(SG_REQ + 4) == 0, "song at step 3: nothing")
     b.mu.mem_write(clip + 0x28, b"\x01")           # playing again; the scene's pad event (0x8B) arrives
     b.mu.mem_write(clip + 0x260, b"\x01")
+    pad_start = sym["song_pad_start"]
     _scene_start(b, 1)
-    res.check(b.call(note, clip, 0) == CUE_SWALLOW and _cue(b, 4)["pending"] == 10,
-              "playing: the scene's retrigger becomes the jump to Cue C")
-    res.check(b.u8(SG_REQ + 4) == 0 and b.call(note, clip, 0) == 0, "only once: a later press retriggers")
+    res.check(b.call(note, clip, 0) == 0, "a voice start with note 0 is never swallowed (stock released the lanes)")
+    _scene_start(b, 1)
+    res.check(b.call(pad_start, clip) == 1 and _cue(b, 4)["pending"] == 10,
+              "playing: the scene's pad event (0x8B) becomes the jump to Cue C")
+    res.check(b.u8(SG_REQ + 4) == 0 and b.call(pad_start, clip) == 0, "only once: a later 0x8B is stock's")
     _scene_start(b, 2)
-    res.check(b.call(note, clip, 0) == 0, "scene whose cue is Off on the pad: stock retrigger")
+    res.check(b.call(pad_start, clip) == 0, "scene whose cue is Off on the pad: stock's 0x8B")
     b.mu.mem_write(clip + 0x28, b"\x00")
     b.mu.mem_write(clip + 0x260, b"\x00")
     _scene_start(b, 1)
-    res.check(b.call(note, clip, 0) == 0 and b.call(unit0, clip, 0) == 10, "stopped: the pad event starts it at the cue")
+    res.check(b.call(pad_start, clip) == 0 and b.call(note, clip, 0) == 0 and b.call(unit0, clip, 0) == 10,
+              "stopped: stock's pad event starts it, at the cue")
     _cue_set(bench, 0x0100, mode=0, cues=())
     _scene_start(b, 0)
     res.check(b.call(unit0, clip, 0) == 0, "pad without cues: stock")
@@ -6634,6 +6638,54 @@ def t_song_ui(bench, res):
     post(0x2B, 0)                                  # back to the sequence grid
     res.check(all(b.u8(w + 0x30) for w in ours), "leaving the pad grid hides them")
 
+PAD_EVT_TABLE = 0x08068018            # FUN_08067FA4's switch: words, index = msg type - 2
+PAD_8B_STOCK, PAD_EVT_NEXT = 0x080683B4, 0x08067FF4
+
+
+def t_song_pad_event(bench, res):
+    """The Clip pad's msg 0x8B (the scene's pad event): stock releases both lanes, then starts a voice.
+    A playing clip with a scene cue waiting skips that case (pending jump instead), else it is stock's."""
+    from unicorn import arm_const as A
+    b, sym = bench.b, bench.sym
+    img = b.image
+    word = lambda va: int.from_bytes(img[va - bd.BASE:va - bd.BASE + 4], "little")
+    res.check(word(PAD_EVT_TABLE + 4 * (0x8B - 2)) == sym["hook_pad_start"] | 1, "0x8B entry -> hook_pad_start")
+    res.check(word(PAD_EVT_TABLE + 4 * (0x8C - 2)) == 0x080682BD and word(PAD_EVT_TABLE + 4 * (4 - 2)) == PAD_EVT_NEXT | 1,
+              "0x8C and the rest stay stock")
+    res.check(img[0x080683B4 - bd.BASE:0x080683B8 - bd.BASE].hex() == "94f86032" and
+              _bl_target(img, 0x080689BE) == 0x08064650 and _bl_target(img, 0x080689AC) == 0x08064650,
+              "stock's 0x8B case releases the lanes (FUN_08064650) before the voice start")
+    hit = []
+    b.stub(PAD_8B_STOCK, lambda board: hit.append("stock"))
+    b.stub(PAD_EVT_NEXT, lambda board: hit.append("next"))
+    b.w32(DK_BASE, 0)
+    b.call(sym["deck_init"])
+    clip = _deck_clip(b)
+    _cue_set(bench, 0x0100, cues=(6, 0, 11))
+    b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 4, 3, 0, 1)
+
+    def run():
+        hit.clear()
+        b.mu.reg_write(A.UC_ARM_REG_R4, clip)
+        b.mu.reg_write(A.UC_ARM_REG_R5, 0x5555)
+        b.call(sym["hook_pad_start"], 0x11, 0x22, 0x33, 0x44)
+        regs = [b.mu.reg_read(getattr(A, f"UC_ARM_REG_R{i}")) for i in (0, 1, 2, 3, 4, 5)]
+        return hit[:], regs
+
+    b.mu.mem_write(clip + 0x28, b"\x01")
+    b.mu.mem_write(clip + 0x260, b"\x01")
+    _scene_start(b, 1)
+    got, regs = run()
+    res.check(got == ["next"] and _cue(b, 4)["pending"] == 10, f"playing + scene cue: skipped, jump pending {got}")
+    res.check(regs == [0x11, 0x22, 0x33, 0x44, clip, 0x5555], f"registers kept {[hex(r) for r in regs]}")
+    got, _ = run()
+    res.check(got == ["stock"], f"no cue waiting: stock's case {got}")
+    b.mu.mem_write(clip + 0x28, b"\x00")
+    b.mu.mem_write(clip + 0x260, b"\x00")
+    _scene_start(b, 1)
+    got, _ = run()
+    res.check(got == ["stock"] and b.u8(SG_ARM + 4) == 3, f"stopped: stock starts it (armed at Cue C) {got}")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
@@ -6782,6 +6834,7 @@ def main():
             ("Song cues: Engine_PostParam keeps them", t_song_post),
             ("Song cues: scene start jumps / arms the pads", t_song_engine),
             ("Song cues: next scene's cue cached", t_song_prefetch),
+            ("Song cues: the scene's pad event on a playing Clip jumps", t_song_pad_event),
             ("Song cues: pad grid letters and taps", t_song_ui),
         ]
     cases += [("MIDI note path facts", t_midi_path_facts),

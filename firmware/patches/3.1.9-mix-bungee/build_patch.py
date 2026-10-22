@@ -261,6 +261,7 @@ SONG_SITES = [
 SONG_VTABLE = [
     (0x080F1788, "song_event", 0x080C3541),              # Song screen vt+0x30
     (0x080F178C, "song_event2", 0x080C3861),             # Song screen vt+0x34
+    (0x0806823C, "hook_pad_start", 0x080683B5),          # Clip pad event switch, msg 0x8B (scene pad event)
 ]
 
 

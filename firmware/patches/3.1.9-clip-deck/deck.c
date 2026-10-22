@@ -192,7 +192,6 @@ static void song_init(void);
 static unsigned song_start_unit(void *clip, DkCue *c);
 static void song_grain(void *clip, DkCue *c);
 static void song_drop(void *clip);
-static int song_retrigger(void *clip, DkCue *c);
 #endif
 
 void deck_init(void)
@@ -648,10 +647,6 @@ unsigned deck_cue_note(void *clip, unsigned note)
         return note;
     c = clip_cue(clip);
     c->launch = CUE_NONE;
-#ifdef SONG_CUES
-    if (note == 0 && song_retrigger(clip, c))
-        return CUE_SWALLOW;
-#endif
     if (!cue_active(c) || note - c->note >= CUES)
         return note;
     k = note - c->note;
@@ -2053,16 +2048,20 @@ static unsigned song_start_unit(void *clip, DkCue *c)
     return song_unit(clip, c, v);
 }
 
-/* deck_cue_note, a start with note 0 (a pad press, or the scene's own pad event, msg 0x8B) on a clip
- * that is playing while a scene start's jump is waiting for it: the start would retrigger the clip
- * (at Start, or at the cue via the arm). It becomes the pending jump instead, as a cue note on a
- * playing clip does, so the clip stays in time. */
-static int song_retrigger(void *clip, DkCue *c)
+/* hook_pad_start: the Clip pad's event switch (FUN_08067FA4) at msg 0x8B, the scene's own pad event
+ * (also a scene note). Stock releases both lanes there and starts a new voice: a retrigger. On a
+ * clip that is playing while its scene start's jump waits, the event becomes the pending jump
+ * instead (returns 1: the stub skips it), as a cue note on a playing clip does, so the clip keeps
+ * playing and jumps at the next Quant Size boundary. Swallowing only the voice start, after stock had
+ * released the lanes, stopped the clip (found on the unit, 3.1.T test 2026-10-23). */
+int song_pad_start(void *clip)
 {
+    DkCue *c;
     unsigned k, unit;
-    if (!sg_live() || !u8(clip, 0x28) || !(u8(clip, 0x260) || u8(clip, 0x670)))
+    if (!sg_live() || !live() || !u8(clip, 0x28) || !(u8(clip, 0x260) || u8(clip, 0x670)))
         return 0;
     k = idx_unpacked(u32(clip, 0x18));
+    c = clip_cue(clip);
     if (!SG->req[k] || (unit = song_unit(clip, c, SG->req[k])) == CUE_NONE)
         return 0;
     SG->req[k] = 0;
