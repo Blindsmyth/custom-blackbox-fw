@@ -4,6 +4,7 @@ One image with everything on this line:
 - **The base:** 3.1.Q: folders, the Mix screen, Seq Rec, the looper, Tools → Master.
 - **Bungee** in flash bank 2 (3.1.B, `..`).
 - **Clip Deck** (3.1.E, `../../3.1.9-clip-deck`): Start / End / Loop, 8 hot cues, the waveform editor.
+- **Song cues:** a Song scene sends Clip pads to one of their hot cues when it starts (see below).
 - **Warp Stutter / Fill / Repitch / Chop / Grain / Bungee.**
 - **The preset-folder fixes** (`docs/preset-folders.md`):
   - no dropout when entering big folders;
@@ -95,6 +96,21 @@ What changes against 3.1.E:
 - **Version text:** "3.1.T" goes after the cave, as on 3.1.E (`tools/version_text.py`). The '9' of "3.1.9" stays, so the naming keyboard's 9 key types 9. 3.1.Q and 3.1.B overwrite it.
 - **Next-grain hook:** the call at `0x08066CF2` belongs to both Clip Deck and the Mix line's Env Trig. `hook_wrap_grain` chooses the unit, then jumps on to `env_slice`, which starts the grain.
 
+## Song cues
+
+Each Song scene can send Clip pads to a hot cue when it starts. Design and the stock code it uses: [docs/song-cues.md](../../../../docs/song-cues.md).
+
+- **Where:** SONG → touch a scene's sequence grid. Next to stock's Keep / D / C / B / A there are two button columns, **CueA–CueD** and **CueE–CueH**, with A at the top.
+- **Setting a cue:** touch a cue button (it lights; the grid now shows each pad's cue for this scene), then touch pads. The same cue again clears it. Touch A–D or Keep to go back to stock's patterns. The pad grid is unchanged.
+- **When the scene starts** (in Song mode, also each Loop1 repeat):
+  - **Clip playing:** it jumps to the cue at the next Quant Size boundary, exactly as a cue note does.
+  - **Clip stopped:** it is armed. Whenever it starts during that scene (its pad event, its sequence, a pad press), it starts at the cue. The next scene start changes or clears that; stopping the song clears it.
+  - No note is sent, so Toggle / Gate and MIDI In channels play no part. A cue note after the scene start still wins.
+  - Nothing happens on a pad that isn't a Clip on a note-value Sync grid, has no cues in use, or has that cue Off.
+- **Gapless:** while a scene plays, each pad's cue for the next scene is kept cached, as for a pending cue note.
+- **Stored** in each scene as `scue1`–`scue16` (one per pad: 0 none, 1–8 = Cue A–H; ids `0x1C0`–`0x1CF`), by stock's scene code: saved, loaded, copied with Cut / Copy / Paste, cleared by Clear. Stock 3.1.9 ignores them.
+- **Memory:** SRAM4 `0x38006400`–`0x38006B3C` (`SgState` in `deck.c`: the 32 × 16 table and the 8 buttons).
+
 ## Bungee in this build (and in 3.1.B)
 
 - **Volume:** the pad's Level, with velocity and its mods, and pan now apply to Bungee, as stock's grain reader applies them.
@@ -131,6 +147,8 @@ What changes against 3.1.E:
 - Level, loop off;
 - Stutter on slices (run-on), and on a grid left to stock;
 - Bungee's Pitch and Level.
+
+The `Song cues:` cases run the real scene template, Engine_PostParam, the song player at a scene start (`FUN_0805CDA0`) and the Song screen built by the real GUI constructor, with taps through its vtable.
 
 ## Not done yet
 

@@ -186,6 +186,14 @@ static int live(void)
     return ST->magic == DK_MAGIC;
 }
 
+#ifdef SONG_CUES
+/* Song cues (3.1.T, docs/song-cues.md): the code is at the end of this file. */
+static void song_init(void);
+static unsigned song_start_unit(void *clip, DkCue *c);
+static void song_grain(void *clip, DkCue *c);
+static void song_drop(void *clip);
+#endif
+
 void deck_init(void)
 {
     unsigned *w = (unsigned *)DK_BASE;
@@ -215,6 +223,9 @@ void deck_init(void)
     ST->ui.grid = 1;       /* grid lines on: the Grid popup's Lines turns them off */
     ST->wrap_clip = 0;
     ST->bar_mode = 0xFF;   /* the view is rebuilt on boot with the stock "..." label */
+#ifdef SONG_CUES
+    song_init();
+#endif
 }
 
 int deck_is_id(unsigned id)
@@ -332,6 +343,12 @@ void deck_register(void *reg)
     deck_register_cues(reg);
     PARAM_ENUM(reg, ID_GRID, t_grid, grid_names, GRID_SIZES, x_grid);
     PARAM_NUMBER(reg, ID_GRIDOFS, 1, t_gridofs, -OFS_MAX, OFS_MAX, x_gridofs);
+#ifdef SONG_CUES
+    {
+        void song_register(void *reg);
+        song_register(reg);
+    }
+#endif
 }
 
 static int bag_has(const void *bag, unsigned id)
@@ -552,6 +569,10 @@ unsigned deck_note_unit(void *clip, unsigned unit)
     at = c->launch;
     c->launch = CUE_NONE;
     c->pending = CUE_NONE;
+#ifdef SONG_CUES
+    if (at == CUE_NONE)
+        at = song_start_unit(clip, c);   /* the playing Song scene's cue for this pad */
+#endif
     if (unit != 0)
         return played(clip, unit);
     if (at != CUE_NONE && (n = grid_units(clip, &ut)) != 0)
@@ -636,6 +657,9 @@ unsigned deck_cue_note(void *clip, unsigned note)
         if (unit != CUE_NONE) {
             c->pending = (unsigned short)unit;
             cue_prefetch(clip, unit, 0);
+#ifdef SONG_CUES
+            song_drop(clip);   /* a cue note after a scene start wins over the scene's cue */
+#endif
         }
         return CUE_SWALLOW;
     }
@@ -678,6 +702,9 @@ unsigned deck_wrap_unit(void *clip, unsigned unit, const long long *tick)
         unit = ST->wrap_unit;
     ST->wrap_clip = 0;
     c = clip_cue(clip);
+#ifdef SONG_CUES
+    song_grain(clip, c);    /* a Song scene start's jump becomes the pending one */
+#endif
     if (c->pending == CUE_NONE || !(n = grid_units(clip, &ut)))
         return played(clip, in_loop(clip, unit, 0));
     q = *(const long long *)at(clip, 0x218);
@@ -1875,3 +1902,359 @@ int deck_ui_event(void *view, const unsigned short *ev)
     row_lights(view);
     return 1;
 }
+
+#ifdef SONG_CUES
+/* ---- Song cues (3.1.T, docs/song-cues.md) ----
+ * A Song scene sends Clip pads to one of their hot cues when it starts. Scenes are the layers of the
+ * song's engine sequence (key 0x20303); each scene's bag holds scue1..scue16 (one per pad: 0 = none,
+ * 1..8 = Cue A..H), added to the scene template so stock saves, loads and copies them by name.
+ * hook_post copies them to SgState.cue as stock re-sends a scene (FUN_0809C140) and keeps them from
+ * the engine. At a scene start (hook_song_scene) a playing Clip gets the cue as its pending jump
+ * (taken at the next Quant Size boundary, as a cue note sets it) and the pad is armed: whenever it
+ * starts during that scene, it starts at the cue. No note is sent, so Toggle / Gate and MIDI In play
+ * no part. The Song screen's sequence grid gets two button columns, Cue A-D and Cue E-H. */
+
+#define SG_BASE      0x38006400u   /* SRAM4, free on 3.1.T: the Looper ends here, RbVoice starts at 0x38007000 */
+#define SG_END       0x38007000u
+#define SG_MAGIC     0x31474E53u   /* 'SNG1' */
+#define SCENES       32
+#define ID_SCUE      0x1C0         /* scue1..scue16; 3.1.T's params end at Clip Deck's 0x1BF */
+#define SONG_KEY     0x20303u      /* the song's engine sequence; its layers are the scenes */
+#define SG_BTN_ID    0x191         /* our Song-screen buttons, after Keep (0x190) */
+
+typedef struct {
+    unsigned magic;
+    void *player;                         /* song player at the last scene start */
+    unsigned char cue[SCENES][DK_PADS];   /* engine copy of each scene's scue params (hook_post) */
+    unsigned char req[DK_PADS];           /* 1..8: a scene start asks the playing clip to jump (song_grain) */
+    unsigned char arm[DK_PADS];           /* 1..8: where the pad starts during this scene */
+    unsigned char next[DK_PADS];          /* 1..8: the next scene's cue, kept cached */
+    unsigned char brush;                  /* Song screen: 0 = stock brush, 1..8 = Cue A..H */
+    unsigned char shown;                  /* our buttons are shown (sequence grid open) */
+    unsigned char rsv[2];
+    unsigned btn[CUES][0x28];             /* 8 stock buttons (0xA0 each): Cue A..H */
+} SgState;
+
+#define SG ((SgState *)SG_BASE)
+typedef char sg_fits[(SG_BASE + sizeof(SgState) <= SG_END) ? 1 : -1];
+typedef char sg_btn_aligned[(__builtin_offsetof(SgState, btn) & 3) == 0 ? 1 : -1];
+
+static int sg_live(void)
+{
+    return SG->magic == SG_MAGIC && live();
+}
+
+/* Every boot (deck_init, from Param_RegisterAll): the scene table is filled again as the preset's
+ * scenes are sent to the engine. The buttons are built by the Song screen's constructor. */
+static void song_init(void)
+{
+    unsigned char *p = (unsigned char *)&SG->cue[0][0];
+    unsigned i;
+    for (i = 0; i < __builtin_offsetof(SgState, btn) - __builtin_offsetof(SgState, cue); i++)
+        p[i] = 0;
+    SG->player = 0;
+    SG->magic = SG_MAGIC;
+}
+
+static const char t_scue[DK_PADS][16] = {
+    "Scene Cue 1:", "Scene Cue 2:", "Scene Cue 3:", "Scene Cue 4:", "Scene Cue 5:", "Scene Cue 6:",
+    "Scene Cue 7:", "Scene Cue 8:", "Scene Cue 9:", "Scene Cue 10:", "Scene Cue 11:", "Scene Cue 12:",
+    "Scene Cue 13:", "Scene Cue 14:", "Scene Cue 15:", "Scene Cue 16:"};
+static const char x_scue[DK_PADS][7] = {"scue1", "scue2", "scue3", "scue4", "scue5", "scue6", "scue7",
+                                        "scue8", "scue9", "scue10", "scue11", "scue12", "scue13",
+                                        "scue14", "scue15", "scue16"};
+
+/* deck_register: plain numbers 0..8 (only the Song screen edits them). */
+void song_register(void *reg)
+{
+    unsigned i;
+    for (i = 0; i < DK_PADS; i++)
+        PARAM_NUMBER(reg, ID_SCUE + i, 1, t_scue[i], 0, CUES, x_scue[i]);
+}
+
+/* 0x0809450C, Param_BagTemplate case 0x4E (scene): stock adds Play Count (0xC3) only. */
+void song_template(void *bag, unsigned id, int value)
+{
+    unsigned i;
+    PARAM_ADD(bag, id, value);
+    for (i = 0; i < DK_PADS; i++)
+        PARAM_ADD(bag, ID_SCUE + i, 0);
+}
+
+/* hook_post (Engine_PostParam): our ids on the song's sequence are kept here, not posted. */
+int song_post(unsigned key, unsigned id, unsigned value, unsigned layer)
+{
+    if (id - ID_SCUE >= DK_PADS)
+        return 0;
+    if (sg_live() && key == SONG_KEY && layer < SCENES)
+        SG->cue[layer][id - ID_SCUE] = (unsigned char)(value <= CUES ? value : 0);
+    return 1;
+}
+
+/* 0x0805CE0C (hook_song_scene): FUN_0805CDA0 is about to send a scene's starts and stops, at step 0
+ * of the playing layer, on the song (player +0x60) only. The layer's index is the scene. Player
+ * +0x64 is the scene count; +0x5C set means the song moves on to the next scene (not Loop1). */
+void song_scene(void *player)
+{
+    const void *layer;
+    unsigned scene, nxt, k;
+    if (!sg_live() || u32(player, 0x18) != SONG_KEY || !(layer = *(void **)at(player, 0xC20)))
+        return;
+    scene = *(const unsigned short *)((const char *)layer + 0x40);
+    if (scene >= SCENES)
+        return;
+    nxt = !u8(player, 0x5C) ? scene : scene + 1 < u32(player, 0x64) ? scene + 1 : 0;
+    if (nxt >= SCENES)
+        nxt = 0;
+    SG->player = player;
+    for (k = 0; k < DK_PADS; k++) {
+        unsigned v = SG->cue[scene][k];
+        SG->req[k] = (unsigned char)v;
+        SG->arm[k] = (unsigned char)v;
+        SG->next[k] = SG->cue[nxt][k];
+    }
+}
+
+static int song_playing(void)
+{
+    return SG->player && u8(SG->player, 0x30);
+}
+
+/* Unit of cue letter v (1..8) on this clip, or CUE_NONE: not a unit grid, cues not in use, cue Off. */
+static unsigned song_unit(void *clip, const DkCue *c, unsigned v)
+{
+    unsigned ut, n, s;
+    if (v == 0 || v > CUES || !(n = grid_units(clip, &ut)) || !cue_active(c) || (s = c->cue[v - 1]) == CUE_NONE)
+        return CUE_NONE;
+    s = to_units(s, ut);
+    return s < n ? s : n - 1;
+}
+
+/* deck_note_unit, no cue note pending: during a scene with a cue on this pad, the pad starts there. */
+static unsigned song_start_unit(void *clip, DkCue *c)
+{
+    unsigned k = idx_unpacked(u32(clip, 0x18)), v;
+    if (!sg_live())
+        return CUE_NONE;
+    v = SG->arm[k];
+    SG->req[k] = 0;                    /* this start is already at the cue */
+    if (!song_playing()) {
+        SG->arm[k] = 0;
+        return CUE_NONE;
+    }
+    return song_unit(clip, c, v);
+}
+
+/* deck_cue_note set a pending jump: a scene start's request for this pad is dropped. */
+static void song_drop(void *clip)
+{
+    if (sg_live())
+        SG->req[idx_unpacked(u32(clip, 0x18))] = 0;
+}
+
+/* deck_wrap_unit, every grain of a playing clip: a scene start's jump becomes the pending jump (a cue
+ * note before the boundary still replaces it). Otherwise the next scene's cue is kept cached. */
+static void song_grain(void *clip, DkCue *c)
+{
+    unsigned k, v, unit;
+    if (!sg_live())
+        return;
+    k = idx_unpacked(u32(clip, 0x18));
+    if ((v = SG->req[k]) != 0) {
+        SG->req[k] = 0;
+        if ((unit = song_unit(clip, c, v)) != CUE_NONE) {
+            c->pending = (unsigned short)unit;
+            cue_prefetch(clip, unit, 0);
+        }
+        return;
+    }
+    if (c->pending == CUE_NONE && (v = SG->next[k]) != 0 && song_playing() &&
+        (unit = song_unit(clip, c, v)) != CUE_NONE)
+        cue_prefetch(clip, unit, 1);
+}
+
+/* ---- Song screen (FUN_080C2980, vtable 0x080F1758) ---- */
+
+typedef int (*evt_fn)(void *, void *);
+typedef void (*evt2_fn)(void *, void *);
+typedef void (*setp_fn)(void *, unsigned, int);
+typedef void (*cell_fn)(void *, unsigned, unsigned);
+#define APP          ((void *)0x24020088u)
+#define APP_SCENES   0x29C0      /* scene k's bag: APP + 0x29C0 + k * 0x30 */
+#define APP_DIRTY    0x8CC4      /* unsaved changes */
+#define SONG_SCENE   0x12180     /* selected scene */
+#define SONG_BRUSH   0x1218D     /* stock brush: A..D = 0..3, Keep = 4 */
+#define SONG_MODE    0x12194     /* 0/1 scene list, 2 sequence grid, 3 pad grid */
+#define SONG_GRID    0x1072C     /* the 4 x 4 grid: a letter and a Keep mark per cell */
+#define SONG_PANEL   0x11E28     /* Keep D C B A (FUN_080B8548), buttons from +0x34 */
+#define PANEL_BTN    0x34
+#define PANEL_SEL    0x354       /* s8: highlighted button 0..4, -1 none */
+#define ID_PATTERN_A 0x18C       /* A..D, Keep = 0x190 */
+#define SG_X0        170         /* panel: Cue A-D | Cue E-H | stock, 50 px each */
+#define SG_COLW      50
+#define SG_ROW       44          /* stock's button pitch (43 px buttons) */
+#define SONG_EVENT   ((evt_fn)0x080C3541u)     /* vt+0x30 */
+#define SONG_EVENT2  ((evt2_fn)0x080C3861u)    /* vt+0x34 */
+#define SONG_LETTERS ((view_fn)0x080C2891u)    /* the grid's letters from the scene's items */
+#define PANEL_LAYOUT ((rect_fn)0x080B82A3u)    /* stock buttons in the rect, stacked */
+#define PANEL_SELECT ((state_fn)0x080B85DDu)   /* highlight button i */
+#define SCENE_SEND   ((state_fn)0x0809C141u)   /* (app, scene): items and params to the engine */
+#define PARAM_SET    ((setp_fn)0x08093ECDu)
+#define CELL_LETTER  ((cell_fn)0x080A367Du)
+#define CELL_KEEP    ((cell_fn)0x080A36A9u)
+#define BTN_STYLE    ((state_fn)0x080A3EA7u)
+
+static const char s_cuebtn[CUES][5] = {"CueA", "CueB", "CueC", "CueD", "CueE", "CueF", "CueG", "CueH"};
+
+static void btn_hide(void *b, unsigned hidden)
+{
+    ((state_fn)(*(unsigned **)b)[11])(b, hidden);   /* vt+0x2C, as FUN_080B861E hides A..D */
+}
+
+static void *song_bag(unsigned scene)
+{
+    return at(APP, APP_SCENES + scene * 0x30);
+}
+
+/* 0x080C323A in the Song screen's constructor: the panel's layout. Stock's five buttons go to the
+ * right-hand 50 px; our eight fill the two columns left of them, Cue A at the top. The panel's rect
+ * then spans all three, and the constructor sizes the grid from what is left (170 px: a 160 px grid). */
+void song_panel(void *panel, const int *rect)
+{
+    int r[4];
+    unsigned i;
+    r[0] = SG_X0 + 2 * SG_COLW;
+    r[1] = rect[1];
+    r[2] = SG_COLW;
+    r[3] = rect[3];
+    PANEL_LAYOUT(panel, r);
+    for (i = 0; i < CUES; i++) {
+        void *b = SG->btn[i];
+        BTN_CTOR(b);
+        ((set_id_fn)(*(unsigned **)b)[9])(b, SG_BTN_ID + i);
+        BTN_TEXT(b, s_cuebtn[i]);
+        BTN_STYLE(b, 5);
+        set_rect(b, SG_X0 + (int)(i / 4) * SG_COLW, rect[1] + (int)(i % 4) * SG_ROW, SG_COLW, SG_ROW - 1);
+        ADD_CHILD(panel, b);
+        btn_hide(b, 1);
+    }
+    SG->shown = 0;
+    SG->brush = 0;
+    *(int *)at(panel, 4) = SG_X0;
+    *(int *)at(panel, 0xC) = 320 - SG_X0;
+}
+
+/* With a cue brush the grid shows each pad's cue in this scene (blank: none), no Keep marks. */
+static void song_show(void *song)
+{
+    void *grid = at(song, SONG_GRID), *bag;
+    unsigned scene = u32(song, SONG_SCENE), k;
+    if (scene >= SCENES)
+        return;
+    bag = song_bag(scene);
+    for (k = 0; k < DK_PADS; k++) {
+        int v = bag_has(bag, ID_SCUE + k) ? PARAM_GET(bag, ID_SCUE + k) : 0;
+        CELL_LETTER(grid, k, v > 0 && v <= CUES ? 'A' + (unsigned)v - 1 : 0);
+        CELL_KEEP(grid, k, 0);
+    }
+}
+
+static void song_lights(void)
+{
+    unsigned i;
+    for (i = 0; i < CUES; i++)
+        BTN_STATE(SG->btn[i], SG->brush == i + 1);
+}
+
+/* After every Song-screen event: our buttons only in the sequence grid; leaving it drops the cue
+ * brush and lights the stock one again. */
+static void song_sync(void *song)
+{
+    void *panel = at(song, SONG_PANEL);
+    unsigned on = u8(song, SONG_MODE) == 2, i;
+    if (!on && SG->brush) {
+        SG->brush = 0;
+        PANEL_SELECT(panel, u8(song, SONG_BRUSH) < 5 ? u8(song, SONG_BRUSH) : 0);
+    }
+    if (SG->shown != on) {
+        for (i = 0; i < CUES; i++)
+            btn_hide(SG->btn[i], !on);
+        SG->shown = (unsigned char)on;
+    }
+    song_lights();
+    if (on && SG->brush)
+        song_show(song);
+}
+
+static void song_brush(void *song, unsigned brush)
+{
+    void *panel = at(song, SONG_PANEL);
+    int sel = (signed char)u8(panel, PANEL_SEL);
+    if (sel >= 0 && sel < 5)
+        BTN_STATE(at(panel, PANEL_BTN + (unsigned)sel * BTN_SIZE), 0);
+    *(signed char *)at(panel, PANEL_SEL) = -1;   /* FUN_080B85DC lights the next stock pick */
+    SG->brush = (unsigned char)brush;
+    song_lights();
+    song_show(song);
+}
+
+/* A cell tap with a cue brush: that pad's cue in this scene (the same cue again clears it). Stock
+ * then re-sends the scene, which reaches song_post through hook_post. */
+static void song_assign(void *song, unsigned pad)
+{
+    unsigned scene = u32(song, SONG_SCENE), id = ID_SCUE + pad;
+    void *bag;
+    int v, has;
+    if (scene >= SCENES)
+        return;
+    bag = song_bag(scene);
+    has = bag_has(bag, id);
+    v = has ? PARAM_GET(bag, id) : 0;
+    v = v == SG->brush ? 0 : SG->brush;
+    if (has)
+        PARAM_SET(bag, id, v);
+    else
+        PARAM_ADD(bag, id, v);
+    SCENE_SEND(APP, scene);
+    *(unsigned char *)at(APP, APP_DIRTY) = 1;
+    song_show(song);
+}
+
+/* Song screen vt+0x30 (stock FUN_080C3540): presses (type 1) on our buttons, cell taps with a cue
+ * brush, and the way back to the stock brush. Everything else is stock's. */
+int song_event(void *song, void *ev)
+{
+    unsigned type = *(const unsigned short *)ev, id = u32(ev, 0xC);
+    int r;
+    if (sg_live() && u8(song, SONG_MODE) == 2 && (type == 1 || type == 2)) {
+        if (id - SG_BTN_ID < CUES) {
+            if (type == 1)
+                song_brush(song, id - SG_BTN_ID + 1);
+            return 0;
+        }
+        if (type == 1 && id < DK_PADS && SG->brush) {
+            song_assign(song, id);
+            return 0;
+        }
+        if (type == 1 && id - ID_PATTERN_A < 5 && SG->brush) {
+            SG->brush = 0;
+            r = SONG_EVENT(song, ev);
+            SONG_LETTERS(song);
+            song_sync(song);
+            return r;
+        }
+    }
+    r = SONG_EVENT(song, ev);
+    if (sg_live())
+        song_sync(song);
+    return r;
+}
+
+/* Song screen vt+0x34 (stock FUN_080C3860): refreshes (0x66 / 0x67) redraw the letters. */
+void song_event2(void *song, void *ev)
+{
+    SONG_EVENT2(song, ev);
+    if (sg_live())
+        song_sync(song);
+}
+#endif

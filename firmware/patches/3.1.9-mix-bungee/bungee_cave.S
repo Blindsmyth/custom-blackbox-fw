@@ -13,6 +13,9 @@
 .set WARP_DECK, 1                       @ 3.1.T: Clip Deck (../3.1.9-clip-deck deck.S, deck.c)
 .set ID_DECK, DECK_ID_BASE
 #endif
+#ifdef WITH_SONG
+.set WARP_SONG, 1                       @ 3.1.T: Song cues (deck.c song_*, deck.S hook_song_scene)
+#endif
 .include "mix_cave.S"
 
 .align 2

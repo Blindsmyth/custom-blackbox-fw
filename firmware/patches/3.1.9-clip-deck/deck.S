@@ -227,3 +227,19 @@ hook_wave_evt:
     movs    r0, #0
     bx      lr
 .ltorg
+
+.ifdef WARP_SONG
+@ Song cues (3.1.T, deck.c song_*). 0x0805CE0C in FUN_0805CDA0, the sequence player at step 0 of
+@ the song's playing layer, just before it sends the scene's starts and stops: replaces
+@ `ldr.w r0, [r0, #0xC20]` (r0 = r4 = the player). r1-r3 and r12 stay live.
+.global hook_song_scene
+.thumb_func
+hook_song_scene:
+    push    {r0, r1, r2, r3, r12, lr}
+    mov     r0, r4
+    bl      song_scene
+    pop     {r0, r1, r2, r3, r12, lr}
+    ldr.w   r0, [r4, #0xC20]
+    bx      lr
+.ltorg
+.endif

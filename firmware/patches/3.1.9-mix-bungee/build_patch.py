@@ -123,13 +123,14 @@ def compile_all(rb_id):
     cave_o = BUILD / "bungee_cave.o"
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
          *(["-DWITH_REPITCH"] if REPITCH else []),
-         *(["-DWITH_LINEUP", "-DWITH_DECK", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}"] if LINEUP else []),
+         *(["-DWITH_LINEUP", "-DWITH_DECK", "-DWITH_SONG", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}"] if LINEUP else []),
          "-I", MIX_DIR, "-I", mix.BASE_DIR, "-I", DECK_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + ([DECK_DIR / "deck.c"] if LINEUP else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
-        run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-I", BANK2, "-I", RUBBER,
+        run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DSONG_CUES"] if LINEUP else []),
+             "-I", BANK2, "-I", RUBBER,
              "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]
@@ -251,6 +252,18 @@ def deck_parts():
     return sites, deck.VTABLE, tables
 
 
+# 3.1.T Song cues (docs/song-cues.md; deck.c song_*, deck.S hook_song_scene).
+SONG_SITES = [
+    (0x0809450C, "song_template", True, "fff7f3fc"),     # Param_BagTemplate case 0x4E (scene): Play Count add
+    (0x0805CE0C, "hook_song_scene", True, "d0f8200c"),   # FUN_0805CDA0, song at step 0: ldr.w r0,[r0,#0xC20]
+    (0x080C323A, "song_panel", True, "f5f732f8"),        # Song screen ctor: A-D / Keep panel layout
+]
+SONG_VTABLE = [
+    (0x080F1788, "song_event", 0x080C3541),              # Song screen vt+0x30
+    (0x080F178C, "song_event2", 0x080C3861),             # Song screen vt+0x34
+]
+
+
 def add_rubber_sites(stock):
     mix.SITES[:] = [site for site in mix.SITES if site[1] not in SLICE_SITES]
     if LINEUP:
@@ -260,6 +273,8 @@ def add_rubber_sites(stock):
         mix.SITES.extend(sites)
         mix.VTABLE.extend(vtable)
         base.TABLES.extend(tables)
+        mix.SITES.extend(SONG_SITES)
+        mix.VTABLE.extend(SONG_VTABLE)
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves
         mix.SITES.append((0x080667B8, "hook_lane", False, "2de9f04f"))   # per-lane render: the leaf renders
     mix.SITES.extend([
