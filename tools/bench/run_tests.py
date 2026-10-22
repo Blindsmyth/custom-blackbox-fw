@@ -6315,7 +6315,7 @@ SG_BASE, SG_END = 0x38006400, 0x38007000
 SG_CUE = SG_BASE + 8                 # SgState.cue[32][16]
 SG_REQ, SG_ARM, SG_NEXT = SG_CUE + 512, SG_CUE + 528, SG_CUE + 544
 SG_BRUSH = SG_CUE + 560
-SG_BTN = SG_CUE + 564                # 8 buttons, 0xA0 each
+SG_BTN = SG_CUE + 564                # A..H, Def: 0xA0 each
 ID_SCUE = 0x1C0
 SONG_KEY = 0x20303
 ENGINE_POST = 0x0804C59C
@@ -6464,6 +6464,18 @@ def t_song_engine(bench, res):
     _player(b, 0)
     b.call(SONG_SCENE_FN, PLAYER, 0, 3, 0, 0x2001C000)
     res.check(b.u8(SG_REQ + 4) == 0, "song at step 3: nothing")
+    b.mu.mem_write(clip + 0x28, b"\x01")           # playing again; the scene's pad event (0x8B) arrives
+    b.mu.mem_write(clip + 0x260, b"\x01")
+    _scene_start(b, 1)
+    res.check(b.call(note, clip, 0) == CUE_SWALLOW and _cue(b, 4)["pending"] == 10,
+              "playing: the scene's retrigger becomes the jump to Cue C")
+    res.check(b.u8(SG_REQ + 4) == 0 and b.call(note, clip, 0) == 0, "only once: a later press retriggers")
+    _scene_start(b, 2)
+    res.check(b.call(note, clip, 0) == 0, "scene whose cue is Off on the pad: stock retrigger")
+    b.mu.mem_write(clip + 0x28, b"\x00")
+    b.mu.mem_write(clip + 0x260, b"\x00")
+    _scene_start(b, 1)
+    res.check(b.call(note, clip, 0) == 0 and b.call(unit0, clip, 0) == 10, "stopped: the pad event starts it at the cue")
     _cue_set(bench, 0x0100, mode=0, cues=())
     _scene_start(b, 0)
     res.check(b.call(unit0, clip, 0) == 0, "pad without cues: stock")
@@ -6511,7 +6523,8 @@ def _rect(b, w):
 
 
 def t_song_ui(bench, res):
-    """Song screen: two cue columns in the sequence grid, cue brush, cell taps set the scene's cue."""
+    """Song screen, pad grid, like the sequence grid: pick Def or a cue A-H as the brush, then tap pads;
+    an off pad goes on (stock's pad event) with that cue, an on pad goes off. y runs upwards on screen."""
     b, sym = bench.b, bench.sym
     b.w32(DK_BASE, 0)
     b.call(sym["deck_init"])
@@ -6520,16 +6533,18 @@ def t_song_ui(bench, res):
     if song is None:
         return
     panel = song + SONG_PANEL
-    res.check(_rect(b, panel) == (170, 0, 150, 219), f"panel spans three columns {_rect(b, panel)}")
+    res.check(_rect(b, panel) == (194, 0, 124, 219), f"panel spans two columns {_rect(b, panel)}")
     stock = [_rect(b, panel + 0x34 + i * 0xA0) for i in range(5)]
-    res.check(all(r[0] == 270 and r[2] == 50 for r in stock) and stock[4][1] == 0 and stock[0][1] == 176,
-              f"stock Keep / D..A in the right column {stock}")
-    ours = [SG_BTN + i * 0xA0 for i in range(8)]
-    res.check([_rect(b, w) for w in ours] == [(170 + (i // 4) * 50, (i % 4) * 44, 50, 43) for i in range(8)],
-              f"Cue A-D, Cue E-H, A at the top {[_rect(b, w) for w in ours]}")
-    res.check([b.u32(w + 0x14) for w in ours] == list(range(0x191, 0x199)), "button ids 0x191..0x198")
+    res.check(stock == [(256, 176 - 44 * i, 62, 43) for i in range(4)] + [(256, 0, 62, 43)],
+              f"stock column unchanged: A at the top, Keep at the bottom {stock}")
+    ours = [SG_BTN + i * 0xA0 for i in range(9)]
+    want = [(194 + (i // 4) * 62, 176 - (i % 4) * 44, 62, 43) for i in range(8)] + [(194, 0, 62, 43)]
+    res.check([_rect(b, w) for w in ours] == want,
+              f"A-D left of E-H, A and E at the top, Def by Keep {[_rect(b, w) for w in ours]}")
+    res.check([b.u32(w + 0x14) for w in ours] == list(range(0x191, 0x19A)), "button ids 0x191..0x199")
     res.check(all(b.u8(w + 0x30) for w in ours), "hidden on the scene list")
-    res.check(_rect(b, song + SONG_GRID) == (5, 11, 160, 160), f"grid fits left of the panel {_rect(b, song + SONG_GRID)}")
+    grid = song + SONG_GRID
+    res.check(_rect(b, grid) == (12, 5, 172, 172), f"grid keeps stock's size {_rect(b, grid)}")
 
     bag = APP_OBJ + 0x29C0
     b.mu.mem_write(bag, b"\x00" * 0x30)
@@ -6537,14 +6552,15 @@ def t_song_ui(bench, res):
     b.mu.mem_write(BAG_PAIRS, b"\x00" * 0x100)
     b.mu.mem_write(bag + 10, b"\x00\x00\x20\x00")
     b.call(sym["song_template"], bag, 0xC3, 1)
-    sends = []
+    sends, ups = [], []
     b.stub(SCENE_SEND, lambda board: sends.append((board.arg(0), board.arg(1))))
+    b.stub(0x080AED14, lambda board: ups.append(bytes(board.mu.mem_read(board.arg(1), 0x18))))   # ui_post_event_up
     b.stub(0x08097884, lambda board: 0)           # scene copy for the stock letters: an empty scene
     b.stub(0x0806381C, lambda board: 0)
     b.stub(0x080B074C, lambda board: 0)           # scene list scroll
     b.mu.mem_write(APP_OBJ + 0x8CC4, b"\x00")
     ev = 0x2001C600
-    vt_event = b.u32(SONG_VT + 0x30) & ~1
+    vt_event, vt_event2 = b.u32(SONG_VT + 0x30) & ~1, b.u32(SONG_VT + 0x34) & ~1
 
     def post(typ, ident):
         b.mu.mem_write(ev, b"\0" * 0x40)
@@ -6552,42 +6568,71 @@ def t_song_ui(bench, res):
         b.w32(ev + 0xC, ident)
         return b.call(vt_event, song, ev)
 
-    def letters():
-        return bytes(b.mu.mem_read(song + SONG_GRID + 0x31, 16))
+    def refresh():                                 # what stock's refresh leaves after the app's edit
+        b.mu.mem_write(ev, b"\0" * 0x40)
+        b.call(vt_event2, song, ev)
 
-    post(0x2B, 0)                                  # open scene 1's sequence grid
-    res.check(b.u8(song + SONG_MODE) == 2, f"sequence grid open (mode {b.u8(song + SONG_MODE)})")
-    res.check(not any(b.u8(w + 0x30) for w in ours), "cue buttons shown")
-    post(1, 0x193)                                 # Cue C
-    res.check(b.u8(SG_BRUSH) == 3 and b.u8(ours[2] + 0x96) == 1, "Cue C is the brush, lit")
-    res.check(b.u8(panel + 0x354) == 0xFF and not any(b.u8(panel + 0x34 + i * 0xA0 + 0x96) for i in range(5)),
-              "stock brush dark")
-    res.check(post(1, 4) == 0 and b.call(PARAM_GET, bag, ID_SCUE + 4) == 3, "tap pad 5: its cue is C")
-    res.check(sends == [(APP_OBJ, 0)] and b.u8(APP_OBJ + 0x8CC4) == 1, f"scene re-sent, preset unsaved {sends}")
-    res.check(letters()[4] == ord("C") and letters()[5] == 0, f"grid shows the cue letters {letters()}")
-    post(1, 4)
-    res.check(b.call(PARAM_GET, bag, ID_SCUE + 4) == 0 and letters()[4] == 0, "same cue again clears it")
-    post(1, 4)
-    post(1, 0x195)                                 # Cue E
-    post(1, 4)
-    post(1, 15)
-    res.check(b.call(PARAM_GET, bag, ID_SCUE + 4) == 5 and b.call(PARAM_GET, bag, ID_SCUE + 15) == 5,
-              "another brush replaces it; any cell")
-    res.check(b.u8(ours[2] + 0x96) == 0 and b.u8(ours[4] + 0x96) == 1, "only Cue E lit")
-    post(1, 0x18D)                                 # stock B
-    res.check(b.u8(SG_BRUSH) == 0 and b.u8(song + SONG_BRUSH) == 1 and b.u8(panel + 0x34 + 0xA0 + 0x96) == 1,
-              "stock B takes over and lights")
-    res.check(letters() == b"\x00" * 16, f"stock letters back (empty scene) {letters()}")
-    n = len(sends)
-    post(1, 6)
-    res.check(b.call(PARAM_GET, bag, ID_SCUE + 6) == 0, "stock brush: a tap is stock's (no cue)")
-    post(1, 0x191)
+    def cell(k):
+        return chr(b.u8(grid + 0x31 + k)) if b.u8(grid + 0x31 + k) else ""
+
+    def stock_on(k, on=True):
+        b.mu.mem_write(grid + 0x31 + k, b"A" if on else b"\x00")
+
+    def lit(w):
+        return b.u8(w + 0x96)
+
+    def cue(k):
+        return b.call(PARAM_GET, bag, ID_SCUE + k)
+
+    def pad_post():                                # stock's pad event edit: {0xDC, pad | 0x100, on}
+        dc = [u for u in ups if struct.unpack_from("<H", u)[0] == 0xDC]
+        return [(struct.unpack_from("<I", u, 0xC)[0], struct.unpack_from("<I", u, 0x14)[0]) for u in dc]
+
+    post(0x2B, 0)                                  # scene 1's sequence grid: stock only
+    res.check(b.u8(song + SONG_MODE) == 2 and all(b.u8(w + 0x30) for w in ours), "sequence grid: no cue buttons")
     post(0x2C, 0)                                  # the pad grid
-    res.check(b.u8(song + SONG_MODE) == 3 and all(b.u8(w + 0x30) for w in ours), "pad grid: cue buttons hidden")
-    res.check(b.u8(SG_BRUSH) == 0, "leaving the sequence grid drops the cue brush")
-    post(1, 4)
-    res.check(b.call(PARAM_GET, bag, ID_SCUE + 4) == 5 and len(sends) == n, "pad grid taps stay stock")
-
+    res.check(b.u8(song + SONG_MODE) == 3 and not any(b.u8(w + 0x30) for w in ours), "pad grid: Def, A-H shown")
+    res.check(all(b.u8(panel + 0x34 + i * 0xA0 + 0x30) for i in range(4)) and not b.u8(panel + 0x34 + 4 * 0xA0 + 0x30),
+              "stock A-D hidden there, Keep shown")
+    res.check(lit(ours[8]) == 1 and b.u8(grid + 0x3B0) == 1, "Def is the brush; the grid draws letters")
+    post(1, 0x193)                                 # C
+    res.check(b.u8(SG_BRUSH) == 3 and lit(ours[2]) == 1 and lit(ours[8]) == 0, "C is the brush, Def dark")
+    ups.clear()
+    res.check(post(1, 4) == 0 and cue(4) == 3, "tap pad 5 (off): its cue is C")
+    res.check(pad_post() == [(0x104, 1)], f"and stock puts its pad event on {pad_post()}")
+    res.check(sends == [(APP_OBJ, 0)] and b.u8(APP_OBJ + 0x8CC4) == 1, f"scene re-sent, preset unsaved {sends}")
+    stock_on(4)
+    refresh()
+    res.check(cell(4) == "C", f"the cell shows C ({cell(4)!r})")
+    post(1, 0x195)                                 # E
+    post(1, 9)
+    stock_on(9)
+    refresh()
+    res.check(cue(9) == 5 and cell(9) == "E" and cue(4) == 3, "pads take different cues")
+    post(1, 4)                                     # on: goes off, cue cleared (as the sequence grid)
+    stock_on(4, False)
+    refresh()
+    res.check(cue(4) == 0 and cell(4) == "", "tap an on pad: off, no cue")
+    post(1, 0x199)                                 # Def
+    res.check(b.u8(SG_BRUSH) == 0 and lit(ours[8]) == 1 and lit(ours[4]) == 0, "Def is the brush")
+    post(1, 6)
+    stock_on(6)
+    refresh()
+    res.check(cue(6) == 0 and cell(6) == " ", f"Def: a plain pad event, lit with no letter ({cell(6)!r})")
+    post(1, 0x197)                                 # G, then Keep
+    post(1, 0x190)
+    res.check(b.u8(SG_BRUSH) == 0 and b.u8(song + SONG_BRUSH) == 4 and lit(ours[8]) == 0 and lit(ours[6]) == 0,
+              "Keep takes over: our buttons dark")
+    ups.clear()
+    post(1, 12)
+    res.check(cue(12) == 0 and pad_post() == [(0x10C, 2)], f"Keep: stock's Keep event, no cue {pad_post()}")
+    b.mu.mem_write(grid + 0x41 + 12, b"\x01")
+    refresh()
+    res.check(cell(12) == "", "a Keep cell keeps stock's arrow")
+    post(1, 0x199)
+    res.check(b.u8(song + SONG_BRUSH) == 0 and lit(ours[8]) == 1, "Def turns Keep off")
+    post(0x2B, 0)                                  # back to the sequence grid
+    res.check(all(b.u8(w + 0x30) for w in ours), "leaving the pad grid hides them")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -6737,7 +6782,7 @@ def main():
             ("Song cues: Engine_PostParam keeps them", t_song_post),
             ("Song cues: scene start jumps / arms the pads", t_song_engine),
             ("Song cues: next scene's cue cached", t_song_prefetch),
-            ("Song cues: Song screen columns and taps", t_song_ui),
+            ("Song cues: pad grid letters and taps", t_song_ui),
         ]
     cases += [("MIDI note path facts", t_midi_path_facts),
               ("waveform bar name length", t_deck_bar_name)]

@@ -1,6 +1,6 @@
 # Song cues: Clip Deck hot cues per Song scene (design, 3.1.T)
 
-Status: built in 3.1.T (design approved 2026-10-22), bench only. Not yet tried on the unit. How to use it: [lineup/README.md](../firmware/patches/3.1.9-mix-bungee/lineup/README.md#song-cues).
+Status: built in 3.1.T (design approved 2026-10-22, cue letters moved to the pad grid the same day), bench only. Not yet tried on the unit. How to use it: [lineup/README.md](../firmware/patches/3.1.9-mix-bungee/lineup/README.md#song-cues).
 
 Goal: a Song scene (section) can send Clip pads to a hot cue when it starts, the way a cue note would, without any note passing through the pad's Toggle/Gate handling.
 
@@ -20,29 +20,29 @@ Goal: a Song scene (section) can send Clip pads to a hot cue when it starts, the
 - **Engine.** The generic sequence player (`FUN_0805D8C4`) calls `FUN_0805CDA0` on every step.
   - At step 0 of the playing layer (a scene start, and every Loop1 repeat), it walks the type-9 items. For each one that is on, it sends `0x8B` (start) or `0x8C` (stop) to that sequence or pad (`FUN_0805F460`). Keep items send nothing.
 - **Song screen** (`FUN_080C2980`, vtable `0x080F1758`, handler `FUN_080C3540`). Event `0x2B` opens a scene's **sequence grid** (mode 2), and `0x2C` opens its **pad grid** (mode 3).
-  - In both grids the right column `{x 256, y 0, w 62, h 219}` (`FUN_080B8548`, Song + `0x11E28`) holds 5 buttons, top to bottom: **Keep, D, C, B, A** (ids `0x190`, `0x18F` … `0x18C`, each 43 px high). In the pad grid A–D are hidden.
+  - In both grids the right column `{x 256, y 0, w 62, h 219}` (`FUN_080B8548`, Song + `0x11E28`) holds 5 buttons, top to bottom on screen: **A, B, C, D, Keep** (ids `0x18C` … `0x18F`, `0x190`, each 43 px high; A at y 176, Keep at y 0, as the screen's y axis runs upwards). In the pad grid A–D are hidden.
   - A press sets the "brush" at Song + `0x1218D` (A–D = 0–3, Keep = 4).
   - A cell tap (`FUN_080C2500`) posts UI event `0xDC` to the app, which edits the scene's item.
   - The 4×4 grid (Song + `0x1072C`, 172 px square at x 43, y 5) shows one letter per cell (`FUN_080A367C`) plus a Keep mark (`FUN_080A36A8`). Both are refreshed by `FUN_080C2890`.
 
 ## Proposal
 
-### UI: two cue columns in the scene's sequence grid
+### UI: the pad grid works like the sequence grid
 
-The sequence grid's right panel becomes three button columns of 50 px instead of one of 62 px. The grid shrinks from 172 to 164 px, so cells go from 43 to 41 px.
+Revised twice on 2026-10-22 after review. The first build put `CueA`… columns in the sequence grid, upside down (the screen's y axis runs upwards). The cues belong with the pads, and the pad grid should work the way the sequence grid does.
+
+- **Brushes.** The scene's **pad grid** (mode 3) gets **Def** and **A–H** next to stock's **Keep**. Def is stock's plain pad event. A cue letter is a pad event that starts the pad at that cue.
 
 | x | Column (top to bottom) |
 | --- | --- |
-| 170 | **Cue A, Cue B, Cue C, Cue D** |
-| 220 | **Cue E, Cue F, Cue G, Cue H** |
-| 270 | stock: **Keep, D, C, B, A** |
+| 194 | **A, B, C, D, Def** |
+| 256 | **E, F, G, H**, stock's **Keep** (E–H take the places of stock's A–D, which the pad grid hides) |
 
-- The labels are `CueA` … `CueH`. At 12 px per character that is 48 px, which fits the 50 px column.
-- **Picking a brush.** Tapping a cue button makes it the brush. While a cue brush is selected, each cell shows that pad's cue letter for this scene (blank = none) instead of the pattern letter.
-  - Tapping a cell sets that pad's cue to the brush. Tapping it again with the same brush clears it.
-  - Tapping A–D or Keep goes back to the stock brush, and the grid shows patterns again.
-- **Grids that stay stock.** The pad grid and the small grids on each scene row are unchanged. The row grids show no cue.
-- Cut / Copy / Paste / Add / Delete carry a scene's cues with it, because they are in its bag. **Clear** removes them along with the scene's sequence actions.
+- **Taps, as in the sequence grid.** Pick a brush, then tap pads. An off pad goes on with the brush, so different pads can take different cues. An on pad goes off and loses its cue. To change a pad's cue, tap it off and on again with the new letter.
+- **Cells.** The grid now draws letters in the pad grid too. A pad with a cue shows its letter, a Def pad is lit with no letter, and Keep shows stock's arrow.
+- **Size.** Every column is stock's 62 px. The grid keeps stock's 172 px (it moves to x 12), because the screen's height decides its size.
+- **What stays stock.** The sequence grid and the small grids on each scene row are unchanged. The row grids show no cue.
+- Cut / Copy / Paste / Add / Delete carry a scene's cues with it, because they are in its bag. **Clear** removes them along with the scene's actions.
 
 ### What a scene's cue does
 
@@ -71,19 +71,20 @@ The jump is called straight from the song player into `deck.c`. No note is gener
 Changes to the plan above, and what was confirmed:
 - **Armed for the whole scene.** A stopped Clip starts at the cue every time it starts during the scene, not only the first time, so a sequence that retriggers the clip keeps the cue. Stopping the song clears it.
 - **A playing Clip is armed too**, so its own sequence retriggering it in that scene starts at the cue.
+- **The scene's own pad event on a playing Clip** (stock's msg `0x8B`, a voice start with note 0) would retrigger it. While the scene's jump is waiting for that pad, `deck_cue_note` turns that start into the pending jump instead, so the clip jumps at the next Quant Size boundary like a cue note. A stopped Clip is started by the pad event as stock does, at the cue.
 - **A cue note after the scene start wins** over the scene's cue for that pad.
 - **The next scene's cues are kept cached** while a scene plays (`song_grain`, the same block request as a pending cue note), so the jump at the scene start is gapless. Next = the following scene, the first after the last, the same one on Loop1. A scene queued by hand is not known ahead, and its jump may not be cached.
 - **Song player.** The song is the sequence player with `+0x60` set and key `0x20303` at `+0x18` (created in `FUN_080525F0`). `+0xC20` is the playing layer, layer `+0x40` its index (the scene), `+0x64` the scene count, `+0x5C` set when the song moves on (not Loop1). `FUN_0805D7E0` switches the layer before `FUN_0805CDA0` runs step 0, so the hook sees the new scene. Hook: `0x0805CE0C`, after stock's own checks (step 0, playing, song).
 - **Pads.** Scene cell k is pad k: the engine's pad keys (`0x240151D0`, set in `FUN_0805F128`) are `row << 8 | col` for k = row × 4 + col, the same index Clip Deck uses.
 - **Engine copy.** `hook_post` (Engine_PostParam, `0x0804C59C`) gets the layer as its 6th argument; our ids are stored and never posted.
-- **Memory.** `SgState` at SRAM4 `0x38006400`–`0x38006B3C`: free on 3.1.T, as the Looper ends at `0x38006400` and RbVoice starts at `0x38007000`. 3.1.Y's slice pool (`0x38006000`) is not in this build.
+- **Memory.** `SgState` at SRAM4 `0x38006400`–`0x38006BDC`: free on 3.1.T, as the Looper ends at `0x38006400` and RbVoice starts at `0x38007000`. 3.1.Y's slice pool (`0x38006000`) is not in this build.
 - **UI hooks.** Song vtable `0x080F1758` `+0x30` (`FUN_080C3540`) and `+0x34` (`FUN_080C3860`, the 0x66/0x67 refresh) are wrapped by `song_event` / `song_event2`. The panel layout call at `0x080C323A` in the constructor goes to `song_panel`. Our buttons are ids `0x191`–`0x198`, children of the A–D panel.
 
 ### Not checked on the bench
 
 - **Downbeat order within a block.** Does the song player run before the Clip lanes in the same block? If not, a playing clip's jump at a scene start waits for the next Quant Size boundary. The bench runs the two separately. Listen for it on the unit.
-- **Drawing.** Nothing is drawn on the bench, so labels such as `CueA` in the 50 px buttons and the smaller grid (160 px) have not been seen.
+- **Drawing.** Nothing is drawn on the bench. The buttons' places, the hidden stock A–D and the cells' chars are checked from the widget rects and flags, not on screen. A Def pad's cell is a space char with letters on, which should look like stock's lit cell.
 
 ## Decisions (2026-10-22)
 
-The user approved the proposal as written: the sequence grid, A at the top, and a stopped Clip is armed rather than started.
+The user approved the proposal: a stopped Clip is armed rather than started. After the first build, the user moved the cues to the pad grid, working like the sequence grid: brushes Def and A–H, A at the top (the first build had them bottom-up).

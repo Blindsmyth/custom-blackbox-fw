@@ -100,16 +100,16 @@ What changes against 3.1.E:
 
 Each Song scene can send Clip pads to a hot cue when it starts. Design and the stock code it uses: [docs/song-cues.md](../../../../docs/song-cues.md).
 
-- **Where:** SONG → touch a scene's sequence grid. Next to stock's Keep / D / C / B / A there are two button columns, **CueA–CueD** and **CueE–CueH**, with A at the top.
-- **Setting a cue:** touch a cue button (it lights; the grid now shows each pad's cue for this scene), then touch pads. The same cue again clears it. Touch A–D or Keep to go back to stock's patterns. The pad grid is unchanged.
+- **Where:** SONG → touch a scene's pad grid. It works like the sequence grid. Next to stock's Keep there are **Def** and **A–H**: A–D and Def in a column left of stock's, E–H above Keep, A and E at the top. The sequence grid is unchanged.
+- **Setting cues:** pick Def or a letter, then touch pads. An off pad goes on with that brush (Def = stock's plain pad event, a letter = start at that cue), and an on pad goes off. Pads show their letter; Def pads are lit with no letter. Different pads can take different cues.
 - **When the scene starts** (in Song mode, also each Loop1 repeat):
-  - **Clip playing:** it jumps to the cue at the next Quant Size boundary, exactly as a cue note does.
+  - **Clip playing:** it jumps to the cue at the next Quant Size boundary, exactly as a cue note does. The scene's own pad event doesn't retrigger it.
   - **Clip stopped:** it is armed. Whenever it starts during that scene (its pad event, its sequence, a pad press), it starts at the cue. The next scene start changes or clears that; stopping the song clears it.
   - No note is sent, so Toggle / Gate and MIDI In channels play no part. A cue note after the scene start still wins.
   - Nothing happens on a pad that isn't a Clip on a note-value Sync grid, has no cues in use, or has that cue Off.
 - **Gapless:** while a scene plays, each pad's cue for the next scene is kept cached, as for a pending cue note.
 - **Stored** in each scene as `scue1`–`scue16` (one per pad: 0 none, 1–8 = Cue A–H; ids `0x1C0`–`0x1CF`), by stock's scene code: saved, loaded, copied with Cut / Copy / Paste, cleared by Clear. Stock 3.1.9 ignores them.
-- **Memory:** SRAM4 `0x38006400`–`0x38006B3C` (`SgState` in `deck.c`: the 32 × 16 table and the 8 buttons).
+- **Memory:** SRAM4 `0x38006400`–`0x38006BDC` (`SgState` in `deck.c`: the 32 × 16 table and the 9 buttons).
 
 ## Bungee in this build (and in 3.1.B)
 
