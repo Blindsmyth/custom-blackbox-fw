@@ -71,6 +71,7 @@ Measured on the bench at 90 BPM on a 130 BPM Clip (0.69x), with a click at every
 - **Bungee was ahead after every launch.** The raw Clip plays its first 43 ms at 1x, so when Bungee took over its clicks came up to ~18 ms early at 0.69x (more at slower tempos), and the clock lock took about a second to pull it back. With Clip Deck that happened at every loop wrap and cue jump. Bungee now starts that much further back, so it is within ~1 ms of the clock from the first unit (55, 90 and 120 BPM measured).
 - **Bungee re-launched at the file's own wrap** under Clip Deck (last unit → first). That is straight on now.
 - **Bungee below half the Clip's tempo** (65 BPM on a 130 BPM Clip) ran at 0.5x with its clock lock off and drifted. Its range is now 0.25x–2x, as Fill, Chop and Grain.
+- **Sequenced cue notes on Bungee, Fill and Grain** (second unit test): a cue note from the sequencer on the bar comes in just after the bar's first unit was chosen, so the jump waited a whole Quant (the first repeat sounded ignored, later ones a bar late). A cue note up to 32 ms after a Quant boundary now takes that boundary (`deck_cue_late`); if the unit already plays, Bungee re-launches at the cue, plus the time since the bar.
 - **Stutter with Sync = Slice** now runs on like stock Stretch does on the grid, with the slices as segments. Stock gates the gap there.
 
 ## Clip Deck in this build

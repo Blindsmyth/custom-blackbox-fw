@@ -716,6 +716,14 @@ void rubber_mix(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         if (seq_u < 0.)
             seq_u = 0.;
         seq_advance(&dseq, clip, anchor_tick, seq_u, (double)n * ratio / dseq.spu);
+        // A cue note just after its boundary: that boundary jumps after all (re-launched below if
+        // the unit already plays, at the cue plus the time since the boundary).
+        int late = seq_cue_late(&dseq, clip, anchor_tick, seq_u, SEQ_CUE_LATE * ratio / dseq.spu);
+        if (late >= 0) {
+            if (late <= dseq_i)
+                dseq_i = late - 1;
+            seq_advance(&dseq, clip, anchor_tick, seq_u, (double)n * ratio / dseq.spu);
+        }
         if (seq_ended(&dseq, seq_u)) {
             lane_end(clip, lane, true);
             stop_voice();

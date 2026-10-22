@@ -251,6 +251,7 @@ extern "C" {
 unsigned deck_limit(void *clip, unsigned next);
 unsigned deck_wrap_unit(void *clip, unsigned unit, const long long *tick);
 int deck_grain_start(void *clip, int frame);
+unsigned deck_cue_late(void *clip, const long long *tick);
 #ifdef __cplusplus
 }
 #endif
@@ -327,6 +328,31 @@ static inline void seq_advance(DeckSeq *q, unsigned clip, double anchor, double 
         want = now + 2;
     while (q->stop_at < 0 && q->decided < want)
         seq_decide(q, clip, anchor);
+}
+
+/* A cue note that came in after the unit on its Quant boundary was chosen (the sequencer's note for
+ * that boundary arrives a block or so late): the unit just started, if it started at most `late`
+ * units ago, or the one already chosen next, becomes the cue (deck.c deck_cue_late). Returns the
+ * index whose unit changed (the units after it are chosen again), or -1. Index 0 is the note start's. */
+#define SEQ_CUE_LATE 1536   /* output frames after a boundary that a cue note still takes it (32 ms) */
+
+static inline int seq_cue_late(DeckSeq *q, unsigned clip, double anchor, double u, double late)
+{
+    int now = u > 0. ? (int)u : 0;
+    for (int i = now > 1 ? now : 1; i <= q->decided && i <= now + 1; i++) {
+        if (i == now && u - (double)now > late)
+            continue;
+        long long tick = (long long)(anchor + (double)i * q->ut + 0.5);
+        unsigned unit = deck_cue_late((void *)clip, &tick);
+        if (unit == 0xFFFFu)
+            continue;
+        q->unit[i % SEQ_RING] = unit;
+        q->decided = i;
+        if (q->stop_at > i)
+            q->stop_at = -1;
+        return i;
+    }
+    return -1;
 }
 
 static inline int seq_ended(const DeckSeq *q, double u) { return q->stop_at >= 0 && u >= (double)q->stop_at; }

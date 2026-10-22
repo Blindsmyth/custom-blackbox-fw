@@ -691,6 +691,31 @@ unsigned deck_wrap_unit(void *clip, unsigned unit, const long long *tick)
     return played(clip, in_loop(clip, unit, 1));
 }
 
+/* For bank 2's unit sequence (tools/stretch/bungee/lane.h DeckSeq), which chooses each unit a little
+ * before it starts: the unit at `tick` was already chosen when a cue note came in. If `tick` is a
+ * Quant Size boundary, the pending jump takes it after all (the sequencer's note for that same
+ * boundary arrives a block or so after the choice; without this it waited a whole Quant). The caller
+ * decides how late is still that boundary's note. Returns the cue's unit and clears the pending
+ * jump, or CUE_NONE. */
+unsigned deck_cue_late(void *clip, const long long *tick)
+{
+    DkCue *c;
+    long long q, t;
+    unsigned ut, n, unit;
+    if (!live())
+        return CUE_NONE;
+    c = clip_cue(clip);
+    if (c->pending == CUE_NONE || !(n = grid_units(clip, &ut)))
+        return CUE_NONE;
+    q = *(const long long *)at(clip, 0x218);
+    t = *tick;
+    if (q <= 0 || t - LDIV(t, q) * q != 0)
+        return CUE_NONE;
+    unit = c->pending < n ? c->pending : n - 1;
+    c->pending = CUE_NONE;
+    return played(clip, in_loop(clip, unit, 1));
+}
+
 /* ---- Beat Count Auto from a BPM in the file name (engine task, Clip_RecalcRates) ---- */
 
 typedef int (*ref_int_fn)(void *);
