@@ -229,18 +229,19 @@ hook_wave_evt:
 .ltorg
 
 .ifdef WARP_SONG
-@ Song cues (3.1.T, deck.c song_*). 0x0805CE0C in FUN_0805CDA0, the sequence player at step 0 of
-@ the song's playing layer, just before it sends the scene's starts and stops: replaces
-@ `ldr.w r0, [r0, #0xC20]` (r0 = r4 = the player). r1-r3 and r12 stay live.
-.global hook_song_scene
+@ Song cues (3.1.T, deck.c song_*). FUN_0805CDA0 entry (b.w): the sequence player's per-step call
+@ (r0 player, r1 transport, r2 step, r3 offset, [sp] router). deck.c plans the song's next scene and
+@ starts a scene at step 0; then the replayed first instruction and the rest of stock's function.
+.equ STEP_CONT, 0x0805CDA5
+.global hook_song_step
 .thumb_func
-hook_song_scene:
+hook_song_step:
     push    {r0, r1, r2, r3, r12, lr}
-    mov     r0, r4
-    bl      song_scene
+    bl      song_step
     pop     {r0, r1, r2, r3, r12, lr}
-    ldr.w   r0, [r4, #0xC20]
-    bx      lr
+    ldrb.w  r1, [r0, #0x58]
+    ldr     r12, =STEP_CONT
+    bx      r12
 
 @ Clip pad event switch (FUN_08067FA4): its jump-table entry for msg 0x8B (0x0806823C) points here.
 @ r4 = the clip, all other registers and the stack are the switch's. song_pad_start returns 1 when

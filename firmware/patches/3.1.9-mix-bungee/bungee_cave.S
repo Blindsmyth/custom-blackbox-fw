@@ -14,7 +14,7 @@
 .set ID_DECK, DECK_ID_BASE
 #endif
 #ifdef WITH_SONG
-.set WARP_SONG, 1                       @ 3.1.T: Song cues (deck.c song_*, deck.S hook_song_scene)
+.set WARP_SONG, 1                       @ 3.1.T: Song cues (deck.c song_*, deck.S hook_song_step, hook_pad_start)
 #endif
 .include "mix_cave.S"
 

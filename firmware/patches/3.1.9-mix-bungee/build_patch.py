@@ -252,10 +252,10 @@ def deck_parts():
     return sites, deck.VTABLE, tables
 
 
-# 3.1.T Song cues (docs/song-cues.md; deck.c song_*, deck.S hook_song_scene).
+# 3.1.T Song cues (docs/song-cues.md; deck.c song_*, deck.S hook_song_step, hook_pad_start).
 SONG_SITES = [
     (0x0809450C, "song_template", True, "fff7f3fc"),     # Param_BagTemplate case 0x4E (scene): Play Count add
-    (0x0805CE0C, "hook_song_scene", True, "d0f8200c"),   # FUN_0805CDA0, song at step 0: ldr.w r0,[r0,#0xC20]
+    (0x0805CDA0, "hook_song_step", False, "90f85810"),   # FUN_0805CDA0 entry (b.w): ldrb.w r1,[r0,#0x58]
     (0x080C323A, "song_panel", True, "f5f732f8"),        # Song screen ctor: A-D / Keep panel layout
 ]
 SONG_VTABLE = [

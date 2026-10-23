@@ -190,7 +190,7 @@ static int live(void)
 /* Song cues (3.1.T, docs/song-cues.md): the code is at the end of this file. */
 static void song_init(void);
 static unsigned song_start_unit(void *clip, DkCue *c);
-static void song_grain(void *clip, DkCue *c);
+static unsigned song_grain(void *clip, DkCue *c, const long long *tick);
 static void song_drop(void *clip);
 #endif
 
@@ -703,7 +703,11 @@ unsigned deck_wrap_unit(void *clip, unsigned unit, const long long *tick)
     ST->wrap_clip = 0;
     c = clip_cue(clip);
 #ifdef SONG_CUES
-    song_grain(clip, c);    /* a Song scene start's jump becomes the pending one */
+    {
+        unsigned at_scene = song_grain(clip, c, tick);    /* a Song scene starts at this grain */
+        if (at_scene != CUE_NONE)
+            return played(clip, in_loop(clip, at_scene, 1));
+    }
 #endif
     if (c->pending == CUE_NONE || !(n = grid_units(clip, &ut)))
         return played(clip, in_loop(clip, unit, 0));
@@ -1909,9 +1913,9 @@ int deck_ui_event(void *view, const unsigned short *ev)
  * song's engine sequence (key 0x20303); each scene's bag holds scue1..scue16 (one per pad: 0 = none,
  * 1..8 = Cue A..H), added to the scene template so stock saves, loads and copies them by name.
  * hook_post copies them to SgState.cue as stock re-sends a scene (FUN_0809C140) and keeps them from
- * the engine. At a scene start (hook_song_scene) a playing Clip gets the cue as its pending jump
- * (taken at the next Quant Size boundary, as a cue note sets it) and the pad is armed: whenever it
- * starts during that scene, it starts at the cue. No note is sent, so Toggle / Gate and MIDI In play
+ * the engine. The next scene and its start tick are planned on every song step (hook_song_step): a
+ * playing Clip jumps to its cue on the first grain from that tick, on the scene's bar, and the pad is
+ * armed: whenever it starts during that scene, it starts at the cue. No note is sent, so Toggle / Gate and MIDI In play
  * no part. The Song screen's pad grid works like its sequence grid: pick Def (stock's pad event) or a
  * cue A..H as the brush, then tap pads; a pad with a cue starts the scene at it. */
 
@@ -1926,21 +1930,30 @@ int deck_ui_event(void *view, const unsigned short *ev)
 #define SG_DEF       CUES          /* button index of Def (the plain pad event) */
 
 typedef struct {
-    unsigned magic;
-    void *player;                         /* song player at the last scene start */
-    unsigned char cue[SCENES][DK_PADS];   /* engine copy of each scene's scue params (hook_post) */
-    unsigned char req[DK_PADS];           /* 1..8: a scene start asks the playing clip to jump (song_grain) */
-    unsigned char arm[DK_PADS];           /* 1..8: where the pad starts during this scene */
-    unsigned char next[DK_PADS];          /* 1..8: the next scene's cue, kept cached */
-    unsigned char brush;                  /* Song screen: 0 = stock brush, 1..8 = Cue A..H */
-    unsigned char shown;                  /* our buttons are shown (pad grid open) */
-    unsigned char rsv[2];
-    unsigned btn[SG_BTNS][0x28];          /* stock buttons (0xA0 each): A..H, then Def */
+    unsigned magic;                       /* +0x000 */
+    void *player;                         /* +0x004 song player at the last song step */
+    long long pre_at;                     /* +0x008 tick the planned next scene starts at */
+    long long now_at;                     /* +0x010 tick the scene that just started began at */
+    unsigned char cue[SCENES][DK_PADS];   /* +0x018 engine copy of each scene's scue params (hook_post) */
+    unsigned char req[DK_PADS];           /* +0x218 1..8: an unplanned scene start: jump at the next Quant boundary */
+    unsigned char arm[DK_PADS];           /* +0x228 1..8: where the pad starts during this scene */
+    unsigned char next[DK_PADS];          /* +0x238 1..8: kept cached for the next scene */
+    unsigned char now[DK_PADS];           /* +0x248 1..8: the started scene's jump, at the first grain from now_at */
+    unsigned char pre[DK_PADS];           /* +0x258 1..8: the planned next scene's jump, at the first grain from pre_at */
+    unsigned char jumped[DK_PADS];        /* +0x268 the planned jump was taken before the scene's own start */
+    unsigned char skip[DK_PADS];          /* +0x278 skip the scene's own pad event (0x8B) once: jump done or due */
+    unsigned char brush;                  /* +0x288 Song screen: 0 = stock brush, 1..8 = Cue A..H */
+    unsigned char shown;                  /* +0x289 our buttons are shown (pad grid open) */
+    unsigned char pre_scene;              /* +0x28A the planned next scene, 0xFF none */
+    unsigned char rsv;
+    unsigned btn[SG_BTNS][0x28];          /* +0x28C stock buttons (0xA0 each): A..H, then Def */
 } SgState;
 
 #define SG ((SgState *)SG_BASE)
 typedef char sg_fits[(SG_BASE + sizeof(SgState) <= SG_END) ? 1 : -1];
-typedef char sg_btn_aligned[(__builtin_offsetof(SgState, btn) & 3) == 0 ? 1 : -1];
+typedef char sg_btn_at[(__builtin_offsetof(SgState, btn) == 0x28C) ? 1 : -1];      /* the bench's SG_BTN */
+typedef char sg_cue_at[(__builtin_offsetof(SgState, cue) == 0x18) ? 1 : -1];
+typedef char sg_ticks_aligned[(__builtin_offsetof(SgState, pre_at) & 7) == 0 ? 1 : -1];  /* LDRD */
 
 static int sg_live(void)
 {
@@ -1956,6 +1969,8 @@ static void song_init(void)
     for (i = 0; i < __builtin_offsetof(SgState, btn) - __builtin_offsetof(SgState, cue); i++)
         p[i] = 0;
     SG->player = 0;
+    SG->pre_at = SG->now_at = 0;
+    SG->pre_scene = 0xFF;
     SG->magic = SG_MAGIC;
 }
 
@@ -1994,28 +2009,103 @@ int song_post(unsigned key, unsigned id, unsigned value, unsigned layer)
     return 1;
 }
 
-/* 0x0805CE0C (hook_song_scene): FUN_0805CDA0 is about to send a scene's starts and stops, at step 0
- * of the playing layer, on the song (player +0x60) only. The layer's index is the scene. Player
- * +0x64 is the scene count; +0x5C set means the song moves on to the next scene (not Loop1). */
-void song_scene(void *player)
+/* ---- The song player (FUN_0805D8C4, one step per beat) ----
+ * Player +0x18 key, +0x30 playing, +0x58 / +0x41 not stepping, +0x5C moves on (not Loop1), +0x5D wraps
+ * (LoopA), +0x60 the song, +0x64 scene count, +0xC20 the playing layer, +0xC24 a queued layer (a
+ * touched scene). Layer +0x00 step length (index into 0x080ECA6C, beats), +0x04 step count, +0x38
+ * its start tick (int64; a queued layer's is its switch tick, on a bar), +0x40 its index (the scene).
+ * A scene's jump is planned ahead with the tick its scene starts at, so the first grain from that tick
+ * takes it whatever the block order (the scene start's own message comes too late for the grain on
+ * the bar about half the time, which made the jump a bar late; unit test 2026-10-23). */
+
+#define STEP_BEATS   ((const float *)0x080ECA6Cu)   /* 15 step lengths in beats */
+
+static long long layer_ticks(const void *layer)     /* a scene's length: step count x step length */
 {
-    const void *layer;
-    unsigned scene, nxt, k;
-    if (!sg_live() || u32(player, 0x18) != SONG_KEY || !(layer = *(void **)at(player, 0xC20)))
+    unsigned i = u32(layer, 0), n = u32(layer, 4);
+    int step;
+    if (i > 14)
+        i = 14;
+    n = n < 1 ? 1 : n > 512 ? 512 : n;
+    step = (int)(STEP_BEATS[i] * (float)TICKS_BEAT + 0.5f);   /* int: a float -> int64 call is libgcc's, in bank 2 */
+    return (long long)step * (int)n;
+}
+
+static int song_player(void *player)
+{
+    return sg_live() && u32(player, 0x18) == SONG_KEY && u8(player, 0x60) && u8(player, 0x30) && !u8(player, 0x58);
+}
+
+/* The next scene and its start tick: a queued scene at its switch tick, else (at the scene's end) the
+ * next one, the same one on Loop1, the first after the last on LoopA, none at the song's end. */
+static void song_plan(void *player)
+{
+    const char *layer = *(const char **)at(player, 0xC20), *q = *(const char **)at(player, 0xC24);
+    unsigned cur, nxt, k;
+    long long t;
+    if (!layer)
         return;
-    scene = *(const unsigned short *)((const char *)layer + 0x40);
-    if (scene >= SCENES)
+    cur = *(const unsigned short *)(layer + 0x40);
+    if (q) {
+        nxt = *(const unsigned short *)(q + 0x40);
+        t = *(const long long *)(q + 0x38);
+    } else {
+        t = *(const long long *)(layer + 0x38) + layer_ticks(layer);
+        nxt = !u8(player, 0x5C) ? cur : cur + 1 < u32(player, 0x64) ? cur + 1 : u8(player, 0x5D) ? 0 : 0xFF;
+    }
+    if (nxt >= SCENES) {
+        SG->pre_scene = 0xFF;
+        for (k = 0; k < DK_PADS; k++)
+            SG->pre[k] = 0;
         return;
-    nxt = !u8(player, 0x5C) ? scene : scene + 1 < u32(player, 0x64) ? scene + 1 : 0;
-    if (nxt >= SCENES)
-        nxt = 0;
-    SG->player = player;
+    }
+    if (SG->pre_scene == nxt && SG->pre_at == t)
+        return;                            /* planned already (its jumps may be under way) */
+    SG->pre_scene = (unsigned char)nxt;
+    SG->pre_at = t;
+    for (k = 0; k < DK_PADS; k++) {
+        SG->pre[k] = SG->cue[nxt][k];
+        SG->jumped[k] = 0;
+    }
+}
+
+/* Step 0 of the song's playing layer: the scene starts. Planned (same scene, same tick): its jumps
+ * are taken or due at that tick. Not planned (PLAY, a locate): the old way, at the next Quant boundary. */
+static void song_scene(void *player)
+{
+    const char *layer = *(const char **)at(player, 0xC20);
+    unsigned scene, k, planned;
+    long long t;
+    if (!layer || (scene = *(const unsigned short *)(layer + 0x40)) >= SCENES)
+        return;
+    t = *(const long long *)(layer + 0x38);
+    planned = SG->pre_scene == scene && SG->pre_at == t;
+    SG->now_at = t;
     for (k = 0; k < DK_PADS; k++) {
         unsigned v = SG->cue[scene][k];
-        SG->req[k] = (unsigned char)v;
         SG->arm[k] = (unsigned char)v;
-        SG->next[k] = SG->cue[nxt][k];
+        SG->now[k] = planned ? SG->pre[k] : 0;
+        SG->req[k] = planned ? 0 : (unsigned char)v;
+        SG->skip[k] = planned && (SG->jumped[k] || SG->pre[k]);
+        SG->pre[k] = 0;
+        SG->jumped[k] = 0;
     }
+    SG->pre_scene = 0xFF;
+}
+
+/* FUN_0805CDA0 entry (hook_song_step): every step of every sequence player; only the song's count. */
+void song_step(void *player, void *transport, int step)
+{
+    unsigned k;
+    (void)transport;
+    if (!song_player(player))
+        return;
+    SG->player = player;
+    if (step == 0 && !u8(player, 0x41))
+        song_scene(player);
+    song_plan(player);
+    for (k = 0; k < DK_PADS; k++)
+        SG->next[k] = SG->pre_scene < SCENES ? SG->cue[SG->pre_scene][k] : 0;
 }
 
 static int song_playing(void)
@@ -2041,6 +2131,7 @@ static unsigned song_start_unit(void *clip, DkCue *c)
         return CUE_NONE;
     v = SG->arm[k];
     SG->req[k] = 0;                    /* this start is already at the cue */
+    SG->now[k] = 0;
     if (!song_playing()) {
         SG->arm[k] = 0;
         return CUE_NONE;
@@ -2062,6 +2153,10 @@ int song_pad_start(void *clip)
         return 0;
     k = idx_unpacked(u32(clip, 0x18));
     c = clip_cue(clip);
+    if (SG->skip[k]) {                    /* planned: the jump is taken (or due) at the scene's tick */
+        SG->skip[k] = 0;
+        return 1;
+    }
     if (!SG->req[k] || (unit = song_unit(clip, c, SG->req[k])) == CUE_NONE)
         return 0;
     SG->req[k] = 0;
@@ -2073,29 +2168,53 @@ int song_pad_start(void *clip)
 /* deck_cue_note set a pending jump: a scene start's request for this pad is dropped. */
 static void song_drop(void *clip)
 {
-    if (sg_live())
-        SG->req[idx_unpacked(u32(clip, 0x18))] = 0;
-}
-
-/* deck_wrap_unit, every grain of a playing clip: a scene start's jump becomes the pending jump (a cue
- * note before the boundary still replaces it). Otherwise the next scene's cue is kept cached. */
-static void song_grain(void *clip, DkCue *c)
-{
-    unsigned k, v, unit;
+    unsigned k;
     if (!sg_live())
         return;
     k = idx_unpacked(u32(clip, 0x18));
+    SG->req[k] = SG->now[k] = SG->pre[k] = 0;
+}
+
+/* deck_wrap_unit, every grain of a playing clip, with the grain's start tick. The first grain from
+ * a scene's start tick takes that scene's jump at once (planned, so the Quant Size plays no part: the
+ * scene starts on its bar). An unplanned scene start's jump becomes the pending one (next Quant
+ * boundary). Otherwise the next jump's audio is kept cached. Returns the unit to play, or CUE_NONE. */
+static unsigned song_grain(void *clip, DkCue *c, const long long *tick)
+{
+    unsigned k, v, unit;
+    long long t = *tick;
+    if (!sg_live())
+        return CUE_NONE;
+    k = idx_unpacked(u32(clip, 0x18));
+    if (SG->now[k] && t >= SG->now_at) {
+        v = SG->now[k];
+        SG->now[k] = 0;
+        if ((unit = song_unit(clip, c, v)) != CUE_NONE) {
+            c->pending = CUE_NONE;
+            return unit;
+        }
+    }
+    if (SG->pre[k] && t >= SG->pre_at && song_playing()) {
+        v = SG->pre[k];
+        SG->pre[k] = 0;
+        SG->jumped[k] = 1;
+        if ((unit = song_unit(clip, c, v)) != CUE_NONE) {
+            c->pending = CUE_NONE;
+            return unit;
+        }
+    }
     if ((v = SG->req[k]) != 0) {
         SG->req[k] = 0;
         if ((unit = song_unit(clip, c, v)) != CUE_NONE) {
             c->pending = (unsigned short)unit;
             cue_prefetch(clip, unit, 0);
         }
-        return;
+        return CUE_NONE;
     }
-    if (c->pending == CUE_NONE && (v = SG->next[k]) != 0 && song_playing() &&
-        (unit = song_unit(clip, c, v)) != CUE_NONE)
+    v = SG->now[k] ? SG->now[k] : SG->pre[k] ? SG->pre[k] : SG->next[k];
+    if (c->pending == CUE_NONE && v && song_playing() && (unit = song_unit(clip, c, v)) != CUE_NONE)
         cue_prefetch(clip, unit, 1);
+    return CUE_NONE;
 }
 
 /* ---- Song screen (FUN_080C2980, vtable 0x080F1758) ---- */
