@@ -4872,6 +4872,9 @@ def _u16(b, addr):
 
 
 def _deck_clip(b, unit_ticks=960, units=16, sync=1, loop=1, trigger=0):
+    # deck_cue_note asks for the transport's tick (3.1.T late cue notes, FUN_08069C44: double precision,
+    # which Unicorn's M7 lacks). These cases don't model the transport: always mid-bar, never late.
+    b.stub(0x08069C44, lambda bb: bb.mu.mem_write(bb.arg(0), struct.pack("<q", 1500)))
     clip = 0x2001C800
     b.mu.mem_write(clip, b"\x00" * 0xC00)
     b.w32(clip + 0x18, 0x0100)              # row 1, col 0
@@ -6831,6 +6834,83 @@ def t_song_downbeat(bench, res):
               "stopped: stock's pad event starts it, at Cue B")
     res.check(b.u8(SG_NOW + 4) == 0, "and that start used the scene's jump")
 
+SG_LATE_OFS, SG_LATE_B79 = SG_BASE + 0x82C, SG_BASE + 0x86C
+
+
+def t_cue_late_stock(bench, res):
+    """Stutter / Repitch: a cue note up to 64 ticks after a Quant boundary on a playing Clip retriggers
+    it at once (stock voice start, unquantised for that start) at the cue, its first grain shifted by
+    the time since the bar; later notes, bank-2 modes and Quant None keep the pending jump."""
+    b, sym = bench.b, bench.sym
+    note, unit0, gstart = sym["deck_cue_note"], sym["deck_note_unit"], sym["deck_grain_start"]
+    tick = [0]
+
+    def tick_at(bb):
+        bb.mu.mem_write(bb.arg(0), struct.pack("<q", tick[0]))
+    b.w32(DK_BASE, 0)
+    b.call(sym["deck_init"])
+    clip = _deck_clip(b)                          # one unit per beat (960 ticks), 32768 frames per unit
+    b.stub(0x08069C44, tick_at)
+    _cue_set(bench, 0x0100, cues=(6, 11))         # A beat 5, B beat 10
+    b.w32(clip + 0x218, 3840)                     # Quant Size 1 bar
+
+    def play(warp):
+        b.mu.mem_write(clip + 0x28, b"\x01")
+        b.mu.mem_write(clip + 0x260, b"\x01")
+        b.mu.mem_write(clip + 0xBB1, bytes([warp]))
+        b.mu.mem_write(clip + 0xB79, b"\x01")
+
+    def cue_note(n, t, offset=40):
+        tick[0] = t
+        b.w32(DK_BASE + 4 + 4, 0x2001C000)        # DkState.save[1]: transport (hook_voice's r1)
+        b.w32(DK_BASE + 4 + 8, offset)            # save[2]: sample offset in the block
+        return b.call(note, clip, n)
+
+    for warp, name in ((0, "Stutter"), (2, "Repitch")):
+        play(warp)
+        r = cue_note(37, 3840 * 4 + 32)           # 32 ticks after bar 5
+        res.check(r == 0 and _cue(b, 4)["launch"] == 10 and _cue(b, 4)["pending"] == NONE16,
+                  f"{name}: late cue note retriggers now at Cue B ({r:#x})")
+        res.check(b.u8(clip + 0xB79) == 0 and b.u8(SG_LATE_B79 + 4) == 1, f"{name}: that start unquantised")
+        res.check(b.call(unit0, clip, 0) == 10 and b.u8(clip + 0xB79) == 1, f"{name}: note start at the cue, quantise back")
+        ofs = struct.unpack("<i", bytes(b.mu.mem_read(SG_LATE_OFS + 16, 4)))[0]
+        res.check(ofs == 32 * 32768 // 960, f"{name}: first grain {ofs} frames in (32 ticks)")
+        f = b.call(gstart, clip, 10 * 32768) & 0xFFFFFFFF
+        res.check(f == 10 * 32768 + 32 * 32768 // 960, f"{name}: first grain starts in phase ({f})")
+        res.check(b.call(gstart, clip, 11 * 32768) == 11 * 32768, f"{name}: once only")
+
+    play(0)
+    res.check(cue_note(37, 3840 * 4 + 64) == 0, "64 ticks after the bar: still that bar's note")
+    b.call(unit0, clip, 0)
+    play(0)
+    res.check(cue_note(37, 3840 * 4 + 65) == CUE_SWALLOW and _cue(b, 4)["pending"] == 10,
+              "65 ticks: pending, the next boundary as before")
+    b.call(unit0, clip, 0)
+    play(0)
+    res.check(cue_note(37, 3840 * 4 + 1500) == CUE_SWALLOW and b.u8(clip + 0xB79) == 1,
+              "mid-bar: pending, quantise untouched")
+    b.call(unit0, clip, 0)
+    for warp in (1, 3, 4, 5):
+        play(warp)
+        res.check(cue_note(37, 3840 * 4 + 10) == CUE_SWALLOW, f"Warp {warp} (bank 2): pending, deck_cue_late's job")
+        b.call(unit0, clip, 0)
+    play(0)
+    b.w32(clip + 0x218, 0)
+    b.w32(clip + 0x21C, 0)
+    res.check(cue_note(37, 3840 * 4 + 10) == CUE_SWALLOW, "Quant None: pending (next grain) as before")
+    b.call(unit0, clip, 0)
+    b.w32(clip + 0x218, 3840)
+    b.mu.mem_write(clip + 0x28, b"\x00")
+    b.mu.mem_write(clip + 0x260, b"\x00")
+    r = cue_note(36, 3840 * 4 + 10)
+    res.check(r == 0 and b.u8(clip + 0xB79) == 1 and b.u8(SG_LATE_B79 + 4) == 0,
+              "stopped clip: stock's cue launch, quantise untouched")
+    play(0)
+    cue_note(37, 3840 * 4 + 10)
+    res.check(b.u8(clip + 0xB79) == 0, "a retrigger set up ...")
+    cue_note(36, 3840 * 4 + 1500)
+    res.check(b.u8(clip + 0xB79) == 1, "... that never reached its note start: quantise back on the next note")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True)
@@ -6981,6 +7061,7 @@ def main():
             ("Song cues: next scene's cue cached", t_song_prefetch),
             ("Song cues: the scene's pad event on a playing Clip jumps", t_song_pad_event),
             ("Song cues: the jump lands on the scene's bar", t_song_downbeat),
+            ("late cue note on stock grains retriggers in phase", t_cue_late_stock),
             ("Song cues: pad grid letters and taps", t_song_ui),
         ]
     cases += [("MIDI note path facts", t_midi_path_facts),

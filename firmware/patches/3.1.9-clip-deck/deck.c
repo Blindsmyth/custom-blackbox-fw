@@ -192,6 +192,9 @@ static void song_init(void);
 static unsigned song_start_unit(void *clip, DkCue *c);
 static unsigned song_grain(void *clip, DkCue *c, const long long *tick);
 static void song_drop(void *clip);
+static int song_late(void *clip, unsigned unit);
+static int song_late_ofs(void *clip);
+static void song_late_restore(void *clip);
 #endif
 
 void deck_init(void)
@@ -570,6 +573,7 @@ unsigned deck_note_unit(void *clip, unsigned unit)
     c->launch = CUE_NONE;
     c->pending = CUE_NONE;
 #ifdef SONG_CUES
+    song_late_restore(clip);
     if (at == CUE_NONE)
         at = song_start_unit(clip, c);   /* the playing Song scene's cue for this pad */
 #endif
@@ -626,6 +630,9 @@ int deck_grain_start(void *clip, int frame)
     if (!live() || u8(clip, 0x254))
         return frame;
     ofs = grid_unpacked(u32(clip, 0x18))->ofs;
+#ifdef SONG_CUES
+    ofs += song_late_ofs(clip);   /* a late cue note's retrigger: its first grain is in phase */
+#endif
     if (!ofs)
         return frame;
     frame += ofs;
@@ -647,6 +654,9 @@ unsigned deck_cue_note(void *clip, unsigned note)
         return note;
     c = clip_cue(clip);
     c->launch = CUE_NONE;
+#ifdef SONG_CUES
+    song_late_restore(clip);
+#endif
     if (!cue_active(c) || note - c->note >= CUES)
         return note;
     k = note - c->note;
@@ -654,6 +664,13 @@ unsigned deck_cue_note(void *clip, unsigned note)
     if (unit != CUE_NONE && unit >= n)
         unit = n - 1;
     if (u8(clip, 0x28) && (u8(clip, 0x260) || u8(clip, 0x670))) {
+#ifdef SONG_CUES
+        if (unit != CUE_NONE && song_late(clip, unit)) {
+            song_drop(clip);
+            c->launch = (unsigned short)unit;   /* retrigger now, at the cue (stock voice start) */
+            return 0;
+        }
+#endif
         if (unit != CUE_NONE) {
             c->pending = (unsigned short)unit;
             cue_prefetch(clip, unit, 0);
@@ -1972,11 +1989,14 @@ typedef struct {
     unsigned char pre_scene;              /* +0x28A the planned next scene, 0xFF none */
     unsigned char rsv;
     unsigned btn[SG_BTNS][0x28];          /* +0x28C stock buttons (0xA0 each): A..H, then Def */
+    int late_ofs[DK_PADS];                /* +0x82C a late cue note's retrigger: frames to add to its first grain */
+    unsigned char late_b79[DK_PADS];      /* +0x86C clip+0xB79 (quantised launch) cleared for that retrigger */
 } SgState;
 
 #define SG ((SgState *)SG_BASE)
 typedef char sg_fits[(SG_BASE + sizeof(SgState) <= SG_END) ? 1 : -1];
 typedef char sg_btn_at[(__builtin_offsetof(SgState, btn) == 0x28C) ? 1 : -1];      /* the bench's SG_BTN */
+typedef char sg_late_at[(__builtin_offsetof(SgState, late_ofs) == 0x82C) ? 1 : -1];
 typedef char sg_cue_at[(__builtin_offsetof(SgState, cue) == 0x18) ? 1 : -1];
 typedef char sg_ticks_aligned[(__builtin_offsetof(SgState, pre_at) & 7) == 0 ? 1 : -1];  /* LDRD */
 
@@ -1993,6 +2013,10 @@ static void song_init(void)
     unsigned i;
     for (i = 0; i < __builtin_offsetof(SgState, btn) - __builtin_offsetof(SgState, cue); i++)
         p[i] = 0;
+    for (i = 0; i < DK_PADS; i++) {
+        SG->late_ofs[i] = 0;
+        SG->late_b79[i] = 0;
+    }
     SG->player = 0;
     SG->pre_at = SG->now_at = 0;
     SG->pre_scene = 0xFF;
@@ -2240,6 +2264,71 @@ static unsigned song_grain(void *clip, DkCue *c, const long long *tick)
     if (c->pending == CUE_NONE && v && song_playing() && (unit = song_unit(clip, c, v)) != CUE_NONE)
         cue_prefetch(clip, unit, 1);
     return CUE_NONE;
+}
+
+/* ---- Late cue notes on stock grains (Stutter, Repitch) ----
+ * A sequenced cue note for a bar reaches the pad a little after the bar's first grain was chosen,
+ * so its pending jump waited a whole Quant Size (the first repeat sounded ignored, later ones a bar
+ * late). Bank 2's lanes take the boundary after all (deck_cue_late, lane.h seq_cue_late). Stock
+ * grains can't change a grain that already plays, so a cue note up to LATE_TICKS after a Quant
+ * boundary retriggers the clip at once instead: the voice start goes ahead (stock releases the
+ * lanes and starts a new voice) at the cue (c->launch), unquantised for that one start (clip+0xB79,
+ * set to 1 at the voice's creation and read only by the voice start and the lane release, back to
+ * 1 at the note start), and its first grain starts the time since the bar further in, so the cue
+ * plays in phase with the bar from there on. */
+
+#define LATE_TICKS   64          /* 1/15 beat: ~33 ms at 120 BPM (a block is 2.7 ms) */
+#define CLIP_WARP    0xBB1       /* Warp (repitch.S CLIP_FLAG): 0 Stutter, 2 Repitch = stock grains */
+#define WARP_REPITCH 2
+#define B79_QLAUNCH  0xB79
+
+typedef void (*tick_at_fn)(long long *, void *, unsigned);
+#define TICK_AT      ((tick_at_fn)0x08069C45u)   /* (out, transport, sample offset in block) */
+
+/* deck_cue_note on a playing clip with a cue jump (hook_voice saved r1 transport, r2 offset). */
+static int song_late(void *clip, unsigned unit)
+{
+    unsigned w = u8(clip, CLIP_WARP), k, ut;
+    long long q = *(const long long *)at(clip, 0x218), t, d;
+    float spu = *(const float *)at(clip, 0x1FC);
+    (void)unit;
+    if (!sg_live() || (w != 0 && w != WARP_REPITCH) || q <= 0 || !(ut = u32(clip, 0x208)) || !(spu > 0.0f))
+        return 0;
+    TICK_AT(&t, (void *)ST->save[1], ST->save[2]);
+    if (t < 0)
+        return 0;
+    d = t - LDIV(t, q) * q;
+    if (d > LATE_TICKS)
+        return 0;
+    k = idx_unpacked(u32(clip, 0x18));
+    SG->late_ofs[k] = (int)((float)(int)d * spu / (float)ut);
+    SG->late_b79[k] = 1;
+    *(unsigned char *)at(clip, B79_QLAUNCH) = 0;
+    return 1;
+}
+
+static void song_late_restore(void *clip)
+{
+    unsigned k;
+    if (!sg_live())
+        return;
+    k = idx_unpacked(u32(clip, 0x18));
+    if (SG->late_b79[k]) {
+        SG->late_b79[k] = 0;
+        *(unsigned char *)at(clip, B79_QLAUNCH) = 1;
+    }
+}
+
+static int song_late_ofs(void *clip)     /* one-shot: the retrigger's first grain */
+{
+    unsigned k;
+    int o;
+    if (!sg_live())
+        return 0;
+    k = idx_unpacked(u32(clip, 0x18));
+    o = SG->late_ofs[k];
+    SG->late_ofs[k] = 0;
+    return o;
 }
 
 /* ---- Song screen (FUN_080C2980, vtable 0x080F1758) ---- */
