@@ -3831,6 +3831,35 @@ def t_lineup_deck(bench, res):
     tail = last_pos()
     res.check(tail and all(4 * spu - 600 <= p < 8 * spu + 600 for p in tail),
               f"Bungee relaunches into the loop at Loop End (playhead {min(tail) if tail else None}..{max(tail) if tail else None})")
+
+    # A sequenced cue note one block after a bar boundary (it arrives after the bar's first unit was
+    # chosen): Bungee still jumps at that bar, not a bar later. The launch is on a bar, as a quantised
+    # launch is (a bar is 120000 frames at 96 BPM).
+    now[0] = (now[0] // 120000 + 1) * 120000 - 1
+    lane = setup(5)
+    for i, v in enumerate((0, POS_END, 0, POS_END)):
+        b.call(bench.sym["deck_store_unpacked"], 0x0100, ID_DECK + i, v)
+    _cue_set(bench, 0x0100, cues=(7,))                   # Cue 1 at beat 6: unit 24
+    b.w32(clip + 0x218, 3840)                            # Quant Size 1 bar (16 units)
+    b.mu.mem_write(clip + 0x28, b"\x01")
+    b.w32(RB_VOICE + 4, clip)
+    b.w32(RB_VOICE + 20, 1)
+    out.clear()
+    noted = False
+    for _ in range(21 * unit_out // 256):
+        b.mu.mem_write(tp, struct.pack("<qqqf", now[0], 0, 0, 96.0))
+        b.mu.mem_write(tp + 0x38, b"\x01")
+        bungee(lane)
+        if not noted and len(out) >= 16 * unit_out + 256:  # one block past the bar at unit 16
+            b.call(bench.sym["deck_cue_note"], clip, 36)
+            noted = True
+        now[0] += 256
+    ks = []
+    for u in range(14, 20):
+        w = out[u * unit_out + 1500: (u + 1) * unit_out - 1000]
+        r = math.sqrt(sum(x * x for x in w) / max(1, len(w)))
+        ks.append(round((r * math.sqrt(2) - 0.05) / 0.02))
+    res.check(ks == [14, 15, 24, 25, 26, 27], f"Bungee takes a cue note 5 ms late at that bar: units {ks} (want [14, 15, 24, 25, 26, 27])")
     b.unstub(0x0804436C)
 
 
@@ -5340,6 +5369,14 @@ def t_cue_engine(bench, res):
     res.check(b.call(wrap, clip, 4, _tick(b, 3840 * 7)) == 5, "on the bar: jump to the cue")
     res.check(_cue(b, 4)["pending"] == NONE16, "jump is one-shot")
     res.check(b.call(wrap, clip, 6, _tick(b, 3840 * 8)) == 6, "next bar plays on")
+    if "deck_cue_late" in sym:
+        late = sym["deck_cue_late"]
+        res.check(b.call(late, clip, _tick(b, 3840 * 8)) == NONE16, "late take: nothing pending, nothing taken")
+        b.call(note, clip, 36)
+        res.check(b.call(late, clip, _tick(b, 3840 * 8 + 960)) == NONE16 and _cue(b, 4)["pending"] == 5,
+                  "late take: a unit off the bar stays, the jump stays pending")
+        res.check(b.call(late, clip, _tick(b, 3840 * 9)) == 5 and _cue(b, 4)["pending"] == NONE16,
+                  "late take: the unit chosen on the bar becomes the cue")
     b.call(note, clip, 38)
     res.check(_cue(b, 4)["pending"] == 15, "cue past the file clamps to the last unit")
     res.check(b.call(wrap, clip, 7, _tick(b, -3840)) == 15, "negative tick on the grid jumps")

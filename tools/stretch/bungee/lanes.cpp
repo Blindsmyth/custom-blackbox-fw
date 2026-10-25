@@ -334,6 +334,8 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
         if (u < 0.)
             u = 0.;
         seq_advance(q, clip, s->anchor, u, (double)(n + SEQ_LEAD) * ratio / q->spu);
+        if (seq_cue_late(q, clip, s->anchor, u, SEQ_CUE_LATE * ratio / q->spu) >= 0)   // a late cue note
+            seq_advance(q, clip, s->anchor, u, (double)(n + SEQ_LEAD) * ratio / q->spu);
         if (seq_ended(q, u)) {
             lane_end(clip, lane, 1);    // End with Loop off / Trigger, as deck_limit stops stock
             s->lane = 0;
