@@ -4,6 +4,7 @@ One image with everything on this line:
 - **The base:** 3.1.Q: folders, the Mix screen, Seq Rec, the looper, Tools → Master.
 - **Bungee** in flash bank 2 (3.1.B, `..`).
 - **Clip Deck** (3.1.E, `../../3.1.9-clip-deck`): Start / End / Loop, 8 hot cues, the waveform editor.
+- **Song DJ row** (`../../3.1.9-song-dj`, `docs/song-dj.md`): SONG again on the Song screen gives Beatjump << / >> and Autoloop for every playing Clip, pad sequence and the song.
 - **Warp Stutter / Fill / Repitch / Chop / Grain / Bungee.**
 - **The preset-folder fixes** (`docs/preset-folders.md`):
   - no dropout when entering big folders;
@@ -103,6 +104,14 @@ What changes against 3.1.E:
 - **Slices:** 3.1.Y's 2048 slices are not in this build. Their tables would sit in the RAM bank 2 uses, so stock's 128 slices apply.
 - **Version text:** "3.1.T" goes after the cave, as on 3.1.E (`tools/version_text.py`). The '9' of "3.1.9" stays, so the naming keyboard's 9 key types 9. 3.1.Q and 3.1.B overwrite it.
 - **Next-grain hook:** the call at `0x08066CF2` belongs to both Clip Deck and the Mix line's Env Trig. `hook_wrap_grain` chooses the unit, then jumps on to `env_slice`, which starts the grain.
+
+## Song DJ row
+
+Details: `docs/song-dj.md`.
+- **Open it:** press **SONG** on the Song screen: **<< 16 | 16 >> | Loop 1** at the bottom. Press SONG again to hide it.
+- **Knobs:** bottom-left halves or doubles the jump size (1/4 to 64 bars, default 16). Bottom-right does the same for the loop size (1/16 to 16 bars, default 1).
+- **What moves:** every playing Clip on a note-value Sync grid, every playing pad sequence, and the song. The jump happens on the next beat and keeps the phase. Loop off plays on from inside the loop.
+- **With Song playback on:** a jump that would leave the scene is not taken, and the scene it would have reached blinks. The loop is cut on the scene's end and holds the scene.
 
 ## Bungee in this build (and in 3.1.B)
 
