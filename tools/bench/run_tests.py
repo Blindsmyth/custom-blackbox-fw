@@ -5507,6 +5507,451 @@ def t_cue_prefetch_stock_seek(bench, res):
     res.check(b.reads == reads, "no card reads from the engine side")
 
 
+# ---- Song DJ row (3.1.T, firmware/patches/3.1.9-song-dj, docs/song-dj.md) ----
+
+DJ = 0x38007400                 # DjState
+DJ_UI = DJ + 0x420
+DJ_BTN = DJ + 0x470
+UI_TICK_AT = 0x2402EEE0
+DJ_PLAYER = 0xC0700000          # fake sequence players and their Player_Tick frames (SDRAM)
+DJ_SONG_P = 0xC0710000
+DJ_CSP = 0xC0720000
+DJ_APP = 0xC0730000
+DJ_SONG_W = 0xC0800000          # fake Song widget (0x13000 bytes)
+DJ_EV = 0xC0740000
+ID_DJ = 0x1D0
+
+
+def _dj_s32(v):
+    return v - (1 << 32) if v & 0x80000000 else v
+
+
+def _dj_ms(b, ms):
+    b.w32(UI_TICK_AT, ms)
+
+
+def _dj_jump(b, ticks):
+    b.w32(DJ + 0x14, ticks)
+    b.w32(DJ + 0x18, b.u32(UI_TICK_AT))
+    b.w32(DJ + 0x10, b.u32(DJ + 0x10) + 1)
+
+
+def _dj_loop(b, ticks):
+    b.w32(DJ + 0x20, ticks)
+    b.w32(DJ + 0x1C, b.u32(DJ + 0x1C) + 1)
+
+
+def _dj_player(b, at, song=0, count=16, scene=0, scenes=3, moves=1, loop_all=0):
+    b.mu.mem_write(at, b"\x00" * 0xD00)
+    b.mu.mem_write(at + 0x30, b"\x01")
+    b.mu.mem_write(at + 0x5C, bytes([moves, loop_all]))
+    b.mu.mem_write(at + 0x60, bytes([song]))
+    b.w32(at + 0x64, scenes)
+    b.w32(at + 0xC20, at + 0x320)
+    b.w32(at + 0x320 + 4, count)
+    b.mu.mem_write(at + 0x320 + 0x40, scene.to_bytes(2, "little"))
+    return at
+
+
+def _dj_step(bench, p, step, count, tick, q):
+    """dj_seq_step as hook_dj_step calls it: Player_Tick's frame holds the tick and the step length."""
+    b = bench.b
+    b.mu.mem_write(DJ_CSP, b"\x00" * 0x60)
+    b.w32(DJ_CSP + 0x20, tick & 0xFFFFFFFF)
+    b.w32(DJ_CSP + 0x14, (tick >> 32) & 0xFFFFFFFF)
+    b.w32(DJ_CSP + 0x50, q)
+    return _dj_s32(b.call(bench.sym["dj_seq_step"], p, step & 0xFFFFFFFF, count, DJ_CSP)) + 1
+
+
+def t_dj_clip(bench, res):
+    """Beatjump and autoloop on a Clip (1-beat units, 4 bars): the jump on the first beat past the
+    request, phase kept, round the file; a loop wraps on its grid; a Clip started later stays out."""
+    b = bench.b
+    sym = bench.sym
+    wrap = sym["deck_wrap_unit"]
+    b.call(sym["deck_init"])
+    res.check(b.u32(DJ) == 0x314A4453, "deck_init starts the DJ state")
+    clip = _deck_clip(b)
+    _dj_ms(b, 1000)
+    _dj_jump(b, 3840)
+    res.check(b.call(wrap, clip, 3, _tick(b, 2880)) == 3, "jump asked: plays on until the beat")
+    res.check(b.u32(DJ + 0x24) == 1 and b.u32(DJ + 0x30) == 3840, "armed for the next beat (3840)")
+    res.check(b.call(wrap, clip, 4, _tick(b, 3840)) == 8, ">> 1 bar on the beat: unit 4 -> 8")
+    res.check(b.call(wrap, clip, 9, _tick(b, 4800)) == 9, "taken once")
+    _dj_jump(b, -3840)
+    b.call(wrap, clip, 10, _tick(b, 5760))
+    res.check(b.call(wrap, clip, 11, _tick(b, 6720)) == 7, "<< 1 bar")
+    _dj_jump(b, 61440)
+    b.call(wrap, clip, 8, _tick(b, 7680))
+    res.check(b.call(wrap, clip, 9, _tick(b, 8640)) == 9, "16 bars on a 4-bar clip: round to the same place")
+    _dj_jump(b, 3840)
+    _dj_ms(b, 2000)
+    b.call(wrap, clip, 10, _tick(b, 9600))
+    res.check(b.call(wrap, clip, 11, _tick(b, 10560)) == 11, "a jump nobody played for 300 ms is dropped")
+    _dj_loop(b, 3840)
+    res.check(b.call(wrap, clip, 2, _tick(b, 11520)) == 2, "loop on at bar 4")
+    res.check(_dj_s32(b.u32(DJ + 0x40)) == 11520 and b.u32(DJ + 0x3C) == 3840, "loop window on the bar grid")
+    got = [b.call(wrap, clip, u, _tick(b, 11520 + 960 * i)) for i, u in ((1, 3), (2, 4), (3, 5), (4, 6), (5, 3))]
+    res.check(got == [3, 4, 5, 2, 3], f"1-bar loop: 3 4 5 back to 2 {got}")
+    _dj_jump(b, 7680)
+    b.call(wrap, clip, 4, _tick(b, 17280))
+    res.check(b.call(wrap, clip, 5, _tick(b, 18240)) == 13, "a jump while looping moves the loop")
+    got = [b.call(wrap, clip, u, _tick(b, 18240 + 960 * i)) for i, u in ((1, 14), (2, 11), (3, 12))]
+    res.check(got == [10, 11, 12], f"... and it loops there: 13 10 11 12 {got}")
+    _dj_loop(b, 0)
+    got = [b.call(wrap, clip, u, _tick(b, 21120 + 960 * i)) for i, u in ((1, 13), (2, 14), (3, 15), (4, 0))]
+    res.check(got == [13, 14, 15, 0], f"loop off: plays on from inside the loop {got}")
+    _dj_loop(b, 3840)
+    b.call(sym["deck_note_unit"], clip, 0)
+    got = [b.call(wrap, clip, u, _tick(b, 26880 + 960 * i)) for i, u in ((0, 1), (1, 2), (2, 3), (3, 4), (4, 5))]
+    res.check(got == [1, 2, 3, 4, 5], f"a Clip started after Loop on is not looped {got}")
+    _dj_loop(b, 0)
+    clip = _deck_clip(b, unit_ticks=3840, units=8)
+    b.call(sym["deck_note_unit"], clip, 0)
+    _dj_jump(b, 960)
+    b.call(wrap, clip, 1, _tick(b, 3840 * 9))
+    res.check(b.call(wrap, clip, 2, _tick(b, 3840 * 10)) == 2, "1-bar units: a 1-beat jump does nothing")
+
+
+def t_dj_seq(bench, res):
+    """Beatjump and autoloop on a pad sequence (1/16 steps, 64 of them)."""
+    b = bench.b
+    sym = bench.sym
+    b.call(sym["deck_init"])
+    p = _dj_player(b, DJ_PLAYER)
+    layer, idx, pool, ptr = p + 0x320, DJ_PLAYER + 0x2000, DJ_PLAYER + 0x2100, DJ_PLAYER + 0x2400
+    for i in range(16):                        # a note on every beat of the 4 bars
+        b.mu.mem_write(idx + 2 * i, i.to_bytes(2, "little"))
+        b.mu.mem_write(pool + 0x18 * i, b"\x01" + b"\x00" * 3 + (960 * i).to_bytes(4, "little") + b"\x00" * 16)
+    b.w32(layer + 0xC, idx)
+    b.w32(layer + 0x10, 16)
+    b.w32(ptr, pool)
+    b.w32(layer + 0x1C, ptr)
+    _dj_ms(b, 1000)
+    res.check(_dj_step(bench, p, 9, 64, 2400, 240) == 10, "no request: stock's next step")
+    _dj_jump(b, 3840)
+    res.check(_dj_step(bench, p, 10, 64, 2640, 240) == 11, "jump asked: not before the beat")
+    res.check(_dj_step(bench, p, 11, 64, 2880, 240) == 28, ">> 1 bar on the beat: 12 -> 28")
+    base = struct.unpack("<q", b.mu.mem_read(layer + 0x38, 8))[0]
+    res.check(base == 2880 - 28 * 240 and b.u32(layer + 0x14) == 7,
+              f"its notes follow: pass start {base}, next note #{b.u32(layer + 0x14)} (beat 8)")
+    _dj_jump(b, -3840)
+    _dj_step(bench, p, 28, 64, 3120, 240)
+    res.check(_dj_step(bench, p, 30, 64, 3840, 240) == 15, "<< 1 bar")
+    _dj_jump(b, -15360)
+    _dj_step(bench, p, 15, 64, 4080, 240)
+    res.check(_dj_step(bench, p, 16, 64, 4800, 240) == 17, "<< 4 bars on a 4-bar sequence: same step")
+    res.check(_dj_step(bench, p, -1, 64, 5040, 240) == 0, "a sequence that is just starting is left alone")
+    _dj_loop(b, 1920)
+    res.check(_dj_step(bench, p, 4, 64, 7680, 240) == 5, "loop on")
+    got = [_dj_step(bench, p, s, 64, 7680 + 240 * i, 240) for i, s in ((1, 5), (7, 11), (8, 12))]
+    res.check(got == [6, 12, 5], f"1/2-bar loop wraps to its start {got}")
+    res.check(b.u32(layer + 0x14) == 2, f"... and its notes go back too: next note #{b.u32(layer + 0x14)} (beat 2)")
+    _dj_loop(b, 0)
+    res.check(_dj_step(bench, p, 12, 64, 11760, 240) == 13, "loop off")
+    p2 = _dj_player(b, DJ_PLAYER + 0x1000)
+    _dj_jump(b, 960)
+    _dj_step(bench, p, 13, 64, 11760, 240)
+    res.check(_dj_step(bench, p2, 1, 3, 12480, 1280) == 2, "steps longer than the jump: not moved")
+
+
+def t_dj_song(bench, res):
+    """With Song playback on: the song moves with the jump inside its scene, a jump out of the scene
+    is not taken (the scene it would reach is posted for the blink), the loop is cut on the scene's
+    end, and a step the song is moved to is not a scene start."""
+    b = bench.b
+    sym = bench.sym
+    b.call(sym["deck_init"])
+    _dj_ms(b, 1000)
+    s = _dj_player(b, DJ_SONG_P, song=1, count=16, scene=0, scenes=3)
+    _dj_step(bench, s, 3, 16, 3840, 960)
+    res.check(b.u32(DJ + 0x58) == s and b.u32(DJ + 0x5C) == 4 and b.u32(DJ + 0x68) == 16, "song player seen")
+    _dj_jump(b, 61440)
+    res.check(_dj_step(bench, s, 4, 16, 4800, 960) == 5, "16 bars in a 4-bar scene: not taken")
+    res.check(b.u32(DJ + 0x50) == 1 and b.u8(DJ + 0x54) == 1 and b.u32(DJ + 0x28) == 0, "refused, scene 2 blinks")
+    _dj_jump(b, 3840)
+    _dj_step(bench, s, 5, 16, 5760, 960)
+    res.check(_dj_step(bench, s, 6, 16, 6720, 960) == 11, ">> 1 bar inside the scene: 7 -> 11")
+    res.check(b.u8(s + 0x60) == 0 and b.u8(DJ + 0x55) == 1, "moved: song flag off for this step")
+    b.call(sym["dj_seq_done"], s)
+    res.check(b.u8(s + 0x60) == 1 and b.u8(DJ + 0x55) == 0, "song flag back after the step's events")
+    _dj_jump(b, -15360)
+    _dj_step(bench, s, 11, 16, 7680, 960)
+    res.check(b.u32(DJ + 0x50) == 2 and b.u8(DJ + 0x54) == 0, "<< 4 bars past the scene start: refused (first scene)")
+    res.check(_dj_step(bench, s, 15, 16, 11520, 960) == 16, "the scene ends a bar early, as it moved on (stock wraps)")
+    res.check(b.u8(s + 0x60) == 1 and b.u32(DJ + 0x68) == 0, "a real scene start: untouched, length unknown")
+    b.w32(s + 0x320 + 4, 18)
+    b.call(sym["dj_seq_done"], s)
+    res.check(b.u32(DJ + 0x68) == 18, "the new scene's length once the layer switched")
+    base = 11520
+    for st in range(0, 16):
+        _dj_step(bench, s, st, 18, base + 960 * (st + 1), 960)
+    _dj_loop(b, 3840)
+    res.check(_dj_step(bench, s, 16, 18, base + 960 * 17, 960) == 17, "loop on at beat 18 of 18")
+    res.check(b.u32(DJ + 0x48) == 13440 and b.u32(DJ + 0x4C) == 17280, "1 bar cut on the scene's end: beats 15-18")
+    res.check(_dj_step(bench, s, 17, 18, base + 960 * 18, 960) == 14, "scene end: back to beat 15, no scene change")
+    res.check(b.u8(s + 0x60) == 0, "the loop's wrap is not a scene start")
+    b.call(sym["dj_seq_done"], s)
+    _dj_jump(b, 3840)
+    _dj_step(bench, s, 14, 18, base + 960 * 19, 960)
+    res.check(b.u32(DJ + 0x50) == 3, ">> while the loop sits at the scene's end: refused")
+    _dj_jump(b, -3840)
+    _dj_step(bench, s, 15, 18, base + 960 * 20, 960)
+    res.check(_dj_s32(b.u32(DJ + 0x48)) == 9600 and b.u32(DJ + 0x4C) == 13440, "<< 1 bar moves the loop window")
+
+    # Resizing at the scene's end: a 1/4 loop on the last beat, grown to 1 bar on a wrap, then shrunk.
+    b.call(sym["deck_init"])
+    s = _dj_player(b, DJ_SONG_P, song=1, count=16, scene=0, scenes=3)
+    for st in range(-1, 14):
+        _dj_step(bench, s, st, 16, 960 * (st + 1), 960) if st >= 0 else None
+    _dj_step(bench, s, 14, 16, 14400, 960)
+    _dj_loop(b, 960)
+    def song_step(step, t):                    # as Player_Tick runs it: hook_dj_step, the events, hook_dj_step0
+        r = _dj_step(bench, s, step, 16, t, 960)
+        b.call(sym["dj_seq_done"], s)
+        return r
+    got = [song_step(15, t) for t in (15360, 16320)]
+    res.check(got == [15, 15], f"1/4 loop on at the last beat: holds it {got}")
+    _dj_loop(b, 3840)
+    got = [song_step(15, 17280), song_step(15, 18240)]
+    res.check(got == [15, 12] and b.u32(DJ + 0x48) == 11520 and b.u32(DJ + 0x4C) == 15360,
+              f"grown to 1 bar on a wrap: the scene's last bar, no scene change {got}")
+    song_step(12, 19200)
+    _dj_loop(b, 960)
+    got = [song_step(13, 20160), song_step(12, 21120)]
+    res.check(got == [12, 12] and b.u32(DJ + 0x48) == 11520 and b.u32(DJ + 0x4C) == 12480,
+              f"halved to 1/4 in beat 3: start kept, jumps into the first quarter {got} "
+              f"window {b.u32(DJ + 0x48)}..{b.u32(DJ + 0x4C)}")
+
+
+def t_dj_loop_mixxx(bench, res):
+    """Autoloop as Mixxx: a loop starts on the closest beat (a catching loop when it is just ahead), a
+    new size keeps the start, a halved loop jumps into its first half in whole sizes, a doubled one
+    plays on (Song playback off; 1/16 steps)."""
+    b = bench.b
+    sym = bench.sym
+    wrap = sym["deck_wrap_unit"]
+
+    def seq_wrap_at():
+        return struct.unpack("<q", b.mu.mem_read(DJ + 0x240 + 8, 8))[0]
+
+    b.call(sym["deck_init"])
+    _dj_ms(b, 1000)
+    p = _dj_player(b, DJ_PLAYER)
+    _dj_step(bench, p, 39, 512, 9600, 240)
+    _dj_loop(b, 30720)
+    res.check(_dj_step(bench, p, 40, 512, 9840, 240) == 41, "8 bars pressed 1/16 after beat 3 of bar 3: plays on")
+    res.check(_dj_s32(b.u32(DJ + 0x40)) == 9600 and seq_wrap_at() == 9600 + 30720,
+              f"... the loop starts on that beat, not on an 8-bar line (start {_dj_s32(b.u32(DJ + 0x40))})")
+    res.check(_dj_step(bench, p, 167, 512, 40320, 240) == 40, "8 bars later: back to beat 3 of bar 3")
+
+    b.call(sym["deck_init"])
+    p = _dj_player(b, DJ_PLAYER)
+    _dj_step(bench, p, 37, 512, 9120, 240)
+    _dj_loop(b, 3840)
+    res.check(_dj_step(bench, p, 38, 512, 9360, 240) == 39 and _dj_s32(b.u32(DJ + 0x40)) == 9600,
+              "pressed 1/16 before a beat: the loop starts on that beat (catching)")
+    res.check(_dj_step(bench, p, 39, 512, 9600, 240) == 40, "... the playhead runs into it")
+    res.check(_dj_step(bench, p, 55, 512, 13440, 240) == 40, "... and a bar later loops back there")
+
+    b.call(sym["deck_init"])
+    p = _dj_player(b, DJ_PLAYER)
+    _dj_step(bench, p, 63, 512, 15360, 240)
+    _dj_loop(b, 61440)
+    _dj_step(bench, p, 64, 512, 15600, 240)
+    _dj_loop(b, 30720)
+    res.check(_dj_step(bench, p, 239, 512, 57600, 240) == 112,
+              "16 bars, halved in bar 12: jumps 8 bars back into the first half, same phase")
+    res.check(_dj_s32(b.u32(DJ + 0x40)) == 15360 and seq_wrap_at() == 76800, "start kept, end at 8 bars")
+    _dj_loop(b, 61440)
+    res.check(_dj_step(bench, p, 127, 512, 61440, 240) == 128, "doubled again: plays on")
+    res.check(seq_wrap_at() == 61440 - 15360 + 61440, f"... the end is 16 bars after the start ({seq_wrap_at()})")
+
+    b.call(sym["deck_init"])
+    clip = _deck_clip(b, unit_ticks=960, units=64)
+    b.call(sym["deck_note_unit"], clip, 0)
+    b.call(wrap, clip, 15, _tick(b, 14400))
+    _dj_loop(b, 61440)
+    b.call(wrap, clip, 16, _tick(b, 15360))
+    _dj_loop(b, 30720)
+    res.check(b.call(wrap, clip, 60, _tick(b, 57600)) == 28, "a Clip halved in bar 12 jumps the same 8 bars")
+
+
+def t_dj_ui(bench, res):
+    """SONG on the Song screen toggles the row; its buttons post jumps and the loop; the bottom knobs
+    step the sizes; the row is built on the Song widget, labelled, and a refused jump blinks a row."""
+    b = bench.b
+    sym = bench.sym
+    b.call(sym["deck_init"])
+    b.mu.mem_write(DJ_APP, b"\x00" * 0x9000)
+    b.mu.mem_write(DJ_APP + 0x8CA4, bytes([0x2D]))
+    bench.screen.clear()
+    b.call(sym["dj_song_key"], DJ_APP, 0x2D, 0, 0)
+    res.check(b.u8(DJ_UI + 4) == 1 and bench.screen == [], "SONG on Song: row asked, no screen switch")
+    b.call(sym["dj_song_key"], DJ_APP, 0x2D, 0, 0)
+    res.check(b.u8(DJ_UI + 4) == 0, "SONG again: row hidden")
+    b.mu.mem_write(DJ_APP + 0x8CA4, bytes([2]))
+    b.call(sym["dj_song_key"], DJ_APP, 0x2D, 0, 0)
+    res.check(bench.screen == [(DJ_APP, 0x2D)], "SONG elsewhere opens Song as stock")
+
+    stock = []
+    b.stub(0x080C3540, lambda bd_: stock.append(("child", bd_.u16(bd_.arg(1)))) or 1)
+    b.stub(0x080C3860, lambda bd_: stock.append(("event", bd_.u16(bd_.arg(1)))))
+    b.stub(0x080C26FC, lambda bd_: stock.append(("tick", 0)))
+
+    def ev(kind, a, c=0):
+        b.mu.mem_write(DJ_EV, b"\x00" * 0x20)
+        b.mu.mem_write(DJ_EV, kind.to_bytes(2, "little"))
+        b.w32(DJ_EV + 0xC, a)
+        b.mu.mem_write(DJ_EV + 0x10, (c & 0xFFFF).to_bytes(2, "little"))
+        return DJ_EV
+
+    child, event, tick = sym["dj_song_child"], sym["dj_song_event"], sym["dj_song_tick"]
+    _dj_ms(b, 4000)
+    res.check(b.call(child, DJ_SONG_W, ev(1, ID_DJ + 1)) == 0 and b.u32(DJ + 0x10) == 1
+              and _dj_s32(b.u32(DJ + 0x14)) == 61440 and b.u32(DJ + 0x18) == 4000, ">> press: +16 bars")
+    b.call(child, DJ_SONG_W, ev(1, ID_DJ))
+    res.check(_dj_s32(b.u32(DJ + 0x14)) == -61440 and b.u32(DJ + 0x10) == 2, "<< press: -16 bars")
+    b.call(child, DJ_SONG_W, ev(2, ID_DJ))
+    res.check(b.u32(DJ + 0x10) == 2 and stock == [], "release swallowed")
+    b.call(child, DJ_SONG_W, ev(1, ID_DJ + 2))
+    res.check(b.u8(DJ_UI + 8) == 1 and b.u32(DJ + 0x20) == 3840 and b.u32(DJ + 0x1C) == 1, "Loop: on, 1 bar")
+    b.call(child, DJ_SONG_W, ev(1, 0x27))
+    res.check(stock == [("child", 1)], "Song's own buttons reach stock")
+    stock.clear()
+    b.call(event, DJ_SONG_W, ev(0x32, 1, -400))
+    res.check(stock == [("event", 0x32)] and b.u8(DJ_UI + 6) == 6, "row hidden: knobs are stock's")
+    stock.clear()
+    b.mu.mem_write(DJ_SONG_W, b"\x00" * 0x13000)
+    for i in range(32):
+        b.w32(DJ_SONG_W + 0x34 + i * 0x7F8 + 0x7A0, i)
+    b.mu.mem_write(DJ_SONG_W + 0x12195, b"\x5a\xa5\x01")    # the mode is a byte: its neighbours are not ours
+    b.mu.mem_write(DJ_UI + 4, b"\x01")
+    b.call(tick, DJ_SONG_W, 0, 0, 0)
+    res.check(b.u32(DJ_SONG_W + 0x18) == DJ_BTN + 2 * 0xA0 and b.u32(DJ_BTN + 0x2C) == DJ_SONG_W,
+              "buttons are the Song widget's oldest children (drawn last, hit first)")
+    rects = [tuple(b.u32(DJ_BTN + i * 0xA0 + o) for o in (4, 8, 0xC, 0x10)) for i in range(3)]
+    res.check(rects == [(0, 0, 99, 38), (100, 0, 99, 38), (200, 0, 120, 38)], f"row at the bottom {rects}")
+    hid = [b.u8(DJ_BTN + i * 0xA0 + 0x30) for i in range(3)]
+    texts = [b.cstr(DJ_UI + 0x20 + 16 * i) for i in range(3)]
+    res.check(hid == [0, 0, 0] and texts == ["<< 16", "16 >>", "Loop 1"], f"shown and labelled {hid} {texts}")
+    res.check(b.u8(DJ_BTN + 2 * 0xA0 + 0x96) == 1, "Loop lit while on")
+    res.check(stock == [("tick", 0)], "stock tick runs")
+    b.call(event, DJ_SONG_W, ev(0x32, 1, -400))
+    b.call(event, DJ_SONG_W, ev(0x32, 3, 300))
+    b.call(event, DJ_SONG_W, ev(0x32, 3, 500))
+    res.check(b.u8(DJ_UI + 6) == 5 and b.u8(DJ_UI + 7) == 6, "knobs: jump 8 bars, loop 4 bars (400 counts a step)")
+    res.check(b.u32(DJ + 0x20) == 15360 and b.u32(DJ + 0x1C) == 2, "the live loop takes the new size")
+    b.call(event, DJ_SONG_W, ev(0x32, 1, -400 * 20))
+    res.check(b.u8(DJ_UI + 6) == 0, "jump size stops at 1/4 bar")
+    b.call(event, DJ_SONG_W, ev(0x32, 0, 400))
+    res.check(("event", 0x32) in stock, "top-left knob stays BPM")
+    b.call(tick, DJ_SONG_W, 0, 0, 0)
+    texts = [b.cstr(DJ_UI + 0x20 + 16 * i) for i in range(3)]
+    res.check(texts == ["<< 1/4", "1/4 >>", "Loop 4"], f"labels follow {texts}")
+    b.mu.mem_write(DJ_SONG_W + 0x12194, b"\x02")
+    b.call(tick, DJ_SONG_W, 0, 0, 0)
+    res.check(b.u8(DJ_BTN + 0x30) == 1, "a scene grid open: row hidden")
+    b.mu.mem_write(DJ_SONG_W + 0x12194, b"\x00")
+    b.call(tick, DJ_SONG_W, 0, 0, 0)
+    b.mu.mem_write(DJ + 0x54, b"\x01")
+    b.w32(DJ + 0x50, b.u32(DJ + 0x50) + 1)
+    row1 = DJ_SONG_W + 0x34 + 0x7F8
+    blinks = []
+    for ms in (5000, 5050, 5150, 5250, 5450, 5700):
+        _dj_ms(b, ms)
+        b.call(tick, DJ_SONG_W, 0, 0, 0)
+        blinks.append(b.u8(row1 + 0x7A4))
+    res.check(blinks == [1, 1, 0, 1, 1, 0], f"refused jump: scene 2's row blinks, then back {blinks}")
+    b.call(event, DJ_SONG_W, ev(0xD3, 0))
+    b.call(tick, DJ_SONG_W, 0, 0, 0)
+    res.check(b.u8(DJ_UI + 4) == 0 and b.u8(DJ_BTN + 0x30) == 1, "leaving Song hides the row")
+    for a in (0x080C3540, 0x080C3860, 0x080C26FC):
+        b.unstub(a)
+
+
+def t_dj_gui(bench, res):
+    """Real GUI + App: SONG on the Song screen shows the DJ row (buttons on the Song widget, shown),
+    SONG again hides it, SONG from Pads opens Song as stock."""
+    b = bench.b
+    mu = b.mu
+    mu.mem_write(0xE000ED88, struct.pack("<I", 0xF << 20))
+    b.unstub(SET_SCREEN)
+    b.stub(0x080A2258, lambda board: 0)            # App_Update: the bench preset state resets screens
+    tick = [0]
+
+    def gettick(board):
+        tick[0] += 5
+        board.w32(UWTICK, tick[0])
+        return tick[0]
+    b.stub(0x0807794C, gettick)
+    for fn in GUI_DP_STUBS + GUI_DRAW_STUBS:
+        b.stub(fn, lambda board: 0)
+    b.call(bench.sym["deck_init"])
+    gui = 0xC2000000
+    mu.mem_write(gui, b"\0" * 0x100000)
+    b.call(0x0808BE4C, gui)
+    b.w32(0x24002E6C, gui)
+    for off, typ in ((0x2FC0, 0x26), (0x2FD8, 0x4B), (0x2FF0, 0x36), (0x3008, 0)):
+        mu.mem_write(0x2001C800, bytes([typ]))
+        b.call(0x08094A1C, APP_OBJ + off, 0x2001C800)
+    ev = 0x2001C600
+    song = gui + 0x59008
+
+    def pump():
+        for _ in range(3):
+            b.call(0x0808B654, gui)
+            b.call(0x0808B2D0, gui, limit=50_000_000)
+
+    def mode_button(i):
+        mu.mem_write(ev, b"\0" * 0x40)
+        mu.mem_write(ev, struct.pack("<H", 0xF9))
+        b.w32(ev + 0xC, i)
+        b.call(0x080A2E60, APP_OBJ, ev)
+
+    def where():
+        return b.u8(APP_OBJ + 0x8CA4), b.u32(gui + 0x280 + 0x34) - gui
+    mu.mem_write(APP_OBJ + 0x8CA4, b"\x02")
+    mu.mem_write(APP_OBJ + 0x8CC3, b"\x00")
+    b.call(SET_SCREEN, APP_OBJ, 2, 0, 0)
+    pump()
+    mode_button(3)
+    pump()
+    res.check(where() == (0x2D, 0x59008), f"SONG from Pads: Song screen {[hex(x) for x in where()]}")
+    res.check(b.u32(song) == 0x080F1758, f"Song vtable {b.u32(song):#x}")
+    res.check(b.u32(DJ) == 0x314A4453, f"DJ state live {b.u32(DJ):#x}")
+    res.check(b.u8(DJ_UI + 4) == 0 and b.u8(DJ_UI + 5) == 0, "row not shown yet")
+    res.check(b.u32(DJ_UI) == song, f"row built on the Song widget (tick ran) {b.u32(DJ_UI):#x}")
+    from unicorn import UC_HOOK_CODE
+    drawn = []
+
+    def on_draw(mu_, addr, size, data):
+        w = mu_.reg_read(bd.A.UC_ARM_REG_R0)
+        if DJ_BTN <= w < DJ_BTN + 3 * 0xA0:
+            ctx = mu_.reg_read(bd.A.UC_ARM_REG_R1)
+            drawn.append(((w - DJ_BTN) // 0xA0, bytes(mu_.mem_read(ctx, 2)).hex()))
+    mu.hook_add(UC_HOOK_CODE, on_draw, begin=0x080A3B6C, end=0x080A3B6C)
+    leds = []
+    mu.hook_add(UC_HOOK_CODE, lambda mu_, a, s_, d: leds.append((mu_.reg_read(bd.A.UC_ARM_REG_R1),
+                                                                   mu_.reg_read(bd.A.UC_ARM_REG_R2))),
+                begin=0x080436F8, end=0x080436F8)
+    mode_button(3)
+    pump()
+    res.check({0, 1, 2} <= {w for w, ctx in drawn if ctx == "0001"}, f"all three drawn in the partial pass {drawn[:6]}")
+    res.check((3, 1) in leds or (3, 0) in leds, f"SONG LED driven while the row is shown {leds[-4:]}")
+    leds.clear()
+    for i in range(4):
+        _dj_ms(b, 10000 + 260 * i)
+        pump()
+    res.check({(3, 0), (3, 1)} <= set(leds), f"SONG LED blinks {sorted(set(leds))}")
+    res.check(where() == (0x2D, 0x59008), "SONG on Song: stays on Song")
+    res.check(b.u8(DJ_UI + 4) == 1 and b.u8(DJ_UI + 5) == 1, "row shown")
+    res.check(all(b.u8(DJ_BTN + i * 0xA0 + 0x30) == 0 for i in range(3)), "buttons visible")
+    mode_button(3)
+    pump()
+    res.check(b.u8(DJ_UI + 5) == 0 and b.u8(DJ_BTN + 0x30) == 1, "SONG again hides it")
+
+
 def t_cue_voice_stub(bench, res):
     """hook_voice keeps r0-r2, the two stack args, lr and sp; r3 is the note it passes on."""
     b = bench.b
@@ -6307,13 +6752,16 @@ def t_deck_bag_size(bench, res):
 
 
 def t_deck_memory(bench, res):
-    """DkState stays in 0x38004930..0x38005000, the SRAM4 gap free on this line and on the Bungee / Mix line."""
+    """DkState stays in 0x38004930..0x38005000, the SRAM4 gap free on this line and on the Bungee / Mix line.
+    3.1.T's Song DJ row (DjState, 0x38007400..0x38007A58) is driven from Clip Deck's calls too."""
     b = bench.b
     sym = bench.sym
     writes = []
+    dj = (0x38007400, 0x38007A58) if "dj_seq_step" in sym else (0, 0)
 
     def hook(mu, access, addr, size, value, data):
-        if 0x38000000 <= addr < 0x38010000 and not (0x38004930 <= addr < 0x38005000):
+        if 0x38000000 <= addr < 0x38010000 and not (0x38004930 <= addr < 0x38005000) \
+                and not (dj[0] <= addr < dj[1]):
             writes.append(hex(addr))
 
     from unicorn import UC_HOOK_MEM_WRITE
@@ -6454,6 +6902,16 @@ def main():
             ("cue voice stub keeps stack args", t_cue_voice_stub),
             ("cue jump prefetches its block", t_cue_prefetch),
             ("cue prefetch uses the stock block request", t_cue_prefetch_stock_seek),
+        ]
+    if "dj_seq_step" in sym:
+        kind = kind + "+songdj"
+        cases += [
+            ("Song DJ: Clip beatjump and autoloop", t_dj_clip),
+            ("Song DJ: pad sequence beatjump and autoloop", t_dj_seq),
+            ("Song DJ: song moves inside its scene, walls, loop cut on the scene end", t_dj_song),
+            ("Song DJ: Autoloop as Mixxx (closest beat, start kept, halve jumps in)", t_dj_loop_mixxx),
+            ("Song DJ: SONG toggles the row, buttons, knobs, labels, blink", t_dj_ui),
+            ("Song DJ: real GUI, SONG on the Song screen", t_dj_gui),
         ]
     if "deck_knob_turn" in sym:
         kind = kind + "+editor"

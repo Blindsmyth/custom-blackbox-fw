@@ -14,6 +14,9 @@
 .set ID_DECK, DECK_ID_BASE
 #endif
 .include "mix_cave.S"
+#ifdef WITH_SONG_DJ
+.include "dj.S"                         @ 3.1.T: Song DJ row (../3.1.9-song-dj dj.S, dj.c)
+#endif
 
 .align 2
 .ltorg

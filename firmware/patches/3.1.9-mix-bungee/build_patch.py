@@ -53,6 +53,9 @@ if LINEUP:
 # editor) too. Its param ids move past the Mix line's (0x19D-0x1A9: Seq Rec, Env Trig, Master).
 DECK_DIR = HERE.parent / "3.1.9-clip-deck"
 DECK_ID_BASE = 0x1B0
+# And the Song DJ row (../3.1.9-song-dj: beatjump and autoloop on the Song screen), which steers Clip
+# Deck's units.
+DJ_DIR = HERE.parent / "3.1.9-song-dj"
 T = Path(os.environ.get("ARM_GNU", Path.home() / ".local" / "arm-gnu-15.3" / "bin"))
 GCC, GXX = T / "arm-none-eabi-gcc", T / "arm-none-eabi-g++"
 
@@ -73,7 +76,7 @@ if REPITCH:
     OUT, OUT_B2, SYMS = (OUT.parent / "repitch" / OUT.name, OUT_B2.parent / "repitch" / OUT_B2.name,
                          SYMS.parent / "repitch" / SYMS.name)
     OUT.parent.mkdir(exist_ok=True)
-LETTER = "T" if LINEUP else "B"
+LETTER = "T DJ" if LINEUP else "B"     # "3.1.T DJ": the Song DJ row's branch (feature/song-dj)
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
 CPU = ["-mthumb", "-mcpu=cortex-m7", "-mfloat-abi=hard"]
@@ -123,14 +126,15 @@ def compile_all(rb_id):
     cave_o = BUILD / "bungee_cave.o"
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
          *(["-DWITH_REPITCH"] if REPITCH else []),
-         *(["-DWITH_LINEUP", "-DWITH_DECK", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}"] if LINEUP else []),
-         "-I", MIX_DIR, "-I", mix.BASE_DIR, "-I", DECK_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
+         *(["-DWITH_LINEUP", "-DWITH_DECK", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-DWITH_SONG_DJ"] if LINEUP else []),
+         "-I", MIX_DIR, "-I", mix.BASE_DIR, "-I", DECK_DIR, "-I", DJ_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
     objs.append(cave_o)
-    bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + ([DECK_DIR / "deck.c"] if LINEUP else [])
+    bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \
+        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c"] if LINEUP else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
-        run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-I", BANK2, "-I", RUBBER,
-             "-c", "-o", o, src])
+        run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DWITH_SONG_DJ"] if LINEUP else []),
+             "-I", BANK2, "-I", RUBBER, "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]
     inc = ["-I", RUBBER, "-I", BG, "-I", BG / "submodules" / "eigen", "-I", CMSIS / "Include", "-I", STRETCH]
@@ -156,7 +160,7 @@ def compile_all(rb_id):
 
 def bank1_has_no_ram(objs):
     """Cave code has nowhere to keep .data/.bss: they would land in bank 2's SRAM1 block."""
-    for o in objs[:5 if LINEUP else 4]:
+    for o in objs[:6 if LINEUP else 4]:
         out = subprocess.check_output([str(T / "arm-none-eabi-size"), "-A", str(o)], text=True)
         for line in out.splitlines():
             parts = line.split()
@@ -260,6 +264,12 @@ def add_rubber_sites(stock):
         mix.SITES.extend(sites)
         mix.VTABLE.extend(vtable)
         base.TABLES.extend(tables)
+        spec = importlib.util.spec_from_file_location("dj_sites", DJ_DIR / "sites.py")
+        dj = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dj)
+        sites, vtable = dj.parts(stock, stock_bl)
+        mix.SITES.extend(sites)
+        mix.VTABLE.extend(vtable)
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves
         mix.SITES.append((0x080667B8, "hook_lane", False, "2de9f04f"))   # per-lane render: the leaf renders
     mix.SITES.extend([

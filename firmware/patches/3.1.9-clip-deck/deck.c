@@ -125,6 +125,14 @@ typedef struct { unsigned s, e, ls, le, n; } DkRegion;
 
 #define ST ((DkState *)DK_BASE)
 
+#ifdef WITH_SONG_DJ
+/* Song DJ row (../3.1.9-song-dj/dj.c): beatjump and autoloop move the unit a Clip plays next. */
+unsigned dj_clip_unit(unsigned pad, unsigned unit, long long tick, unsigned ut, unsigned lo, unsigned hi);
+unsigned dj_clip_ahead(unsigned pad, unsigned unit, long long tick, unsigned ut, unsigned lo, unsigned hi);
+void dj_clip_start(unsigned pad);
+void dj_init(void);
+#endif
+
 typedef int (*param_get_fn)(void *, unsigned);
 typedef void (*bind_fn)(unsigned, unsigned, void *, unsigned);
 typedef void (*label_fn)(void *, const char *);
@@ -215,6 +223,9 @@ void deck_init(void)
     ST->ui.grid = 1;       /* grid lines on: the Grid popup's Lines turns them off */
     ST->wrap_clip = 0;
     ST->bar_mode = 0xFF;   /* the view is rebuilt on boot with the stock "..." label */
+#ifdef WITH_SONG_DJ
+    dj_init();
+#endif
 }
 
 int deck_is_id(unsigned id)
@@ -548,6 +559,9 @@ unsigned deck_note_unit(void *clip, unsigned unit)
     if (!live())
         return unit;
     ST->wrap_clip = 0;
+#ifdef WITH_SONG_DJ
+    dj_clip_start(idx_unpacked(u32(clip, 0x18)));
+#endif
     c = clip_cue(clip);
     at = c->launch;
     c->launch = CUE_NONE;
@@ -664,6 +678,33 @@ unsigned deck_limit(void *clip, unsigned next)
 typedef long long (*ldiv_fn)(long long, long long);
 #define LDIV ((ldiv_fn)0x080C8495u)    /* stock __aeabi_ldivmod; the quotient is all we read */
 
+/* The unit to play, after the Song DJ row's jump or loop wrap (a move counts as a jump for the
+ * Clip's own loop), then the Clip's loop. A jump that is coming is prefetched like a cue. */
+static unsigned dj_then_loop(void *clip, unsigned unit, const long long *tick, int placed)
+{
+#ifdef WITH_SONG_DJ
+    DkRegion r;
+    unsigned ut, n, lo = 0, hi, pad = idx_unpacked(u32(clip, 0x18)), to;
+    if ((n = grid_units(clip, &ut)) != 0) {
+        hi = n;
+        if (region(clip, &r)) {
+            lo = r.s;
+            hi = r.e;
+        }
+        to = dj_clip_unit(pad, unit, *tick, ut, lo, hi);
+        if (to != unit) {
+            unit = to;
+            placed = 1;
+        } else if ((to = dj_clip_ahead(pad, unit, *tick, ut, lo, hi)) != ~0u) {
+            cue_prefetch(clip, to, 1);
+        }
+    }
+#else
+    (void)tick;
+#endif
+    return in_loop(clip, unit, placed);
+}
+
 /* Next grain (0x08066CF2). Unit 0 there only comes from a wrap. `tick` is the grain's start tick
  * (the lane render's [sp+0x58], snapped to the unit grid). A pending cue jump is taken on the first
  * grain that starts on a Quant Size (+0x218) boundary, or on the next grain with Quant None. */
@@ -679,16 +720,16 @@ unsigned deck_wrap_unit(void *clip, unsigned unit, const long long *tick)
     ST->wrap_clip = 0;
     c = clip_cue(clip);
     if (c->pending == CUE_NONE || !(n = grid_units(clip, &ut)))
-        return played(clip, in_loop(clip, unit, 0));
+        return played(clip, dj_then_loop(clip, unit, tick, 0));
     q = *(const long long *)at(clip, 0x218);
     t = *tick;
     if (q > 0 && t - LDIV(t, q) * q != 0) {
         cue_prefetch(clip, c->pending, 1);   /* keep the target cached until the boundary */
-        return played(clip, in_loop(clip, unit, 0));
+        return played(clip, dj_then_loop(clip, unit, tick, 0));
     }
     unit = c->pending < n ? c->pending : n - 1;
     c->pending = CUE_NONE;
-    return played(clip, in_loop(clip, unit, 1));
+    return played(clip, dj_then_loop(clip, unit, tick, 1));
 }
 
 /* For bank 2's unit sequence (tools/stretch/bungee/lane.h DeckSeq), which chooses each unit a little

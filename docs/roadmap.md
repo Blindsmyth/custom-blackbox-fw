@@ -109,7 +109,7 @@ Mapped in [firmware/blackbox-mod.md](firmware/blackbox-mod.md); each could be po
 ### Scala tunings (microtuning)
 
 - A folder of Scala files on the card (e.g. `/Tunings/*.scl`, optionally `.kbm` keyboard maps).
-- **Where:** in Song mode, pressing SONG again opens a **Tuning** menu.
+- **Where:** to decide. SONG again on the Song screen now opens the Song DJ row (Beatjump / Autoloop, [song-dj.md](song-dj.md)); the Tuning menu could get a button there.
 - **Stage 1:** four tuning slots, each loads one `.scl` file from the folder; the slots can be hot-swapped while playing.
 - **Later options (to decide):**
   - a tuning per song part (section), switched when the part starts;
