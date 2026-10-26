@@ -227,3 +227,40 @@ hook_wave_evt:
     movs    r0, #0
     bx      lr
 .ltorg
+
+.ifdef WARP_SONG
+@ Song cues (3.1.T, deck.c song_*). FUN_0805CDA0 entry (b.w): the sequence player's per-step call
+@ (r0 player, r1 transport, r2 step, r3 offset, [sp] router). deck.c plans the song's next scene and
+@ starts a scene at step 0; then the replayed first instruction and the rest of stock's function.
+.equ STEP_CONT, 0x0805CDA5
+.global hook_song_step
+.thumb_func
+hook_song_step:
+    push    {r0, r1, r2, r3, r12, lr}
+    bl      song_step
+    pop     {r0, r1, r2, r3, r12, lr}
+    ldrb.w  r1, [r0, #0x58]
+    ldr     r12, =STEP_CONT
+    bx      r12
+
+@ Clip pad event switch (FUN_08067FA4): its jump-table entry for msg 0x8B (0x0806823C) points here.
+@ r4 = the clip, all other registers and the stack are the switch's. song_pad_start returns 1 when
+@ the event became a pending cue jump: skip it (the switch's loop, as an unhandled type does).
+.equ PAD_8B_STOCK, 0x080683B5
+.equ PAD_EVT_NEXT, 0x08067FF5
+.global hook_pad_start
+.thumb_func
+hook_pad_start:
+    push    {r0, r1, r2, r3, r12, lr}
+    mov     r0, r4
+    bl      song_pad_start
+    cmp     r0, #0
+    pop     {r0, r1, r2, r3, r12, lr}
+    bne     1f
+    ldr     r12, =PAD_8B_STOCK
+    bx      r12
+1:
+    ldr     r12, =PAD_EVT_NEXT
+    bx      r12
+.ltorg
+.endif

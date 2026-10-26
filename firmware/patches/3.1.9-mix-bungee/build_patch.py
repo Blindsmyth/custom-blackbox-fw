@@ -76,7 +76,7 @@ if REPITCH:
     OUT, OUT_B2, SYMS = (OUT.parent / "repitch" / OUT.name, OUT_B2.parent / "repitch" / OUT_B2.name,
                          SYMS.parent / "repitch" / SYMS.name)
     OUT.parent.mkdir(exist_ok=True)
-LETTER = "T DJ" if LINEUP else "B"     # "3.1.T DJ": the Song DJ row's branch (feature/song-dj)
+LETTER = "T" if LINEUP else "B"
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
 CPU = ["-mthumb", "-mcpu=cortex-m7", "-mfloat-abi=hard"]
@@ -126,14 +126,14 @@ def compile_all(rb_id):
     cave_o = BUILD / "bungee_cave.o"
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
          *(["-DWITH_REPITCH"] if REPITCH else []),
-         *(["-DWITH_LINEUP", "-DWITH_DECK", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-DWITH_SONG_DJ"] if LINEUP else []),
+         *(["-DWITH_LINEUP", "-DWITH_DECK", "-DWITH_SONG", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-DWITH_SONG_DJ"] if LINEUP else []),
          "-I", MIX_DIR, "-I", mix.BASE_DIR, "-I", DECK_DIR, "-I", DJ_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \
         ([DECK_DIR / "deck.c", DJ_DIR / "dj.c"] if LINEUP else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
-        run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DWITH_SONG_DJ"] if LINEUP else []),
+        run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DSONG_CUES", "-DWITH_SONG_DJ"] if LINEUP else []),
              "-I", BANK2, "-I", RUBBER, "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]
@@ -255,6 +255,19 @@ def deck_parts():
     return sites, deck.VTABLE, tables
 
 
+# 3.1.T Song cues (docs/song-cues.md; deck.c song_*, deck.S hook_song_step, hook_pad_start).
+SONG_SITES = [
+    (0x0809450C, "song_template", True, "fff7f3fc"),     # Param_BagTemplate case 0x4E (scene): Play Count add
+    (0x0805CDA0, "hook_song_step", False, "90f85810"),   # FUN_0805CDA0 entry (b.w): ldrb.w r1,[r0,#0x58]
+    (0x080C323A, "song_panel", True, "f5f732f8"),        # Song screen ctor: A-D / Keep panel layout
+]
+SONG_VTABLE = [
+    # Song screen vt+0x30 / +0x34 (song_event, song_event2) are installed by the Song DJ row (dj_song_child,
+    # dj_song_event), which hands on to them.
+    (0x0806823C, "hook_pad_start", 0x080683B5),          # Clip pad event switch, msg 0x8B (scene pad event)
+]
+
+
 def add_rubber_sites(stock):
     mix.SITES[:] = [site for site in mix.SITES if site[1] not in SLICE_SITES]
     if LINEUP:
@@ -270,6 +283,8 @@ def add_rubber_sites(stock):
         sites, vtable = dj.parts(stock, stock_bl)
         mix.SITES.extend(sites)
         mix.VTABLE.extend(vtable)
+        mix.SITES.extend(SONG_SITES)
+        mix.VTABLE.extend(SONG_VTABLE)
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves
         mix.SITES.append((0x080667B8, "hook_lane", False, "2de9f04f"))   # per-lane render: the leaf renders
     mix.SITES.extend([

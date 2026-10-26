@@ -127,8 +127,16 @@ typedef void (*led_fn)(void *, unsigned, unsigned);
 #define ROW_LIT     ((state_fn)0x080C2319u)    /* Song scene row: selected look (+0x7A4) + redraw */
 #define SET_SCREEN  ((screen_fn)0x0809EAEDu)   /* App_SetScreen */
 #define SONG_TICK   ((tick_fn)0x080C26FDu)     /* Song vtable +0x00 */
+#ifdef SONG_CUES
+/* 3.1.T: Song cues (deck.c) wrap the same two slots; the DJ row sits outside them and hands on to them. */
+extern int song_event(void *song, void *ev);
+extern void song_event2(void *song, void *ev);
+#define SONG_CHILD(s, e)  ((unsigned)song_event((s), (void *)(e)))
+#define SONG_EVENT(s, e)  song_event2((s), (void *)(e))
+#else
 #define SONG_CHILD  ((child_fn)0x080C3541u)    /* Song vtable +0x30 */
 #define SONG_EVENT  ((event_fn)0x080C3861u)    /* Song vtable +0x34 */
+#endif
 #define LDIV        ((ldiv_fn)0x080C8495u)     /* stock __aeabi_ldivmod (quotient, toward zero) */
 #define UI_TICK     (*(volatile const unsigned *)0x2402EEE0u)   /* osKernelSysTick, ms */
 #define LED_SET     ((led_fn)0x080436F9u)      /* (leds, index, on): mode button LED */

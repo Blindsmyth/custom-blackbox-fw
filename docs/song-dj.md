@@ -1,6 +1,6 @@
 # Song DJ row: Beatjump and Autoloop on the Song screen (3.1.T)
 
-Status: built on `feature/song-dj` (from `main` at 4550644). First tried on the unit 2026-10-25: the row, beatjump and loop work. Fixed after that test: notes missed in small sequence loops, and a scene change when the loop was resized at the scene's end. The menu reads `3.1.T DJ`. Code: `firmware/patches/3.1.9-song-dj` (`dj.c`, `dj.S`, `sites.py`), plus `dj_then_loop` in `firmware/patches/3.1.9-clip-deck/deck.c`.
+Status: merged into `main` (built on `feature/song-dj` from `4550644`). First tried on the unit 2026-10-25: the row, beatjump and loop work. Fixed after that test: notes missed in small sequence loops, and a scene change when the loop was resized at the scene's end. The menu reads `3.1.T`. Code: `firmware/patches/3.1.9-song-dj` (`dj.c`, `dj.S`, `sites.py`), plus `dj_then_loop` in `firmware/patches/3.1.9-clip-deck/deck.c`.
 
 Inspired by Mixxx and rekordbox: beatjump and autoloop for the whole set at once, with every playing Clip pad, pad sequence and the song moving together.
 

@@ -4872,6 +4872,9 @@ def _u16(b, addr):
 
 
 def _deck_clip(b, unit_ticks=960, units=16, sync=1, loop=1, trigger=0):
+    # deck_cue_note asks for the transport's tick (3.1.T late cue notes, FUN_08069C44: double precision,
+    # which Unicorn's M7 lacks). These cases don't model the transport: always mid-bar, never late.
+    b.stub(0x08069C44, lambda bb: bb.mu.mem_write(bb.arg(0), struct.pack("<q", 1500)))
     clip = 0x2001C800
     b.mu.mem_write(clip, b"\x00" * 0xC00)
     b.w32(clip + 0x18, 0x0100)              # row 1, col 0
@@ -5094,6 +5097,19 @@ TICK_BUF = 0x2001CE00
 def _bl_target(img, va):
     hw1, hw2 = (int.from_bytes(img[va - bd.BASE + i:va - bd.BASE + i + 2], "little") for i in (0, 2))
     if (hw1 & 0xF800) != 0xF000 or (hw2 & 0xD000) != 0xD000:
+        return None
+    s = (hw1 >> 10) & 1
+    j1, j2 = (hw2 >> 13) & 1, (hw2 >> 11) & 1
+    o = (s << 24) | ((1 - (j1 ^ s)) << 23) | ((1 - (j2 ^ s)) << 22) | ((hw1 & 0x3FF) << 12) | ((hw2 & 0x7FF) << 1)
+    if s:
+        o -= 1 << 25
+    return va + 4 + o
+
+
+def _bw_target(img, va):
+    """Target of a Thumb-2 b.w (T4) at va, or None."""
+    hw1, hw2 = (int.from_bytes(img[va - bd.BASE + i:va - bd.BASE + i + 2], "little") for i in (0, 2))
+    if (hw1 & 0xF800) != 0xF000 or (hw2 & 0xD000) != 0x9000:
         return None
     s = (hw1 >> 10) & 1
     j1, j2 = (hw2 >> 13) & 1, (hw2 >> 11) & 1
@@ -6759,9 +6775,11 @@ def t_deck_memory(bench, res):
     writes = []
     dj = (0x38007400, 0x38007A58) if "dj_seq_step" in sym else (0, 0)
 
+    song = "song_step" in sym                  # 3.1.T Song cues: their own block (SG_BASE)
+
     def hook(mu, access, addr, size, value, data):
         if 0x38000000 <= addr < 0x38010000 and not (0x38004930 <= addr < 0x38005000) \
-                and not (dj[0] <= addr < dj[1]):
+                and not (dj[0] <= addr < dj[1]) and not (song and SG_BASE <= addr < SG_END):
             writes.append(hex(addr))
 
     from unicorn import UC_HOOK_MEM_WRITE
@@ -6789,6 +6807,556 @@ def t_deck_memory(bench, res):
                 hits.append(f"{src.name}:{m.group(0)}")
         res.check(not hits, f"Bungee line does not use 0x38004900..0x38004FFF {hits[:5]}")
 
+
+
+# ---- Song cues (3.1.T, docs/song-cues.md): a Song scene sends Clip pads to a hot cue
+
+SG_BASE, SG_END = 0x38006400, 0x38007000
+SG_PRE_AT, SG_NOW_AT = SG_BASE + 8, SG_BASE + 16    # int64 ticks
+SG_CUE = SG_BASE + 0x18              # SgState.cue[32][16]
+SG_REQ, SG_ARM, SG_NEXT = SG_BASE + 0x218, SG_BASE + 0x228, SG_BASE + 0x238
+SG_NOW, SG_PRE, SG_JUMPED, SG_SKIP = SG_BASE + 0x248, SG_BASE + 0x258, SG_BASE + 0x268, SG_BASE + 0x278
+SG_BRUSH, SG_PRE_SCENE = SG_BASE + 0x288, SG_BASE + 0x28A
+SG_BTN = SG_BASE + 0x28C             # A..H, Def: 0xA0 each
+ID_SCUE = 0x1C0
+SONG_KEY = 0x20303
+ENGINE_POST = 0x0804C59C
+ENGINE_QUEUE = 0x08051738          # Engine_PostParam's queue call
+SCENE_SEND = 0x0809C140
+SONG_SCENE_FN = 0x0805CDA0
+SONG_VT = 0x080F1758
+SONG_PANEL, SONG_GRID, SONG_MODE, SONG_SCENE, SONG_BRUSH = 0x11E28, 0x1072C, 0x12194, 0x12180, 0x1218D
+PLAYER, LAYER = 0x2001D000, 0x2001DE00
+
+
+def t_song_sites(bench, res):
+    b, sym = bench.b, bench.sym
+    img = b.image
+    for va, name in ((0x0809450C, "song_template"), (0x080C323A, "song_panel")):
+        got = _bl_target(img, va)
+        res.check(got == sym[name], f"{va:#x} -> {got and hex(got)} ({name})")
+    got = _bw_target(img, 0x0805CDA0)
+    res.check(got == sym["hook_song_step"], f"FUN_0805CDA0 entry -> {got and hex(got)} (b.w hook_song_step)")
+    for slot, name in ((SONG_VT + 0x30, "song_event"), (SONG_VT + 0x34, "song_event2")):
+        got = int.from_bytes(img[slot - bd.BASE:slot - bd.BASE + 4], "little")
+        res.check(got == sym[name] | 1, f"Song vt {slot - SONG_VT:#x} -> {got:#x} ({name})")
+    res.check(ID_DECK + 16 <= ID_SCUE, f"scue ids past Clip Deck's ({ID_DECK:#x})")
+
+
+def t_song_registry(bench, res):
+    b = bench.b
+    if b.u32(REG_PTR) == 0:
+        b.call(PARAM_REGISTER_ALL, 0)
+    for i in range(16):
+        n, t = b.call(PARAM_XML_NAME, ID_SCUE + i), b.call(PARAM_TITLE, ID_SCUE + i)
+        res.check(n != 0 and b.cstr(n) == f"scue{i + 1}" and t != 0 and b.cstr(t) == f"Scene Cue {i + 1}:",
+                  f"{ID_SCUE + i:#x} xml {n and b.cstr(n)!r} title {t and b.cstr(t)!r}")
+    res.check(b.call(0x0808E2D0, ID_SCUE + 5) == 0 and b.call(0x0808E304, ID_SCUE + 5) == 8, "values 0..8")
+
+
+def t_song_template(bench, res):
+    """Stock's scene template (type 0x4E) adds Play Count, then scue1..scue16 at 0."""
+    b = bench.b
+    adds = []
+    b.stub(BAG_ADD, lambda board: adds.append((board.arg(1), board.arg(2))))
+    b.mu.mem_write(BAG_SCRATCH, b"\x00" * 0x40)
+    b.w32(BAG_SCRATCH + 4, BAG_PAIRS)
+    b.mu.mem_write(BAG_PAIRS, b"\x00" * 0x100)
+    b.mu.mem_write(BAG_SCRATCH + 10, b"\x00\x00\x20\x00")
+    tpl = 0x2001CF00                   # past the rows FUN_08093E6A clears
+    b.mu.mem_write(tpl, b"\x4E" + b"\x00" * 7)
+    b.call(0x08093F20, BAG_SCRATCH, tpl)
+    res.check(adds == [(0xC3, 1)] + [(ID_SCUE + i, 0) for i in range(16)], f"scene template adds {adds}")
+    adds.clear()
+    b.mu.mem_write(tpl, b"\x03" + b"\x00" * 7)
+    b.call(0x08093F20, BAG_SCRATCH, tpl)
+    res.check(all(i < ID_SCUE or i >= ID_SCUE + 16 for i, _ in adds), "pad template has none of them")
+
+
+def t_song_post(bench, res):
+    """Engine_PostParam on the song's sequence: scue params go to the SRAM4 table, not to the engine."""
+    b, sym = bench.b, bench.sym
+    posted = []
+    b.stub(ENGINE_QUEUE, lambda board: posted.append(board.arg(1)))
+    b.w32(DK_BASE, 0)
+    b.call(sym["deck_init"])
+    res.check(bytes(b.mu.mem_read(SG_CUE, 512)) == b"\x00" * 512, "boot: table empty")
+    b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 3, 5, 0, 7)
+    res.check(b.u8(SG_CUE + 7 * 16 + 3) == 5 and not posted, f"scene 8, pad 4: Cue E, kept ({len(posted)} posts)")
+    b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 15, 9, 0, 31)
+    res.check(b.u8(SG_CUE + 31 * 16 + 15) == 0, "out of range reads as none")
+    b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE, 2, 0, 32)
+    res.check(not posted, "scene 33 (no such scene): dropped")
+    b.call(ENGINE_POST, 0x2400A9C0, 0x0100, ID_SCUE, 2, 0, 0)
+    res.check(b.u8(SG_CUE) == 0 and not posted, "another key: not stored, not posted")
+    b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, 0xC3, 4, 0, 7)
+    res.check(len(posted) == 1, "Play Count still reaches the engine")
+    b.w32(DK_BASE, 0)
+    b.call(sym["deck_init"])
+    res.check(b.u8(SG_CUE + 7 * 16 + 3) == 0, "every boot clears the table")
+
+
+def _player(b, scene, playing=1, advance=1, count=3, wrap=0, start=0, steps=0, step_idx=0, queued=None):
+    """The song's player: layer `scene` started at tick `start`, `steps` steps of step_idx (6 = 1 beat).
+    queued = (scene, switch tick): a touched scene waiting at +0xC24."""
+    b.mu.mem_write(PLAYER, b"\x00" * 0xCB8)
+    b.mu.mem_write(LAYER, b"\x00" * 0x48)
+    b.w32(LAYER, step_idx)
+    b.w32(LAYER + 4, steps)
+    b.mu.mem_write(LAYER + 0x38, struct.pack("<q", start))
+    b.w32(PLAYER + 0x18, SONG_KEY)
+    b.mu.mem_write(PLAYER + 0x30, bytes([playing]))
+    b.mu.mem_write(PLAYER + 0x5C, bytes([advance, wrap]))
+    if queued:
+        b.mu.mem_write(LAYER + 0x48, b"\x00" * 0x48)
+        b.mu.mem_write(LAYER + 0x48 + 0x38, struct.pack("<q", queued[1]))
+        b.mu.mem_write(LAYER + 0x48 + 0x40, struct.pack("<H", queued[0]))
+        b.w32(PLAYER + 0xC24, LAYER + 0x48)
+    b.mu.mem_write(PLAYER + 0x60, b"\x01")
+    b.w32(PLAYER + 0x64, count)
+    b.w32(PLAYER + 0xC20, LAYER)
+    b.mu.mem_write(LAYER + 0x40, struct.pack("<H", scene))
+
+
+def _scene_start(b, scene, **kw):
+    """The real FUN_0805CDA0 at step 0 of the song's layer (no items: it only reaches our hook)."""
+    _player(b, scene, **kw)
+    b.call(SONG_SCENE_FN, PLAYER, 0, 0, 0, 0x2001C000)
+
+
+def _song_step(b, step):
+    """The real FUN_0805CDA0 at a later step of the same layer."""
+    b.call(SONG_SCENE_FN, PLAYER, 0, step, 0, 0x2001C000)
+
+
+def t_song_engine(bench, res):
+    b, sym = bench.b, bench.sym
+    wrap, unit0, note = sym["deck_wrap_unit"], sym["deck_note_unit"], sym["deck_cue_note"]
+    b.w32(DK_BASE, 0)
+    b.call(sym["deck_init"])
+    clip = _deck_clip(b)                         # pad 4 (row 1, col 0), one unit per beat, 16 units
+    _cue_set(bench, 0x0100, cues=(6, 0, 11))     # Cue A beat 5, Cue B Off, Cue C beat 10
+    for scene, cue in ((0, 1), (1, 3), (2, 2)):  # scene 1: Cue A, 2: Cue C, 3: Cue B (Off on the pad)
+        b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 4, cue, 0, scene)
+    b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 9, 1, 0, 0)
+
+    _scene_start(b, 0)
+    res.check(b.u8(SG_REQ + 4) == 1 and b.u8(SG_ARM + 4) == 1 and b.u8(SG_NEXT + 4) == 3,
+              "scene 1 start: pad 4 jump + arm Cue A, next scene's Cue C kept cached")
+    res.check(b.u8(SG_ARM + 9) == 1 and b.u8(SG_ARM + 5) == 0, "other pads: their own cue, or none")
+    b.mu.mem_write(clip + 0x28, b"\x01")
+    b.mu.mem_write(clip + 0x260, b"\x01")
+    b.w32(clip + 0x218, 3840)                     # Quant Size 1 bar
+    res.check(b.call(wrap, clip, 3, _tick(b, 960 * 3)) == 3 and _cue(b, 4)["pending"] == 5,
+              "playing, off the bar: plays on, jump pending at Cue A")
+    res.check(b.u8(SG_REQ + 4) == 0, "the request is taken once")
+    res.check(b.call(wrap, clip, 4, _tick(b, 3840 * 2)) == 5, "on the bar: jumps to Cue A")
+    res.check(b.call(wrap, clip, 6, _tick(b, 3840 * 3)) == 6, "then plays on")
+    _scene_start(b, 0)
+    res.check(b.call(wrap, clip, 7, _tick(b, 3840 * 4)) == 5, "the scene again (on the bar): jumps at once")
+    _scene_start(b, 0)
+    b.call(note, clip, 38)                         # a cue note before the boundary
+    b.call(wrap, clip, 3, _tick(b, 960 * 3))
+    res.check(_cue(b, 4)["pending"] == 10, "a cue note after the scene start wins")
+    b.call(unit0, clip, 0)
+
+    b.mu.mem_write(clip + 0x28, b"\x00")
+    b.mu.mem_write(clip + 0x260, b"\x00")
+    _scene_start(b, 1)
+    res.check(b.call(unit0, clip, 0) == 10, "stopped: armed, a start during the scene begins at Cue C")
+    res.check(b.u8(SG_REQ + 4) == 0, "that start is the jump: no request left")
+    res.check(b.call(unit0, clip, 0) == 10, "every start during the scene (a sequence retrigger)")
+    res.check(b.call(note, clip, 36) == 0 and b.call(unit0, clip, 0) == 5, "a cue note still picks its own cue")
+    _scene_start(b, 2)
+    res.check(b.call(unit0, clip, 0) == 0, "scene with Cue B, which is Off on the pad: stock start")
+    _scene_start(b, 2, advance=0)
+    res.check(b.u8(SG_NEXT + 4) == 2, "Loop1: the same scene is next")
+    _scene_start(b, 2, count=3, wrap=1)
+    res.check(b.u8(SG_NEXT + 4) == 1, "last scene: the first is next (LoopA)")
+    _scene_start(b, 2, count=3)
+    res.check(b.u8(SG_NEXT + 4) == 0 and b.u8(SG_PRE_SCENE) == 0xFF, "last scene, no LoopA: the song ends, nothing next")
+    _scene_start(b, 1)
+    b.mu.mem_write(PLAYER + 0x30, b"\x00")         # song stopped
+    res.check(b.call(unit0, clip, 0) == 0, "song stopped: a pad press starts as usual")
+    _player(b, 0)
+    b.mu.mem_write(PLAYER + 0x60, b"\x00")         # an ordinary sequence, not the song
+    b.call(SONG_SCENE_FN, PLAYER, 0, 0, 0, 0x2001C000)
+    res.check(b.u8(SG_REQ + 4) == 0, "a pad's own sequence at step 0: nothing")
+    _player(b, 0)
+    b.call(SONG_SCENE_FN, PLAYER, 0, 3, 0, 0x2001C000)
+    res.check(b.u8(SG_REQ + 4) == 0, "song at step 3: nothing")
+    b.mu.mem_write(clip + 0x28, b"\x01")           # playing again; the scene's pad event (0x8B) arrives
+    b.mu.mem_write(clip + 0x260, b"\x01")
+    pad_start = sym["song_pad_start"]
+    _scene_start(b, 1)
+    res.check(b.call(note, clip, 0) == 0, "a voice start with note 0 is never swallowed (stock released the lanes)")
+    _scene_start(b, 1)
+    res.check(b.call(pad_start, clip) == 1 and _cue(b, 4)["pending"] == 10,
+              "playing: the scene's pad event (0x8B) becomes the jump to Cue C")
+    res.check(b.u8(SG_REQ + 4) == 0 and b.call(pad_start, clip) == 0, "only once: a later 0x8B is stock's")
+    _scene_start(b, 2)
+    res.check(b.call(pad_start, clip) == 0, "scene whose cue is Off on the pad: stock's 0x8B")
+    b.mu.mem_write(clip + 0x28, b"\x00")
+    b.mu.mem_write(clip + 0x260, b"\x00")
+    _scene_start(b, 1)
+    res.check(b.call(pad_start, clip) == 0 and b.call(note, clip, 0) == 0 and b.call(unit0, clip, 0) == 10,
+              "stopped: stock's pad event starts it, at the cue")
+    _cue_set(bench, 0x0100, mode=0, cues=())
+    _scene_start(b, 0)
+    res.check(b.call(unit0, clip, 0) == 0, "pad without cues: stock")
+
+
+def t_song_prefetch(bench, res):
+    """While a scene plays, the next scene's cue is kept cached, like a pending cue note's."""
+    b, sym = bench.b, bench.sym
+    seeks = []
+    b.stub(SAMPLE_SEEK_IMPL, lambda bd_: seeks.append(bd_.arg(2)))
+    b.mu.mem_write(PROV, b"\x00" * 0x5000)
+    b.w32(PROV, STREAM_VTABLE)
+    clip = _cue_prefetch_clip(bench, PROV)
+    b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 4, 0, 0, 0)
+    b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 4, 3, 0, 1)
+    _scene_start(b, 0)
+    seeks.clear()
+    b.call(sym["deck_wrap_unit"], clip, 3, _tick(b, 960 * 3))
+    res.check(seeks == [12 * 32768 - 8], f"next scene's Cue C requested {seeks}")
+    seeks.clear()
+    b.w32(PROV + 0x4FFC, 40)
+    b.call(sym["deck_wrap_unit"], clip, 4, _tick(b, 960 * 4))
+    res.check(seeks == [], "busy request ring: skipped")
+
+
+def _song_gui(bench):
+    """The real GUI constructor (as t_gui_fx_flow): returns the Song screen object."""
+    b = bench.b
+    mu = b.mu
+    mu.mem_write(0xE000ED88, struct.pack("<I", 0xF << 20))
+    for fn in GUI_DP_STUBS + GUI_DRAW_STUBS:
+        b.stub(fn, lambda board: 0)
+    gui = 0xC2000000
+    mu.mem_write(gui, b"\0" * 0x100000)
+    b.call(0x0808BE4C, gui)
+    raw = bytes(mu.mem_read(gui, 0x100000))
+    at = raw.find(struct.pack("<I", SONG_VT))
+    while at >= 0 and at & 3:
+        at = raw.find(struct.pack("<I", SONG_VT), at + 1)
+    return gui + at if at >= 0 else None
+
+
+def _rect(b, w):
+    return struct.unpack("<4i", bytes(b.mu.mem_read(w + 4, 16)))
+
+
+def t_song_ui(bench, res):
+    """Song screen, pad grid, like the sequence grid: pick Def or a cue A-H as the brush, then tap pads;
+    an off pad goes on (stock's pad event) with that cue, an on pad goes off. y runs upwards on screen."""
+    b, sym = bench.b, bench.sym
+    b.w32(DK_BASE, 0)
+    b.call(sym["deck_init"])
+    song = _song_gui(bench)
+    res.check(song is not None, "Song screen built")
+    if song is None:
+        return
+    panel = song + SONG_PANEL
+    res.check(_rect(b, panel) == (194, 0, 124, 219), f"panel spans two columns {_rect(b, panel)}")
+    stock = [_rect(b, panel + 0x34 + i * 0xA0) for i in range(5)]
+    res.check(stock == [(256, 176 - 44 * i, 62, 43) for i in range(4)] + [(256, 0, 62, 43)],
+              f"stock column unchanged: A at the top, Keep at the bottom {stock}")
+    ours = [SG_BTN + i * 0xA0 for i in range(9)]
+    want = [(194 + (i // 4) * 62, 176 - (i % 4) * 44, 62, 43) for i in range(8)] + [(194, 0, 62, 43)]
+    res.check([_rect(b, w) for w in ours] == want,
+              f"A-D left of E-H, A and E at the top, Def by Keep {[_rect(b, w) for w in ours]}")
+    res.check([b.u32(w + 0x14) for w in ours] == list(range(0x191, 0x19A)), "button ids 0x191..0x199")
+    res.check(all(b.u8(w + 0x30) for w in ours), "hidden on the scene list")
+    grid = song + SONG_GRID
+    res.check(_rect(b, grid) == (12, 5, 172, 172), f"grid keeps stock's size {_rect(b, grid)}")
+
+    bag = APP_OBJ + 0x29C0
+    b.mu.mem_write(bag, b"\x00" * 0x30)
+    b.w32(bag + 4, BAG_PAIRS)
+    b.mu.mem_write(BAG_PAIRS, b"\x00" * 0x100)
+    b.mu.mem_write(bag + 10, b"\x00\x00\x20\x00")
+    b.call(sym["song_template"], bag, 0xC3, 1)
+    sends, ups = [], []
+    b.stub(SCENE_SEND, lambda board: sends.append((board.arg(0), board.arg(1))))
+    b.stub(0x080AED14, lambda board: ups.append(bytes(board.mu.mem_read(board.arg(1), 0x18))))   # ui_post_event_up
+    b.stub(0x08097884, lambda board: 0)           # scene copy for the stock letters: an empty scene
+    b.stub(0x0806381C, lambda board: 0)
+    b.stub(0x080B074C, lambda board: 0)           # scene list scroll
+    b.mu.mem_write(APP_OBJ + 0x8CC4, b"\x00")
+    ev = 0x2001C600
+    vt_event, vt_event2 = b.u32(SONG_VT + 0x30) & ~1, b.u32(SONG_VT + 0x34) & ~1
+
+    def post(typ, ident):
+        b.mu.mem_write(ev, b"\0" * 0x40)
+        b.mu.mem_write(ev, struct.pack("<H", typ))
+        b.w32(ev + 0xC, ident)
+        return b.call(vt_event, song, ev)
+
+    def refresh():                                 # what stock's refresh leaves after the app's edit
+        b.mu.mem_write(ev, b"\0" * 0x40)
+        b.call(vt_event2, song, ev)
+
+    def cell(k):
+        return chr(b.u8(grid + 0x31 + k)) if b.u8(grid + 0x31 + k) else ""
+
+    def stock_on(k, on=True):
+        b.mu.mem_write(grid + 0x31 + k, b"A" if on else b"\x00")
+
+    def lit(w):
+        return b.u8(w + 0x96)
+
+    def cue(k):
+        return b.call(PARAM_GET, bag, ID_SCUE + k)
+
+    def pad_post():                                # stock's pad event edit: {0xDC, pad | 0x100, on}
+        dc = [u for u in ups if struct.unpack_from("<H", u)[0] == 0xDC]
+        return [(struct.unpack_from("<I", u, 0xC)[0], struct.unpack_from("<I", u, 0x14)[0]) for u in dc]
+
+    post(0x2B, 0)                                  # scene 1's sequence grid: stock only
+    res.check(b.u8(song + SONG_MODE) == 2 and all(b.u8(w + 0x30) for w in ours), "sequence grid: no cue buttons")
+    post(0x2C, 0)                                  # the pad grid
+    res.check(b.u8(song + SONG_MODE) == 3 and not any(b.u8(w + 0x30) for w in ours), "pad grid: Def, A-H shown")
+    res.check(all(b.u8(panel + 0x34 + i * 0xA0 + 0x30) for i in range(4)) and not b.u8(panel + 0x34 + 4 * 0xA0 + 0x30),
+              "stock A-D hidden there, Keep shown")
+    res.check(lit(ours[8]) == 1 and b.u8(grid + 0x3B0) == 1, "Def is the brush; the grid draws letters")
+    post(1, 0x193)                                 # C
+    res.check(b.u8(SG_BRUSH) == 3 and lit(ours[2]) == 1 and lit(ours[8]) == 0, "C is the brush, Def dark")
+    ups.clear()
+    res.check(post(1, 4) == 0 and cue(4) == 3, "tap pad 5 (off): its cue is C")
+    res.check(pad_post() == [(0x104, 1)], f"and stock puts its pad event on {pad_post()}")
+    res.check(sends == [(APP_OBJ, 0)] and b.u8(APP_OBJ + 0x8CC4) == 1, f"scene re-sent, preset unsaved {sends}")
+    stock_on(4)
+    refresh()
+    res.check(cell(4) == "C", f"the cell shows C ({cell(4)!r})")
+    post(1, 0x195)                                 # E
+    post(1, 9)
+    stock_on(9)
+    refresh()
+    res.check(cue(9) == 5 and cell(9) == "E" and cue(4) == 3, "pads take different cues")
+    post(1, 4)                                     # on: goes off, cue cleared (as the sequence grid)
+    stock_on(4, False)
+    refresh()
+    res.check(cue(4) == 0 and cell(4) == "", "tap an on pad: off, no cue")
+    post(1, 0x199)                                 # Def
+    res.check(b.u8(SG_BRUSH) == 0 and lit(ours[8]) == 1 and lit(ours[4]) == 0, "Def is the brush")
+    post(1, 6)
+    stock_on(6)
+    refresh()
+    res.check(cue(6) == 0 and cell(6) == " ", f"Def: a plain pad event, lit with no letter ({cell(6)!r})")
+    post(1, 0x197)                                 # G, then Keep
+    post(1, 0x190)
+    res.check(b.u8(SG_BRUSH) == 0 and b.u8(song + SONG_BRUSH) == 4 and lit(ours[8]) == 0 and lit(ours[6]) == 0,
+              "Keep takes over: our buttons dark")
+    ups.clear()
+    post(1, 12)
+    res.check(cue(12) == 0 and pad_post() == [(0x10C, 2)], f"Keep: stock's Keep event, no cue {pad_post()}")
+    b.mu.mem_write(grid + 0x41 + 12, b"\x01")
+    refresh()
+    res.check(cell(12) == "", "a Keep cell keeps stock's arrow")
+    post(1, 0x199)
+    res.check(b.u8(song + SONG_BRUSH) == 0 and lit(ours[8]) == 1, "Def turns Keep off")
+    post(0x2B, 0)                                  # back to the sequence grid
+    res.check(all(b.u8(w + 0x30) for w in ours), "leaving the pad grid hides them")
+
+PAD_EVT_TABLE = 0x08068018            # FUN_08067FA4's switch: words, index = msg type - 2
+PAD_8B_STOCK, PAD_EVT_NEXT = 0x080683B4, 0x08067FF4
+
+
+def t_song_pad_event(bench, res):
+    """The Clip pad's msg 0x8B (the scene's pad event): stock releases both lanes, then starts a voice.
+    A playing clip with a scene cue waiting skips that case (pending jump instead), else it is stock's."""
+    from unicorn import arm_const as A
+    b, sym = bench.b, bench.sym
+    img = b.image
+    word = lambda va: int.from_bytes(img[va - bd.BASE:va - bd.BASE + 4], "little")
+    res.check(word(PAD_EVT_TABLE + 4 * (0x8B - 2)) == sym["hook_pad_start"] | 1, "0x8B entry -> hook_pad_start")
+    res.check(word(PAD_EVT_TABLE + 4 * (0x8C - 2)) == 0x080682BD and word(PAD_EVT_TABLE + 4 * (4 - 2)) == PAD_EVT_NEXT | 1,
+              "0x8C and the rest stay stock")
+    res.check(img[0x080683B4 - bd.BASE:0x080683B8 - bd.BASE].hex() == "94f86032" and
+              _bl_target(img, 0x080689BE) == 0x08064650 and _bl_target(img, 0x080689AC) == 0x08064650,
+              "stock's 0x8B case releases the lanes (FUN_08064650) before the voice start")
+    hit = []
+    b.stub(PAD_8B_STOCK, lambda board: hit.append("stock"))
+    b.stub(PAD_EVT_NEXT, lambda board: hit.append("next"))
+    b.w32(DK_BASE, 0)
+    b.call(sym["deck_init"])
+    clip = _deck_clip(b)
+    _cue_set(bench, 0x0100, cues=(6, 0, 11))
+    b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 4, 3, 0, 1)
+
+    def run():
+        hit.clear()
+        b.mu.reg_write(A.UC_ARM_REG_R4, clip)
+        b.mu.reg_write(A.UC_ARM_REG_R5, 0x5555)
+        b.call(sym["hook_pad_start"], 0x11, 0x22, 0x33, 0x44)
+        regs = [b.mu.reg_read(getattr(A, f"UC_ARM_REG_R{i}")) for i in (0, 1, 2, 3, 4, 5)]
+        return hit[:], regs
+
+    b.mu.mem_write(clip + 0x28, b"\x01")
+    b.mu.mem_write(clip + 0x260, b"\x01")
+    _scene_start(b, 1)
+    got, regs = run()
+    res.check(got == ["next"] and _cue(b, 4)["pending"] == 10, f"playing + scene cue: skipped, jump pending {got}")
+    res.check(regs == [0x11, 0x22, 0x33, 0x44, clip, 0x5555], f"registers kept {[hex(r) for r in regs]}")
+    got, _ = run()
+    res.check(got == ["stock"], f"no cue waiting: stock's case {got}")
+    b.mu.mem_write(clip + 0x28, b"\x00")
+    b.mu.mem_write(clip + 0x260, b"\x00")
+    _scene_start(b, 1)
+    got, _ = run()
+    res.check(got == ["stock"] and b.u8(SG_ARM + 4) == 3, f"stopped: stock starts it (armed at Cue C) {got}")
+
+def t_song_downbeat(bench, res):
+    """A scene's jump is planned with the tick its scene starts at: the first grain from that tick takes
+    it at once, whether the grain or the scene's own start message comes first, and whatever the
+    clip's Quant Size. (On the unit the jump came a bar late about half the time.)"""
+    b, sym = bench.b, bench.sym
+    wrap, unit0 = sym["deck_wrap_unit"], sym["deck_note_unit"]
+    pad_start = sym["song_pad_start"]
+    b.w32(DK_BASE, 0)
+    b.call(sym["deck_init"])
+    clip = _deck_clip(b)                         # pad 4, one unit per beat, 16 units
+    _cue_set(bench, 0x0100, cues=(6, 11, 13))    # A beat 5, B beat 10, C beat 12
+    for scene, cue in ((0, 1), (1, 2), (2, 3)):
+        b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 4, cue, 0, scene)
+    b.mu.mem_write(clip + 0x28, b"\x01")
+    b.mu.mem_write(clip + 0x260, b"\x01")
+    b.w32(clip + 0x218, 3840 * 3)                # Quant Size 3 bars: a plain pending jump would wait
+    bar = 3840
+    scene_len = 16 * 960                         # 16 steps of a beat: 4 bars
+
+    _scene_start(b, 0, start=0, steps=16, step_idx=6)
+    res.check(b.u8(SG_PRE_SCENE) == 1 and struct.unpack("<q", bytes(b.mu.mem_read(SG_PRE_AT, 8)))[0] == scene_len,
+              "scene 1 plans scene 2 at its start tick (bar 5)")
+    res.check(b.call(wrap, clip, 3, _tick(b, scene_len - 960)) == 3, "the beat before: plays on")
+    res.check(b.call(wrap, clip, 4, _tick(b, scene_len)) == 10, "the grain on scene 2's bar jumps to Cue B")
+    _player(b, 1, start=scene_len, steps=16, step_idx=6)          # then scene 2's own start arrives
+    b.call(SONG_SCENE_FN, PLAYER, 0, 0, 0, 0x2001C000)
+    res.check(b.call(pad_start, clip) == 1 and b.call(pad_start, clip) == 0,
+              "its pad event (0x8B) is skipped once: no second jump, no retrigger")
+    res.check(_cue(b, 4)["pending"] == NONE16 and b.u8(SG_REQ + 4) == 0, "nothing left pending")
+    res.check(b.call(wrap, clip, 11, _tick(b, scene_len + 960)) == 11, "then plays on from the cue")
+
+    # the other order: scene 3's start message before the grain on its bar
+    t3 = 2 * scene_len
+    _player(b, 2, start=t3, steps=16, step_idx=6)
+    b.call(SONG_SCENE_FN, PLAYER, 0, 0, 0, 0x2001C000)
+    res.check(b.call(pad_start, clip) == 1, "message first: the pad event is skipped")
+    res.check(b.call(wrap, clip, 7, _tick(b, t3)) == 12, "and the grain on the bar jumps to Cue C")
+
+    # a late block: the first grain after the bar
+    b.call(sym["deck_init"])
+    _cue_set(bench, 0x0100, cues=(6, 11, 13))
+    for scene, cue in ((0, 1), (1, 2)):
+        b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 4, cue, 0, scene)
+    _scene_start(b, 0, start=0, steps=16, step_idx=6)
+    res.check(b.call(wrap, clip, 5, _tick(b, scene_len + 960)) == 10, "first grain past the bar: jumps then")
+
+    # a touched scene (queued at +0xC24, switching on the next bar)
+    b.call(sym["deck_init"])
+    _cue_set(bench, 0x0100, cues=(6, 11, 13))
+    for scene, cue in ((0, 1), (1, 2), (2, 3)):
+        b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 4, cue, 0, scene)
+    _scene_start(b, 0, start=0, steps=16, step_idx=6)
+    b.mu.mem_write(LAYER + 0x48, b"\x00" * 0x48)
+    b.mu.mem_write(LAYER + 0x48 + 0x38, struct.pack("<q", bar))
+    b.mu.mem_write(LAYER + 0x48 + 0x40, struct.pack("<H", 2))
+    b.w32(PLAYER + 0xC24, LAYER + 0x48)
+    _song_step(b, 2)
+    res.check(b.u8(SG_PRE_SCENE) == 2, "touching scene 3 re-plans at its switch bar")
+    res.check(b.call(wrap, clip, 3, _tick(b, bar)) == 12, "the grain on that bar jumps to Cue C")
+
+    # stopped clip: the plan waits, the scene's pad event starts it at the cue
+    b.call(sym["deck_init"])
+    _cue_set(bench, 0x0100, cues=(6, 11, 13))
+    for scene, cue in ((0, 1), (1, 2)):
+        b.call(ENGINE_POST, 0x2400A9C0, SONG_KEY, ID_SCUE + 4, cue, 0, scene)
+    b.mu.mem_write(clip + 0x28, b"\x00")
+    b.mu.mem_write(clip + 0x260, b"\x00")
+    _scene_start(b, 0, start=0, steps=16, step_idx=6)
+    _player(b, 1, start=scene_len, steps=16, step_idx=6)
+    b.call(SONG_SCENE_FN, PLAYER, 0, 0, 0, 0x2001C000)
+    res.check(b.call(pad_start, clip) == 0 and b.call(unit0, clip, 0) == 10,
+              "stopped: stock's pad event starts it, at Cue B")
+    res.check(b.u8(SG_NOW + 4) == 0, "and that start used the scene's jump")
+
+SG_LATE_OFS, SG_LATE_B79 = SG_BASE + 0x82C, SG_BASE + 0x86C
+
+
+def t_cue_late_stock(bench, res):
+    """Stutter / Repitch: a cue note up to 64 ticks after a Quant boundary on a playing Clip retriggers
+    it at once (stock voice start, unquantised for that start) at the cue, its first grain shifted by
+    the time since the bar; later notes, bank-2 modes and Quant None keep the pending jump."""
+    b, sym = bench.b, bench.sym
+    note, unit0, gstart = sym["deck_cue_note"], sym["deck_note_unit"], sym["deck_grain_start"]
+    tick = [0]
+
+    def tick_at(bb):
+        bb.mu.mem_write(bb.arg(0), struct.pack("<q", tick[0]))
+    b.w32(DK_BASE, 0)
+    b.call(sym["deck_init"])
+    clip = _deck_clip(b)                          # one unit per beat (960 ticks), 32768 frames per unit
+    b.stub(0x08069C44, tick_at)
+    _cue_set(bench, 0x0100, cues=(6, 11))         # A beat 5, B beat 10
+    b.w32(clip + 0x218, 3840)                     # Quant Size 1 bar
+
+    def play(warp):
+        b.mu.mem_write(clip + 0x28, b"\x01")
+        b.mu.mem_write(clip + 0x260, b"\x01")
+        b.mu.mem_write(clip + 0xBB1, bytes([warp]))
+        b.mu.mem_write(clip + 0xB79, b"\x01")
+
+    def cue_note(n, t, offset=40):
+        tick[0] = t
+        b.w32(DK_BASE + 4 + 4, 0x2001C000)        # DkState.save[1]: transport (hook_voice's r1)
+        b.w32(DK_BASE + 4 + 8, offset)            # save[2]: sample offset in the block
+        return b.call(note, clip, n)
+
+    for warp, name in ((0, "Stutter"), (2, "Repitch")):
+        play(warp)
+        r = cue_note(37, 3840 * 4 + 32)           # 32 ticks after bar 5
+        res.check(r == 0 and _cue(b, 4)["launch"] == 10 and _cue(b, 4)["pending"] == NONE16,
+                  f"{name}: late cue note retriggers now at Cue B ({r:#x})")
+        res.check(b.u8(clip + 0xB79) == 0 and b.u8(SG_LATE_B79 + 4) == 1, f"{name}: that start unquantised")
+        res.check(b.call(unit0, clip, 0) == 10 and b.u8(clip + 0xB79) == 1, f"{name}: note start at the cue, quantise back")
+        ofs = struct.unpack("<i", bytes(b.mu.mem_read(SG_LATE_OFS + 16, 4)))[0]
+        res.check(ofs == 32 * 32768 // 960, f"{name}: first grain {ofs} frames in (32 ticks)")
+        f = b.call(gstart, clip, 10 * 32768) & 0xFFFFFFFF
+        res.check(f == 10 * 32768 + 32 * 32768 // 960, f"{name}: first grain starts in phase ({f})")
+        res.check(b.call(gstart, clip, 11 * 32768) == 11 * 32768, f"{name}: once only")
+
+    play(0)
+    res.check(cue_note(37, 3840 * 4 + 64) == 0, "64 ticks after the bar: still that bar's note")
+    b.call(unit0, clip, 0)
+    play(0)
+    res.check(cue_note(37, 3840 * 4 + 65) == CUE_SWALLOW and _cue(b, 4)["pending"] == 10,
+              "65 ticks: pending, the next boundary as before")
+    b.call(unit0, clip, 0)
+    play(0)
+    res.check(cue_note(37, 3840 * 4 + 1500) == CUE_SWALLOW and b.u8(clip + 0xB79) == 1,
+              "mid-bar: pending, quantise untouched")
+    b.call(unit0, clip, 0)
+    for warp in (1, 3, 4, 5):
+        play(warp)
+        res.check(cue_note(37, 3840 * 4 + 10) == CUE_SWALLOW, f"Warp {warp} (bank 2): pending, deck_cue_late's job")
+        b.call(unit0, clip, 0)
+    play(0)
+    b.w32(clip + 0x218, 0)
+    b.w32(clip + 0x21C, 0)
+    res.check(cue_note(37, 3840 * 4 + 10) == CUE_SWALLOW, "Quant None: pending (next grain) as before")
+    b.call(unit0, clip, 0)
+    b.w32(clip + 0x218, 3840)
+    b.mu.mem_write(clip + 0x28, b"\x00")
+    b.mu.mem_write(clip + 0x260, b"\x00")
+    r = cue_note(36, 3840 * 4 + 10)
+    res.check(r == 0 and b.u8(clip + 0xB79) == 1 and b.u8(SG_LATE_B79 + 4) == 0,
+              "stopped clip: stock's cue launch, quantise untouched")
+    play(0)
+    cue_note(37, 3840 * 4 + 10)
+    res.check(b.u8(clip + 0xB79) == 0, "a retrigger set up ...")
+    cue_note(36, 3840 * 4 + 1500)
+    res.check(b.u8(clip + 0xB79) == 1, "... that never reached its note start: quantise back on the next note")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -6938,6 +7506,20 @@ def main():
             ("Beat Count from a file BPM", t_bpm_auto_beats),
             ("deck param list size", t_deck_bag_size),
             ("deck state memory range", t_deck_memory),
+        ]
+    if "song_step" in sym:
+        kind = kind + "+song"
+        cases += [
+            ("Song cues: hook sites and vtable", t_song_sites),
+            ("Song cues: scue1..16 registered", t_song_registry),
+            ("Song cues: scene template", t_song_template),
+            ("Song cues: Engine_PostParam keeps them", t_song_post),
+            ("Song cues: scene start jumps / arms the pads", t_song_engine),
+            ("Song cues: next scene's cue cached", t_song_prefetch),
+            ("Song cues: the scene's pad event on a playing Clip jumps", t_song_pad_event),
+            ("Song cues: the jump lands on the scene's bar", t_song_downbeat),
+            ("late cue note on stock grains retriggers in phase", t_cue_late_stock),
+            ("Song cues: pad grid letters and taps", t_song_ui),
         ]
     cases += [("MIDI note path facts", t_midi_path_facts),
               ("waveform bar name length", t_deck_bar_name)]

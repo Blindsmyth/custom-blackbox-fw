@@ -5,6 +5,7 @@ One image with everything on this line:
 - **Bungee** in flash bank 2 (3.1.B, `..`).
 - **Clip Deck** (3.1.E, `../../3.1.9-clip-deck`): Start / End / Loop, 8 hot cues, the waveform editor.
 - **Song DJ row** (`../../3.1.9-song-dj`, `docs/song-dj.md`): SONG again on the Song screen gives Beatjump << / >> and Autoloop for every playing Clip, pad sequence and the song.
+- **Song cues:** a Song scene sends Clip pads to one of their hot cues when it starts (see below).
 - **Warp Stutter / Fill / Repitch / Chop / Grain / Bungee.**
 - **The preset-folder fixes** (`docs/preset-folders.md`):
   - no dropout when entering big folders;
@@ -73,6 +74,7 @@ Measured on the bench at 90 BPM on a 130 BPM Clip (0.69x), with a click at every
 - **Bungee re-launched at the file's own wrap** under Clip Deck (last unit → first). That is straight on now.
 - **Bungee below half the Clip's tempo** (65 BPM on a 130 BPM Clip) ran at 0.5x with its clock lock off and drifted. Its range is now 0.25x–2x, as Fill, Chop and Grain.
 - **Sequenced cue notes on Bungee, Fill and Grain** (second unit test): a cue note from the sequencer on the bar comes in just after the bar's first unit was chosen, so the jump waited a whole Quant (the first repeat sounded ignored, later ones a bar late). A cue note up to 32 ms after a Quant boundary now takes that boundary (`deck_cue_late`); if the unit already plays, Bungee re-launches at the cue, plus the time since the bar.
+- **Sequenced cue notes on Stutter and Repitch** (Song-cue unit test, 2026-10-25): the same, on stock grains. A grain that already plays can't be changed there, so a cue note up to 64 ticks (1/15 beat, ~33 ms at 120 BPM) after a Quant boundary retriggers the clip at once instead: stock's own retrigger (its release on the old voice), unquantised for that one start (`clip+0xB79`), at the cue, with its first grain started the time since the bar further in, so the cue plays in phase with the bar from there on. Later notes still wait for the next boundary. Bench: `deck_cue_note` / `deck_note_unit` / `deck_grain_start`; stock's lane render can't run on the bench (double precision), so the sound itself is for the unit.
 - **Stutter with Sync = Slice** now runs on like stock Stretch does on the grid, with the slices as segments. Stock gates the gap there.
 
 **Diagnostic label (this build):** while Bungee plays, its Warp list label reads like `r49e+0j0u0d` instead of the CPU figures, once a second:
@@ -113,6 +115,21 @@ Details: `docs/song-dj.md`.
 - **What moves:** every playing Clip on a note-value Sync grid, every playing pad sequence, and the song. The jump happens on the next beat and keeps the phase. Loop off plays on from inside the loop.
 - **With Song playback on:** a jump that would leave the scene is not taken, and the scene it would have reached blinks. The loop is cut on the scene's end and holds the scene.
 
+## Song cues
+
+Each Song scene can send Clip pads to a hot cue when it starts. Design and the stock code it uses: [docs/song-cues.md](../../../../docs/song-cues.md).
+
+- **Where:** SONG → touch a scene's pad grid. It works like the sequence grid. Next to stock's Keep there are **Def** and **A–H**: A–D and Def in a column left of stock's, E–H above Keep, A and E at the top. The sequence grid is unchanged.
+- **Setting cues:** pick Def or a letter, then touch pads. An off pad goes on with that brush (Def = stock's plain pad event, a letter = start at that cue), and an on pad goes off. Pads show their letter; Def pads are lit with no letter. Different pads can take different cues.
+- **When the scene starts** (in Song mode, also each Loop1 repeat):
+  - **Clip playing:** it jumps to the cue on the scene's first bar, whatever the Quant Size: the next scene and its start are planned ahead (a touched scene too), so the jump is ready for the grain on that bar. The scene's own pad event doesn't retrigger it. (Fixed after the unit tests: going from a scene with Cue A to one with Cue B stopped the clip, like Toggle; then the jump came a bar late about half the time.)
+  - **Clip stopped:** it is armed. Whenever it starts during that scene (its pad event, its sequence, a pad press), it starts at the cue. The next scene start changes or clears that; stopping the song clears it.
+  - No note is sent, so Toggle / Gate and MIDI In channels play no part. A cue note after the scene start still wins.
+  - Nothing happens on a pad that isn't a Clip on a note-value Sync grid, has no cues in use, or has that cue Off.
+- **Gapless:** while a scene plays, each pad's cue for the next scene is kept cached, as for a pending cue note.
+- **Stored** in each scene as `scue1`–`scue16` (one per pad: 0 none, 1–8 = Cue A–H; ids `0x1C0`–`0x1CF`), by stock's scene code: saved, loaded, copied with Cut / Copy / Paste, cleared by Clear. Stock 3.1.9 ignores them.
+- **Memory:** SRAM4 `0x38006400`–`0x38006C2C` (`SgState` in `deck.c`: the 32 × 16 table and the 9 buttons).
+
 ## Bungee in this build (and in 3.1.B)
 
 - **Volume:** the pad's Level, with velocity and its mods, and pan now apply to Bungee, as stock's grain reader applies them.
@@ -149,6 +166,8 @@ Details: `docs/song-dj.md`.
 - Level, loop off;
 - Stutter on slices (run-on), and on a grid left to stock;
 - Bungee's Pitch and Level.
+
+The `Song cues:` cases run the real scene template, Engine_PostParam, the song player at a scene start (`FUN_0805CDA0`) and the Song screen built by the real GUI constructor, with taps through its vtable.
 
 ## Not done yet
 

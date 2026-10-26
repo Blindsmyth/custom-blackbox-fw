@@ -241,6 +241,18 @@ bag_has:
 .thumb_func
 hook_post:
     push    {r0, r1, r2, r3, lr}
+.ifdef WARP_SONG
+    mov     r0, r1                  @ 3.1.T Song cues (deck.c song_post): key, id, value, layer
+    mov     r1, r2
+    mov     r2, r3
+    ldr     r3, [sp, #24]           @ Engine_PostParam's 6th argument: the layer (scene)
+    bl      song_post
+    cmp     r0, #0
+    beq     4f
+    pop     {r0, r1, r2, r3, pc}    @ kept by deck.c, not posted
+4:
+    ldmia   sp, {r0, r1, r2, r3}
+.endif
 .ifdef WARP_DECK
     mov     r0, r1
     mov     r1, r2
