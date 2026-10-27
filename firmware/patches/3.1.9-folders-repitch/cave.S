@@ -1441,8 +1441,14 @@ hook_back:
 .thumb_func
 hook_type7:
     push {r0, r1, r2, r3, r4, lr}
+.ifdef WARP_SONG_DJ
+    bl dj_back_key              @ 3.1.T Song DJ (dj.c): r0 = app; 0 = BACK taken (audio loop capture)
+    cmp r0, #0
+    beq 2f
+.endif
     bl folder_back
     cmp r0, #0
+2:
     pop {r0, r1, r2, r3, r4, lr}
     bne 1f
     ldr r12, =INPUT_EPI

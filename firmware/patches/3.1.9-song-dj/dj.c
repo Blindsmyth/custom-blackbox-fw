@@ -161,6 +161,23 @@ extern void song_event2(void *song, void *ev);
 #define S_BTN_BPM   0x1049C    /* Song: top-left frame button (BPM) */
 #define S_BTN_SWING 0x1053C    /* Song: top-right frame button (Swing) */
 #define BTN_LABEL   0x34       /* button: its label widget; the text is at +0x65 */
+#define S_BTN_EDIT  0x105DC    /* Song: Edit (id 0x27): Scene ^ while the row is shown */
+#define S_BTN_LMODE 0x103FC    /* Song: Loop / Loop1 / LoopA (id 0x115): Scene v */
+#define S_LMODE     0x12190    /* Song: its mode, 0..2 */
+#define ID_EDIT     0x27
+#define ID_LMODE    0x115
+#define EDIT_TEXT   (*(const char *const *)0x080C316Cu)        /* stock's "Edit" */
+#define LMODE_TEXT  ((const char *const *)0x080F1790u)         /* stock's three loop-mode labels */
+#define APP         0x24020088u
+#define APP_SCENE   (*(volatile unsigned *)(APP + 0x20))       /* the scene last pressed / queued */
+#define SESSION_BAG ((void *)(APP + 0x3038))
+#define ID_SCENES   0xC1
+#define EV_SCENE    0x107      /* a scene row pressed: the app selects it, or queues it on the bar */
+#define EV_TAG      0x080CFBA4u
+typedef int (*pget_fn)(void *, unsigned);
+typedef void (*post_fn)(void *, void *);
+#define PARAM_GET   ((pget_fn)0x08093E9Du)
+#define UI_POST_UP  ((post_fn)0x080AED15u)
 #define EV_BACK     0x7F       /* BACK on the screen */
 #define EV_REFRESH  0x66       /* Song: read BPM / Swing again and label them */
 #define FILT_STEP   8          /* encoder counts per filter step of 1 (of -1000..1000) */
@@ -170,10 +187,10 @@ extern void song_event2(void *song, void *ev);
 #define XF_BASE     0x38006F00u
 #define XF_END      0x38007000u
 #define XF_ID       0x1D3
-#define XF_CELLS    20
 typedef struct {
     unsigned btn[0x28];        /* +0x00 a stock button with our vtable (xf_vt) */
-    char bar[28];              /* +0xA0 "L ------|------ P" */
+    int drawn;                 /* +0xA0 crossfader as last drawn, -1 = redraw */
+    char bar[24];              /* +0xA4 */
     char top[2][16];           /* +0xBC top-left / top-right labels while the row is shown */
     int facc[2];               /* +0xDC encoder counts not yet a filter step */
     unsigned char tops;        /* +0xE4 top labels are ours */
@@ -187,7 +204,10 @@ int mx_state(void);
 int mx_len(void);
 int mx_xf(void);
 int mx_filter(unsigned side);
-int mx_ready(void);
+int mx_ready(long long a, int len);
+int mx_have(void);
+int mx_xf_target(void);
+void mx_gains(int *l, int *r);
 void mx_capture(long long a, int len, unsigned off_seq);
 void mx_clear(void);
 void mx_size(int ticks);
@@ -219,12 +239,15 @@ static const char s_back[] = "<< ";
 static const char s_fwd[] = " >>";
 static const char s_loop[] = "Loop ";
 static const char s_audio[] = "Audio ";
-static const char s_capture[] = "BACK: audio loop";
-static const char s_lp[] = "LP ";
-static const char s_hp[] = "HP ";
+static const char s_capture[] = "BACK: capture loop";
+static const char s_recording[] = "Recording the loop...";
+static const char s_loop_first[] = "Loop on, then BACK";
+static const char s_no_ring[] = "Loop: getting memory";
 static const char s_off_f[] = "Off";
-static const char s_proj[] = "P ";
-static const char s_loopside[] = "L "; 
+static const char s_scene_up[] = "Scene ^";
+static const char s_scene_dn[] = "Scene v";
+static const char s_proj[] = "Proj ";
+static const char s_loopside[] = "Loop ";
 
 static int live(void)
 {
@@ -619,7 +642,7 @@ static void add_oldest(void *parent, void *w)
  * ours. Rect {x, y, w, h} at +4; touch points are in the same frame. */
 static void xf_touch(void *w, const int *pt)
 {
-    int x = pt[0] - (int)u32(w, 4) - 12, span = (int)u32(w, 0xC) - 24;
+    int x = pt[0] - (int)u32(w, 4) - 12, span = (int)u32(w, 0xC) - 24;   /* XF_MARGIN */
     if (mx_state() != 2 || span <= 0)
         return;
     mx_set_xf(x <= 0 ? 0 : x >= span ? 1000 : x * 1000 / span);
@@ -630,8 +653,67 @@ static void xf_up(void *w)
     (void)w;
 }
 
+typedef void (*fill_fn)(const int *, unsigned, void *);
+typedef void (*draw_fn)(void *, const void *);
+#define FILL_RECT   ((fill_fn)0x0808EA23u)     /* (rect, palette index, canvas) */
+#define OUTLINE     ((fill_fn)0x0808E995u)
+#define BTN_DRAW    ((draw_fn)0x080A3B6Du)     /* button vt+0x04 */
+#define PAL_BG      2          /* 0x141414 */
+#define PAL_WHITE   3
+#define PAL_PINK    4          /* 0xFF6AF3: the project */
+#define PAL_CYAN    5          /* 0x09D7F5: the loop */
+#define PAL_DEAD    25         /* 0x2B2B2B: the ends, one side silent */
+#define PAL_TRACK   17         /* 0x707070 */
+#define PAL_EDGE    1          /* 0x56565A */
+#define XF_MARGIN   12
+#define XF_KNOB     16
+
+static void rect(int *r, int x, int y, int w, int h)
+{
+    r[0] = x;
+    r[1] = y;
+    r[2] = w;
+    r[3] = h;
+}
+
+/* Button vt+0x04 for the crossfader. Without an audio loop it is the stock button with the capture
+ * hint. With one: a track (dark at both ends, where one side is silent), the knob, and the loop's
+ * (cyan, left) and the project's (pink, right) level as bars at the edges. y runs bottom-up. */
+static void xf_draw(void *w, const void *ctx)
+{
+    void *cv = *(void *const *)((const char *)ctx + 4);
+    int x = (int)u32(w, 4), y = (int)u32(w, 8), wd = (int)u32(w, 0xC), h = (int)u32(w, 0x10);
+    int r[4], tx = x + XF_MARGIN, tw = wd - 2 * XF_MARGIN, dz = tw * 15 / 100, pos, gl, gr;
+    if (mx_state() != 2 || tw <= 0) {
+        BTN_DRAW(w, ctx);
+        return;
+    }
+    pos = mx_xf();
+    mx_gains(&gl, &gr);
+    rect(r, x, y, wd, h);
+    FILL_RECT(r, PAL_BG, cv);
+    rect(r, tx, y + h / 2 - 3, tw, 6);
+    FILL_RECT(r, PAL_TRACK, cv);
+    rect(r, tx, y + h / 2 - 3, dz, 6);
+    FILL_RECT(r, PAL_DEAD, cv);
+    rect(r, tx + tw - dz, y + h / 2 - 3, dz, 6);
+    FILL_RECT(r, PAL_DEAD, cv);
+    rect(r, x + 1, y + 2, 6, (h - 4) * gl / 1000);
+    if (r[3] > 0)
+        FILL_RECT(r, PAL_CYAN, cv);
+    rect(r, x + wd - 7, y + 2, 6, (h - 4) * gr / 1000);
+    if (r[3] > 0)
+        FILL_RECT(r, PAL_PINK, cv);
+    rect(r, tx + tw * pos / 1000 - XF_KNOB / 2, y + 4, XF_KNOB, h - 8);
+    FILL_RECT(r, PAL_WHITE, cv);
+    OUTLINE(r, PAL_EDGE, cv);
+    rect(r, tx + tw * pos / 1000, y + 6, 1, h - 12);
+    FILL_RECT(r, PAL_BG, cv);
+    X->drawn = pos;
+}
+
 static const void *const xf_vt[16] = {
-    (const void *)0x080A3D03u, (const void *)0x080A3B6Du, (const void *)0x080AEB1Du,
+    (const void *)0x080A3D03u, (const void *)xf_draw,    (const void *)0x080AEB1Du,
     (const void *)0x080AEBABu,
     (const void *)xf_touch,    /* +0x10 touchDown */
     (const void *)xf_touch,    /* +0x14 touchMove */
@@ -651,9 +733,10 @@ static void build(void *song)
     ((set_id_fn)xf_vt[9])(xf, XF_ID);
     BTN_LATCH(xf, 1);
     add_oldest(song, xf);
-    set_rect(xf, 0, 40, 320, 30);
+    set_rect(xf, 0, 40, 320, 48);
     HIDE(xf, 1);
     X->bar[0] = 0;
+    X->drawn = -1;
     X->tops = 0;
     for (i = 0; i < NBTN; i++) {
         void *b = D->btn[i];
@@ -686,11 +769,11 @@ static int size_idx(int ticks)
     return LOOP_SIZES - 1;
 }
 
-/* Filter knob as a label: "P LP 45", "L HP 30", "P Off". */
+/* Filter knob as a label: how far from the centre, either way: "Loop 45", "Proj Off". */
 static void filt_text(char *d, const char *side, int v)
 {
     char n[8];
-    int a = v < 0 ? -v : v, k = 0, q = a / 10;
+    int a = v < 0 ? -v : v, k = 0, q = (a + 5) / 10;
     if (a <= 8) {
         cat(d, side, s_off_f);
         return;
@@ -702,8 +785,7 @@ static void filt_text(char *d, const char *side, int v)
     else
         n[k++] = (char)('0' + q);
     n[k] = 0;
-    cat(d, side, v < 0 ? s_lp : s_hp);
-    cat(d + 5, n, "");
+    cat(d, side, n);
 }
 
 static int same(const char *a, const char *b)
@@ -726,28 +808,28 @@ static void keep_text(void *btn, const char *t)
 
 static void mixer_labels(void *song)
 {
-    int st = mx_state(), i;
+    int st = mx_state();
     char *b = X->bar;
-    filt_text(X->top[0], s_proj, mx_filter(0));
-    filt_text(X->top[1], s_loopside, mx_filter(1));
+    filt_text(X->top[0], s_loopside, mx_filter(1));   /* top-left: the loop, as the crossfader */
+    filt_text(X->top[1], s_proj, mx_filter(0));
     keep_text(at(song, S_BTN_BPM), X->top[0]);
     keep_text(at(song, S_BTN_SWING), X->top[1]);
+    keep_text(at(song, S_BTN_EDIT), s_scene_up);
+    keep_text(at(song, S_BTN_LMODE), s_scene_dn);
+    if (u32(at(song, S_BTN_LMODE), 0) && u8(at(song, S_BTN_LMODE), 0x96))
+        BTN_STATE(at(song, S_BTN_LMODE), 0);
     X->tops = 1;
-    if (st != 2) {
-        keep_text(X->btn, s_capture);
+    if (st != 2) {                   /* the capture hint: BACK only once the pass is recorded */
+        keep_text(X->btn, st ? s_recording : !D->ui.loop_on ? s_loop_first
+                  : !mx_have() ? s_no_ring : mx_ready(D->loop_a, D->loop_len) ? s_capture : s_recording);
         return;
     }
-    {
-        int pos = (mx_xf() * XF_CELLS + 500) / 1000;
-        *b++ = 'L';
-        *b++ = ' ';
-        for (i = 0; i <= XF_CELLS; i++)
-            *b++ = i == pos ? '|' : '-';
-        *b++ = ' ';
-        *b++ = 'P';
-        *b = 0;
+    b[0] = 0;
+    keep_text(X->btn, b);            /* xf_draw paints it; no text */
+    if (X->drawn != mx_xf()) {       /* moved: paint again in both passes */
+        *(unsigned char *)at(X->btn, 0x31) = 1;
+        *(unsigned char *)at(X->btn, 0x32) = 1;
     }
-    keep_text(X->btn, X->bar);
 }
 
 static void labels(void)
@@ -855,6 +937,11 @@ static void ui_update(void *song)
         ev[0] = EV_REFRESH;
         X->tops = 0;
         SONG_EVENT(song, ev);    /* BPM and Swing labelled again by stock */
+        j = u32(song, S_LMODE);
+        keep_text(at(song, S_BTN_EDIT), EDIT_TEXT);
+        keep_text(at(song, S_BTN_LMODE), LMODE_TEXT[j < 3 ? j : 0]);
+        if (u32(at(song, S_BTN_LMODE), 0))
+            BTN_STATE(at(song, S_BTN_LMODE), j != 0);
     }
     led(show);
     blink(song);
@@ -896,9 +983,30 @@ static void request_loop(void)
 }
 
 /* Song vtable +0x30: our buttons act on the press (as a DJ deck), the release is swallowed. */
+/* Scene ^ / v: the scene before / after the one last pressed (or queued), as a row press would. */
+static void scene_step(void *song, int dir)
+{
+    int count = PARAM_GET(SESSION_BAG, ID_SCENES), next = (int)APP_SCENE + dir;
+    unsigned ev[6], j;
+    if (next < 0 || next >= count)
+        return;
+    for (j = 0; j < 6; j++)
+        ev[j] = 0;
+    ev[0] = EV_SCENE;
+    ev[1] = EV_TAG;
+    ev[3] = (unsigned)next;
+    UI_POST_UP(song, ev);
+}
+
 unsigned dj_song_child(void *song, const void *ev)
 {
     unsigned type = u16(ev, 0), id = u32(ev, 0xC);
+    if (live() && D->ui.shown && !u8(song, S_MODE) && (type == 1 || type == 2) &&
+        (id == ID_EDIT || id == ID_LMODE)) {
+        if (type == 2)                   /* on the release, as stock's Edit */
+            scene_step(song, id == ID_EDIT ? -1 : 1);
+        return 0;
+    }
     if (!live() || (type != 1 && type != 2) || id - ID_DJ >= NBTN)
         return SONG_CHILD(song, ev);
     if (type == 1) {
@@ -931,6 +1039,35 @@ static unsigned char step_idx(unsigned char i, int n, unsigned count)
     return (unsigned char)(v < 0 ? 0 : v >= (int)count ? (int)count - 1 : v);
 }
 
+/* BACK with the row shown and the DJ loop on, once the ring has recorded the pass playing now:
+ * capture it as the audio loop. The DJ loop is switched off by the same request. 1 = taken. */
+static int try_capture(void)
+{
+    long long a;
+    int len;
+    if (!D->ui.shown || !D->ui.loop_on || mx_state() || D->loop_len <= 0 ||
+        D->armed_loop != D->loop_seq || !mx_ready(D->loop_a, D->loop_len))
+        return 0;
+    a = D->loop_a;                       /* the DJ loop as it plays, before it is switched off */
+    len = D->loop_len;
+    D->ui.loop_on = 0;
+    request_loop();
+    mx_capture(a, len, D->loop_seq);
+    mx_set_filter(0, 0);                 /* a new loop starts with both filters off */
+    mx_set_filter(1, 0);
+    X->facc[0] = X->facc[1] = 0;
+    return 1;
+}
+
+/* App_HandleInput type 7 (hardware BACK, any screen; hook_type7 in ../3.1.9-folders-repitch/cave.S):
+ * on the Song screen BACK captures. 0 = taken, anything else = stock's BACK. */
+unsigned dj_back_key(void *app)
+{
+    if (live() && u8(app, APP_SCREEN) == SCR_SONG && try_capture())
+        return 0;
+    return 1;
+}
+
 /* Song vtable +0x34: with the row shown, the bottom knobs set the sizes (x2 / /2 per step). Leaving
  * the screen (0xD3) hides the row. */
 void dj_song_event(void *song, const void *ev)
@@ -938,24 +1075,26 @@ void dj_song_event(void *song, const void *ev)
     unsigned type = u16(ev, 0);
     if (live() && type == 0xD3)
         D->ui.want = 0;
-    if (live() && type == EV_BACK && D->ui.shown && D->ui.loop_on && !mx_state() && mx_ready() &&
-        D->loop_len > 0 && D->armed_loop == D->loop_seq) {
-        long long a = D->loop_a;           /* the DJ loop as it plays, before it is switched off */
-        int len = D->loop_len;
-        D->ui.loop_on = 0;
-        request_loop();
-        mx_capture(a, len, D->loop_seq);
+    if (live() && type == EV_BACK && try_capture())
         return;
-    }
     if (live() && type == 0x32 && D->ui.shown) {
         unsigned k = u16(ev, 0xC);
         int n;
-        if (k == 0 || k == 2) {          /* top knobs: the project / loop filter */
-            int *acc = &X->facc[k == 2];
+        if (k == 0 || k == 2) {          /* top knobs: loop filter left, project filter right */
+            unsigned side = k == 0;      /* mixer side: 0 project, 1 loop */
+            int *acc = &X->facc[side];
             *acc += (short)u16(ev, 0x10);
             n = *acc / FILT_STEP;
             *acc -= n * FILT_STEP;
-            mx_set_filter(k == 2, mx_filter(k == 2) + n);
+            mx_set_filter(side, mx_filter(side) + n);
+            return;
+        }
+        if (k == 1 && mx_state() == 2) {  /* audio loop playing: bottom-left is the crossfader */
+            int *acc = &D->ui.acc[0];
+            *acc += (short)u16(ev, 0x10);
+            n = *acc / FILT_STEP;
+            *acc -= n * FILT_STEP;
+            mx_set_xf(mx_xf_target() + n);
             return;
         }
         if (k == 1 || k == 3) {

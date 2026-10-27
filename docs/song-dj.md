@@ -94,7 +94,95 @@ The song moves with the jump inside its scene, so the scene ends correspondingly
   - Hiding them marks the scene rows dirty, so the list paints again.
 - **The blink** toggles the target scene row's selected look (`FUN_080C2318`) every 100 ms for 600 ms, then restores it.
 
+## Mixer: audio loop, crossfader, DJ filters, global BPM
+
+Status: built and bench-tested (2026-10-27), **not yet tried on the unit**. Code: `firmware/patches/3.1.9-song-dj/mixer.c` (audio and BPM) and the Song-screen parts of `dj.c`.
+
+For going from one project into the next in a live set: capture a loop of the master, load the next project under it, and crossfade into it.
+
+### How to use it
+
+- **Tools → Clock → BPM: Project / Global.** With Global, loading a preset keeps the tempo that is playing. The preset's BPM is overwritten in the session, so the Song screen and the next save show the kept one. While an audio loop is held, the tempo is kept whichever setting is chosen. Swing still comes from the preset.
+- **Capture:** open the DJ row (SONG on the Song screen), turn **Loop** on, then press **BACK**.
+  - The DJ loop is switched off at once, so the project plays the current pass to its end and carries on past it.
+  - At that end, the **audio loop** starts. It is the pass that just played, so the switch is seamless, and the crossfader goes **fully left** (loop only).
+  - The Loop button reads `Audio 1` and stays lit.
+- **While the audio loop plays:**
+  - The **bottom-right knob** sizes the audio loop. A new size keeps the start, as Mixxx does.
+    - Bigger sizes play what the project really played after the loop. It was recorded while the loop played: up to 16 bars past the loop's start, until a preset load starts.
+    - A size that hasn't been recorded yet waits until it has.
+  - **Load the next project.** The transport keeps running and the loop plays through the load. Then slide the crossfader right to bring the new project in.
+  - **Loop** turns the audio loop off. The crossfader goes back fully right and the ring records again.
+- **The DJ row also shows:**
+  - **Top-left knob:** the loop filter.
+  - **Top-right knob:** the project filter.
+  - Left and right match the crossfader: loop on the left, project on the right.
+  - Both are bipolar like the pad Filter: left of centre is low-pass, right of centre is high-pass, and the centre is off. They replace BPM and Swing while the row is shown, and the two top buttons read e.g. `Loop 30` / `Proj 45`: how far from the centre, either way. **A capture resets both filters.**
+  - **Crossfader:** the strip above `<< | >> | Loop` is drawn as a crossfader, 48 px tall: a track that is dark at both ends (where one side is silent), a white knob, and the loop's (cyan, left) and the project's (pink, right) level as bars at the edges. Touch or drag it, or turn the **bottom-left knob** while the audio loop plays: loop on the left, project on the right. The curve is equal power (sin/cos); the last 15% of travel at each end has the other side fully down. Without a loop it reads `Loop on, then BACK`, then `Recording the loop...` until the pass playing now is fully recorded, then `BACK: capture loop`. BACK is ignored until then.
+
+- **Scene ^ / Scene v:** while the row is shown, Song's **Edit** and **Loop1** buttons go to the previous and next scene. They do what a row press does: event `0x107` with the scene, so with the song playing the scene is queued for the next bar. They count from the scene last pressed or queued (`App+0x20`) and stop at the first and last scene. Hiding the row gives the buttons back.
+
+### How it works
+
+- **Tap:** `mx_comp_tap` replaces the compressor's gain-ramp `bl FUN_0804BE40` at `0x0804EE9A`, inside `FUN_0804EDDC`. That is after the compressor and before the limiter.
+  - With the compressor off, `mx_bus_tap` does the same where both render paths meet. It replaces `bl FUN_0804D9C0` at `0x0805354A`, which gets bus 0's L/R before the output volumes.
+  - A per-block flag (`done`) keeps it to one run per block.
+- **Ring:** 16384 blocks × 128 frames of int16 stereo (43.7 s, 8 MB) plus one anchor per block: the block's start in 1/65536 ticks.
+  - **Borrowed from stock's sample cache, only while needed.** SDRAM has about 1 MB free after boot (measured on the unit), so the ring can't be a reservation of its own: an 8 MB grab at boot hung the unit. Instead, while a DJ loop is on or an audio loop is held, 131 of the cache's 615 entries are borrowed. Each entry is 8192 stereo frames as two 32 KB float buffers (`+0x04` L, `+0x08` R), 64 KB in all.
+    - 128 entries hold the audio, 2 hold the anchors, and 1 is scratch for a block's loop audio.
+  - **The cache:** the sample manager is the object at `0x2400A9C0` (pcmStreamer's loop argument), with entries every `0x1C` bytes. Each entry's fields run `+0x04`..`+0x1F` (they overlap the next entry's first word): L, R, block `+0x0C`, LRU stamp `+0x10`, frames `+0x14`, wave slot `+0x18` (0xFFFF none), next pair `+0x1C`, pair index `+0x1E`, state `+0x1F` (0 free, 1 loaded, 2 recorded, 3 reserved).
+  - **Borrowing** (`mx_stream_poll`, from `b2load_thunk` in pcmStreamer's loop, which owns the cache): stock's picker `FUN_08071D64` hands over an entry the way it does for a block load. It takes a free entry, otherwise the least recent; it unmaps that from its wave and frees chained pairs. We then mark it state 3 with no wave: eviction skips state 2/3, and every lookup matches on the wave slot, so stock never touches it. If the picker falls back on one of ours (nothing evictable), the borrow stops and retries on the next poll.
+  - **Giving back:** once nothing wants the ring, the audio task must first stop using it (two blocks), then each entry is reset as stock frees one (`FUN_08072678`).
+  - **Cost:** while you loop, the cache is 484 entries instead of 615 (about 83 s instead of 105 s). Samples that were in the borrowed entries stream from the card again when needed. Stock pad recording needs 128 contiguous free entries, so recording to a pad while a loop is on may fail.
+  - **Ticks:** the engine's are `SE+0x30` (u64); the tempo is `SE+0x18` (float BPM); playing is `SE+0x38`. SE = `*(0x2400A9C0+0x9A74)`. Our own fractional tick runs at the tempo and is pulled back to the engine's when they differ by more than 4 ticks.
+- **Capture** (`mx_capture`, from BACK in `dj_song_event`):
+  1. The UI hands over the DJ loop (`loop_a`, `loop_len`) and the `loop_seq` that switches it off.
+  2. The audio task sets W = the first `loop_a + k·len` (k ≥ 1) at or after the off's `loop_from` (or now, if no user has armed it yet), and A = W − len.
+  3. At W it finds A's block through the anchors and plays from there.
+- **Playback:** the loop reads tick `A + ((t − B) mod len)` through the anchors. Mapping by tick is what keeps it on the bar grid and makes it repitch with the BPM.
+  - A new size moves the phase origin B so that the place in the loop is kept; a smaller size goes back in whole sizes.
+  - At the seam, the window's end runs on into what was recorded after it, faded over 96 samples.
+- **Load** (`mx_load_begin`, at `bl` msg 0x36 `0x0809E258` in `SessionMgr_LoadBank`): it stops the held loop's recording and reads BPM Global.
+- **BPM** (`mx_bpm_send`, at `bl FUN_0804C59C` `0x0809CE82` in `SessionMgr_FinalizeBankLoading`): id 0x84 isn't sent to the tempo node; `Param_Set(App+0x3038, 0x84, playing BPM)` is done instead.
+- **Filters:** RBJ biquads with fixed Q 0.8. The cutoff comes from the pads' knob curve (`FUN_08060640`): LP from `1 + v`, HP from `v`. The knob is smoothed per block, and the coefficients are recomputed only when it moves.
+- **Crossfader:** with x the travel between the two 15% dead zones (0..1), gL = cos(x·π/2) and gR = sin(x·π/2), ramped over each block. Without a held loop, gR = 1.
+  - **The strip** is a stock frame button whose vtable is a copy of `0x080EFE48` with touchDown, touchMove and touchUp replaced.
+  - **Placement:** rect {0, 40, 320, 48}, y measured from the bottom, just above the row.
+  - **Drawing:** our vt+0x04 (`xf_draw`) paints it with stock's `FILL_RECT` `0x0808EA23` / `OUTLINE` `0x0808E995` (palette 2 background, 17 track, 25 dead ends, 3 knob, 5 / 4 levels). Without a held loop it is the stock button draw, with the capture hint as its text. A moved crossfader marks it dirty (+0x31 / +0x32).
+  - **Top labels:** the two top labels are the stock BPM/Swing frame buttons (`Song+0x1049C`/`+0x1053C`), relabelled each tick when stock has changed them. Hiding the row posts event 0x66 to the Song screen, which labels them as stock again.
+- **Scene buttons:** Edit is the frame button at `Song+0x105DC` (id `0x27`) and Loop1 the one at `Song+0x103FC` (id `0x115`, mode at `Song+0x12190`, labels at `0x080F1790`). `dj_song_child` takes their press and release in list mode (`Song+0x12194 == 0`) and posts `0x107` with `ui_post_event_up` (`0x080AED14`). The app's `FUN_0809B7B0` then queues the scene (`0xB2` to key `0x400`) when the song plays.
+- **BACK:** hardware BACK reaches the app as `App_HandleInput` type 7; `hook_type7` (preset folders) now asks `dj_back_key` first.
+- **Setting:** param `0x1D8` (`bpmglobal`, Project/Global). It is registered from `deck_register` and added to the global bag from `seqrec_global_tpl`, and the Tools → Clock list slot `0x080EEDF8` = `0x1D8`.
+
+### Not done yet
+
+- **Next bar on load.** The new project's sequences and song are not yet cued to the next bar after a load. The transport keeps running, and stock's Quant Size still decides when a launched sequence starts.
+- **On the unit:** the borrowed ring hasn't been tried yet. Check that loops with many long Clips still stream cleanly while a loop is on.
+- **Pads routed to Out 2/3** aren't on bus 0, so they aren't captured or crossfaded.
+
+### Bench
+
+```bash
+.venv/bin/python tools/bench/run_tests.py --image firmware/patches/3.1.9-mix-bungee/lineup/BLACKBOX.BIN --only "mixer"
+```
+
+The cases call `mixer.c` with a fake engine clock and a saw on L:
+- capture at the DJ loop's end, played back by tick;
+- 2 bars waits for the recording and then plays the bar that followed;
+- a preset load stops the recording;
+- 140 BPM repitches and stays on the grid;
+- half a bar applies at once;
+- the crossfader centre is constant power;
+- Loop off;
+- LP / HP / centre;
+- BPM Global vs Project;
+- BACK, the top knobs, the loop knob and Loop on the Song screen.
+
+**Not covered:** the taps inside a real render, and drawing.
+
 ## Memory
+
+The mixer's `MxState` follows it at `0x38007A60`–`0x38007C64` (fits below `0x38008000`). The crossfader strip and top labels (`DjXf`) are at `0x38006F00`–`0x38006FE8`, between Song cues' `SgState` and RbVoice. The ring and its anchors live in 131 borrowed sample-cache entries, only while a loop is on (the entry indices are in `MxState.ent`).
 
 `DjState` sits at SRAM4 `0x38007400`–`0x38007A58`. That is free on 3.1.T: it is past RbVoice and diag (`0x38007000`–`0x38007148`) and below Bungee's grain input (`0x38008000`). It also stays clear of Song cues' `SgState` (`0x38006400`–`0x38006BDC`, on `claude/eloquent-lichterman-6eca6a`). `dj_init`, called from `deck_init` at boot, clears it. Nothing is saved in presets, and the pads' own Clip Deck loop settings are never touched.
 

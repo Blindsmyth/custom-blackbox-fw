@@ -363,6 +363,12 @@ void deck_register(void *reg)
         song_register(reg);
     }
 #endif
+#ifdef WITH_SONG_DJ
+    {
+        void mx_register(void *reg);   /* ../3.1.9-song-dj/mixer.c: Tools -> Clock BPM */
+        mx_register(reg);
+    }
+#endif
 }
 
 static int bag_has(const void *bag, unsigned id)

@@ -10,6 +10,12 @@
  * The loop is a window [A, A + len) of recorded transport ticks, read at (t - B) mod len: it is
  * mapped by tick, so it stays on the global bar grid and repitches when the BPM changes.
  *
+ * The ring is borrowed from stock's sample cache only while it is needed: from the DJ row's Loop on
+ * until neither a DJ loop nor an audio loop is left. 131 cache entries (64 KB each: 128 for the audio,
+ * 2 for the tick anchors, 1 scratch) are taken in pcmStreamer's own task (mx_stream_poll) the way
+ * stock takes one for a block (FUN_08071D64), marked reserved (state 3, no wave), and given back as
+ * stock frees them. The rest of the time the cache is stock's 615 entries.
+ *
  * Capture (BACK with the DJ row's Loop on, dj.c): the DJ loop is switched off at once, so the project
  * plays its pass to the end W and on past it. The audio loop is the last pass [W - L, W), already in
  * the ring; from W it plays and the crossfader is fully left. The ring keeps recording the project's
@@ -24,8 +30,26 @@
 #define RING_BLOCKS  16384u        /* 43.7 s at 48 kHz: 16 bars down to ~88 BPM */
 #define RING_MASK    (RING_BLOCKS - 1)
 #define RING_FRAMES  (RING_BLOCKS * BLOCK)
-#define RING_BYTES   (RING_FRAMES * 4u)
-#define ANC_BYTES    (RING_BLOCKS * 8u)
+#define CHUNK_FR     8192u         /* int16 stereo frames in one 32 KB half (L or R) of a cache entry */
+#define ANC_PER      4096u         /* anchors (int64) in one 32 KB half */
+#define E_AUDIO      128u          /* cache entries for the audio: 128 x 2 x 8192 frames */
+#define E_ANC        128u          /* entries 128, 129: the anchors */
+#define E_SCRATCH    130u          /* entry 130: this block's loop audio (lp / rp) */
+#define NENT         131u
+#define CACHE        0x2400A9C0u   /* sample manager (pcmStreamer's object): 615 entries of 0x1C */
+#define CACHE_N      0x267u
+#define C_LBUF       0x04          /* entry: float L[8192] */
+#define C_RBUF       0x08          /* entry: float R[8192] */
+#define C_BLOCK      0x0C
+#define C_STAMP      0x10
+#define C_FRAMES     0x14
+#define C_WAVE       0x18          /* wave slot, 0xFFFF = none */
+#define C_NEXT       0x1C          /* u16: next entry of a multi-pair block */
+#define C_PAIR       0x1E          /* byte: pair index */
+#define C_STATE      0x1F          /* byte: 0 free, 1 loaded, 2 recorded, 3 reserved */
+#define H_NONE       0             /* have: no ring */
+#define H_READY      2             /*       borrowed, in use */
+#define H_DRAIN      3             /*       giving back once the audio task has stopped using it */
 #define MAX_TICKS    61440         /* 16 bars */
 #define TQ_SHIFT     16            /* fixed-point ticks: 1 << 16 per tick */
 #define TQ_ONE       (1LL << TQ_SHIFT)
@@ -33,6 +57,7 @@
 #define SEAM         96            /* samples of crossfade at the loop's seam (2 ms) */
 #define DEAD         8             /* filter knob -8..8 of -1000..1000: off */
 #define FILT_Q       0.8f
+#define XF_DEAD      0.15f         /* crossfader travel at each end with the other side silent */
 #define ID_BPMG      0x1D8         /* Tools -> Clock "BPM:" Project / Global */
 
 #define ST_IDLE      0             /* no audio loop: the ring records */
@@ -63,8 +88,8 @@ typedef struct {
     unsigned char playing;    /* +0x4B transport was playing last block */
     short xf_now;             /* +0x4C 0 .. 1000, for the UI */
     short rsv4e;
-    unsigned *ring;           /* +0x50 RING_FRAMES words: L | R << 16 */
-    long long *anc;           /* +0x54 tick (TQ) at each ring block's start */
+    unsigned have;            /* +0x50 H_*: written by pcmStreamer (mx_stream_poll) */
+    unsigned drain_at;        /* +0x54 audio blocks seen when the drain started */
     unsigned wblk;            /* +0x58 blocks written (monotonic) */
     unsigned vblk;            /* +0x5C first block with a valid anchor */
     unsigned blk_a;           /* +0x60 block holding A */
@@ -83,21 +108,24 @@ typedef struct {
     float z[2][2][2];         /* +0xD4 state per side, channel */
     unsigned char fon[2];     /* +0xF4 filter on, per side */
     unsigned char rsvf6[2];
-    unsigned blocks;          /* +0xF8 audio blocks seen (bench / diag) */
-    float lp[BLOCK], rp[BLOCK];   /* +0xFC loop audio of this block */
+    unsigned blocks;          /* +0xF8 audio blocks seen */
+    unsigned short ent[NENT]; /* +0xFC the borrowed cache entries */
+    unsigned char want;       /* the audio task wants the ring: a DJ loop or an audio loop */
+    unsigned char nent;       /* entries borrowed so far */
 } MxState;
 
 typedef char mx_fits[(MX_BASE + sizeof(MxState) <= MX_END) ? 1 : -1];
 typedef char mx_after_dj[(MX_BASE >= 0x38007A58u) ? 1 : -1];
 typedef char mx_state_at[(__builtin_offsetof(MxState, state) == 0x48) ? 1 : -1];   /* tools/bench */
-typedef char mx_ring_at[(__builtin_offsetof(MxState, ring) == 0x50) ? 1 : -1];
+typedef char mx_have_at[(__builtin_offsetof(MxState, have) == 0x50) ? 1 : -1];
 typedef char mx_len_at[(__builtin_offsetof(MxState, len) == 0x68) ? 1 : -1];
 typedef char mx_w_at[(__builtin_offsetof(MxState, w) == 0x78) ? 1 : -1];
-typedef char mx_lp_at[(__builtin_offsetof(MxState, lp) == 0xFC) ? 1 : -1];
+typedef char mx_ent_at[(__builtin_offsetof(MxState, ent) == 0xFC) ? 1 : -1];
+typedef char mx_want_at[(__builtin_offsetof(MxState, want) == 0x202) ? 1 : -1];
 
 #define M ((MxState *)MX_BASE)
 
-typedef void *(*alloc_fn)(unsigned);
+typedef unsigned (*pick_fn)(void *);
 typedef void (*ramp_fn)(void *, float *, float *, int);
 typedef void (*bus_fn)(void *, float **, float **);
 typedef int (*len_fn)(void *);
@@ -106,7 +134,7 @@ typedef int (*get_fn)(void *, unsigned);
 typedef void (*set_fn)(void *, unsigned, int);
 typedef void (*send_fn)(void *, unsigned, unsigned, int, int, int);
 typedef void (*post_fn)(void *);
-#define SDRAM_ALLOC ((alloc_fn)0x0804436Du)   /* bump from the bottom of SDRAM, once at boot */
+#define CACHE_PICK  ((pick_fn)0x08071D65u)    /* (mgr): a free cache entry, else the least recent */
 #define COMP_RAMP   ((ramp_fn)0x0804BE41u)    /* (ramp, L, R, n): the compressor's gain */
 #define BUS_LR      ((bus_fn)0x0804D9C1u)     /* (bus, &L, &R) */
 #define BUS_LEN     ((len_fn)0x0804D8E9u)     /* (bus): frames in the block */
@@ -128,9 +156,9 @@ typedef void (*post_fn)(void *);
 #define DJ_LOOP_SEQ   (*(volatile unsigned *)0x3800741Cu)
 #define DJ_ARMED_LOOP (*(volatile unsigned *)0x38007438u)
 #define DJ_LOOP_FROM  (*(volatile long long *)0x38007A50u)
+#define DJ_LOOP_LEN   (*(volatile int *)0x3800743Cu)
 
 static void dmb(void) { __asm__ volatile("dmb" ::: "memory"); }
-static float fsqrt(float x) { float r; __asm__("vsqrt.f32 %0, %1" : "=t"(r) : "t"(x)); return r; }
 static float fabs_(float x) { return x < 0 ? -x : x; }
 static int live(void) { return M->magic == MX_MAGIC; }
 
@@ -146,12 +174,12 @@ static long long floor_div(long long a, long long b)
 
 static long long rate_n(int n) { return (long long)(int)(M->rate * (float)n); }
 
-/* Boot (dj_init): nothing carries over a restart. The ring comes from mx_boot. */
+/* Boot (dj_init): nothing carries over a restart, and no cache entry is borrowed yet. */
 void mx_init(void)
 {
     unsigned *w = (unsigned *)MX_BASE, i;
     for (i = 0; i < sizeof(MxState) / 4; i++)
-        w[i] = 0;                            /* the ring too: SDRAM's allocator starts over */
+        w[i] = 0;
     M->xf = M->xf_t = 1.0f;
     M->xf_now = 1000;
     M->xf_ui = 1000;
@@ -159,20 +187,88 @@ void mx_init(void)
     M->magic = MX_MAGIC;
 }
 
-/* state_init (repitch.S), every boot after deck_init: 8.1 MB of SDRAM for the ring, before any
- * sample is loaded (samples come from the top, this from the bottom). */
-void mx_boot(void)
+/* ---- the borrowed ring (pcmStreamer task) ---- */
+
+static unsigned char *entry(unsigned i) { return (unsigned char *)(CACHE + i * 0x1C); }
+
+/* Half h (0 = L, 1 = R) of borrowed entry k: 32 KB. */
+static void *half(unsigned k, unsigned h)
 {
-    unsigned char *p;
+    return *(void **)(entry(M->ent[k]) + (h ? C_RBUF : C_LBUF));
+}
+
+static void give_back(unsigned k)
+{
+    unsigned char *e = entry(M->ent[k]);
+    *(unsigned *)(e + C_BLOCK) = 0;
+    *(unsigned *)(e + C_STAMP) = 0;
+    *(unsigned *)(e + C_FRAMES) = 0;
+    *(unsigned *)(e + C_WAVE) = 0xFFFF;
+    *(unsigned short *)(e + C_NEXT) = 0xFFFF;
+    e[C_PAIR] = 0;
+    dmb();
+    e[C_STATE] = 0;
+}
+
+/* pcmStreamer's loop (b2load_thunk): borrow the ring when the audio task wants it, give it back
+ * when it no longer does and has stopped touching it. Stock's cache is pcmStreamer's own, so this
+ * is the only task that changes its entries. */
+void mx_stream_poll(void)
+{
     if (!live())
         return;
-    p = SDRAM_ALLOC(RING_BYTES + ANC_BYTES);
-    if (!p)
+    if (M->have == H_NONE && M->want) {
+        while (M->nent < NENT) {
+            unsigned i = CACHE_PICK((void *)CACHE) & 0xFFFF, k;
+            unsigned char *e = entry(i);
+            if (i >= CACHE_N)
+                break;
+            for (k = 0; k < M->nent && M->ent[k] != i; k++)
+                ;
+            if (k < M->nent) {               /* nothing evictable: it fell back on one of ours */
+                e[C_STATE] = 3;
+                break;                       /* try again next time */
+            }
+            if (!*(void **)(e + C_LBUF) || !*(void **)(e + C_RBUF))
+                break;
+            e[C_STATE] = 3;                  /* reserved: eviction and recording pass it by */
+            *(unsigned *)(e + C_WAVE) = 0xFFFF;
+            *(unsigned *)(e + C_BLOCK) = 0;
+            *(unsigned *)(e + C_FRAMES) = 0;
+            *(unsigned short *)(e + C_NEXT) = 0xFFFF;
+            e[C_PAIR] = 0;
+            M->ent[M->nent++] = (unsigned short)i;
+        }
+        if (M->nent == NENT) {
+            M->vblk = M->wblk;               /* the ring's timeline starts now */
+            dmb();
+            M->have = H_READY;
+        }
         return;
-    M->anc = (long long *)(p + RING_BYTES);
-    dmb();
-    M->ring = (unsigned *)p;
+    }
+    if (M->have == H_READY && !M->want) {
+        M->drain_at = M->blocks;
+        dmb();
+        M->have = H_DRAIN;
+        return;
+    }
+    if (M->have == H_DRAIN) {
+        if (M->want) {
+            M->vblk = M->wblk;
+            dmb();
+            M->have = H_READY;
+            return;
+        }
+        if (M->blocks - M->drain_at < 2)
+            return;                          /* the audio task may still be in a block */
+        while (M->nent)
+            give_back(--M->nent);
+        dmb();
+        M->have = H_NONE;
+    }
 }
+
+static int ready(void) { return M->have == H_READY; }
 
 /* ---- the global BPM (UI task) ---- */
 
@@ -181,7 +277,7 @@ void mx_boot(void)
  * is replaced in the session bag by the one playing, so the screen and the next save show it. */
 void mx_bpm_send(void *eng, unsigned key, unsigned id, int value, int a4, int a5)
 {
-    if (id == ID_TEMPO && live() && (M->bpm_keep || M->state != ST_IDLE) && M->ring) {
+    if (id == ID_TEMPO && live() && (M->bpm_keep || M->state != ST_IDLE)) {
         unsigned char *se = SE;
         if (se) {
             float bpm = *(float *)(se + SE_TEMPO);
@@ -230,7 +326,24 @@ void mx_load_begin(void *eng)
 
 /* ---- the ring (audio task) ---- */
 
-static long long anc_of(unsigned blk) { return M->anc[blk & RING_MASK]; }
+static long long *anc_at(unsigned blk)
+{
+    blk &= RING_MASK;
+    return (long long *)half(E_ANC + (blk >> 13), (blk >> 12) & 1) + (blk & (ANC_PER - 1));
+}
+
+static long long anc_of(unsigned blk) { return *anc_at(blk); }
+
+/* Ring frame fr: L | R << 16. */
+static unsigned *word(unsigned fr)
+{
+    unsigned c;
+    fr &= RING_FRAMES - 1;
+    c = fr / CHUNK_FR;
+    return (unsigned *)half(c >> 1, c & 1) + (fr & (CHUNK_FR - 1));
+}
+
+static float *scratch(unsigned h) { return (float *)half(E_SCRATCH, 0) + h * BLOCK; }
 
 /* The ring block whose anchor is at or before rq, in [lo, hi] (hi = last written). */
 static unsigned blk_of(long long rq, unsigned lo, unsigned hi)
@@ -264,7 +377,7 @@ static void pos_of(long long rq, unsigned *blk, float *off)
 
 static void ring_put(const float *l, const float *r, int n)
 {
-    unsigned *o = M->ring + (M->wblk & RING_MASK) * BLOCK;
+    unsigned *o = word((M->wblk & RING_MASK) * BLOCK);   /* a block never spans two halves */
     int i;
     for (i = 0; i < n && i < BLOCK; i++) {
         float a = l[i] * 32767.0f, c = r[i] * 32767.0f;
@@ -274,14 +387,14 @@ static void ring_put(const float *l, const float *r, int n)
     }
     for (; i < BLOCK; i++)
         o[i] = 0;
-    M->anc[M->wblk & RING_MASK] = M->tq;
+    *anc_at(M->wblk) = M->tq;
     dmb();
     M->wblk++;
 }
 
 static void frame(unsigned fr, float t, float *l, float *r)
 {
-    unsigned w0 = M->ring[fr & (RING_FRAMES - 1)], w1 = M->ring[(fr + 1) & (RING_FRAMES - 1)];
+    unsigned w0 = *word(fr), w1 = *word(fr + 1);
     float l0 = (short)(w0 & 0xFFFF), l1 = (short)(w1 & 0xFFFF);
     float r0 = (short)(w0 >> 16), r1 = (short)(w1 >> 16);
     *l = (l0 + (l1 - l0) * t) * (1.0f / 32768.0f);
@@ -313,17 +426,18 @@ static void read_span(long long rq, int n, float *lp, float *rp, float w0, float
     }
 }
 
-/* The loop's audio for this block into M->lp / M->rp (n <= BLOCK). Across the seam the end of the
+/* The loop's audio for this block into the scratch entry (n <= BLOCK). Across the seam the end of the
  * window runs on into what was recorded after it, faded out over SEAM samples. */
 static void loop_block(int n)
 {
     long long len = (long long)M->len << TQ_SHIFT, rate = rate_n(1);
     long long d = M->tq - (M->b << TQ_SHIFT), base = M->a << TQ_SHIFT;
     long long tail_end = anc_of(M->wblk - 1);
+    float *lp = scratch(0), *rp = scratch(1);
     int i = 0;
     d -= floor_div(d, len) * len;
     for (i = 0; i < n; i++)
-        M->lp[i] = M->rp[i] = 0;
+        lp[i] = rp[i] = 0;
     i = 0;
     while (i < n) {
         int left = rate > 0 ? (int)LDIV(len - d + rate - 1, rate) : n - i;
@@ -333,10 +447,10 @@ static void loop_block(int n)
             seg = 1;
         if (since < SEAM && base + len + d + rate * seg <= tail_end) {
             float w = (float)(int)since / SEAM;
-            read_span(base + d, seg, M->lp + i, M->rp + i, w, 1.0f / SEAM);
-            read_span(base + len + d, seg, M->lp + i, M->rp + i, 1.0f - w, -1.0f / SEAM);
+            read_span(base + d, seg, lp + i, rp + i, w, 1.0f / SEAM);
+            read_span(base + len + d, seg, lp + i, rp + i, 1.0f - w, -1.0f / SEAM);
         } else {
-            read_span(base + d, seg, M->lp + i, M->rp + i, 1.0f, 0);
+            read_span(base + d, seg, lp + i, rp + i, 1.0f, 0);
         }
         i += seg;
         d += rate * seg;
@@ -445,7 +559,7 @@ static void requests(long long t)
     if (M->cap_seen != M->cap_seq) {
         long long f, k, len = M->cap_len;
         M->cap_seen = M->cap_seq;
-        if (M->state == ST_IDLE && len > 0 && M->ring && M->playing) {
+        if (M->state == ST_IDLE && len > 0 && ready() && M->playing) {
             /* the DJ loop's first end at or after it was switched off */
             f = DJ_ARMED_LOOP == M->cap_off ? DJ_LOOP_FROM : t;
             k = floor_div(f - M->cap_a + len - 1, len);
@@ -477,7 +591,7 @@ static void resize(long long t, int len)
 
 static void held(long long t)
 {
-    long long rec_end = (anc_of(M->wblk - 1) >> TQ_SHIFT) - M->a;
+    long long rec_end;
     if (M->state == ST_ARMED && t >= M->w) {
         if ((long long)(M->wblk - M->vblk) < 2 || anc_of(M->vblk) > (M->a << TQ_SHIFT)) {
             M->state = ST_IDLE;              /* not in the ring (any more) */
@@ -491,11 +605,14 @@ static void held(long long t)
     }
     if (M->state != ST_HELD)
         return;
+    rec_end = (anc_of(M->wblk - 1) >> TQ_SHIFT) - M->a;
     if (M->pend != M->len && (M->pend < M->len || M->pend <= rec_end))
         resize(t, M->pend);
 }
 
-/* The crossfader's gains for this block: from the last block's to the target's, ramped over it. */
+/* The crossfader's gains for this block: from the last block's to the target's, ramped over it.
+ * Equal power (sin / cos) between two dead zones: the last XF_DEAD of travel at each end has the
+ * other side fully down. */
 static void gains(float *l0, float *r0, float *l1, float *r1)
 {
     float x1 = M->xf_t;
@@ -505,8 +622,11 @@ static void gains(float *l0, float *r0, float *l1, float *r1)
         *l1 = 0;
         *r1 = 1.0f;
     } else {
-        *l1 = fsqrt(1.0f - x1);
-        *r1 = fsqrt(x1);
+        float x = (x1 - XF_DEAD) / (1.0f - 2 * XF_DEAD), s, c;
+        x = x < 0 ? 0 : x > 1.0f ? 1.0f : x;
+        sincos_(x * 1.5707963f, &s, &c);
+        *l1 = x <= 0 ? 1.0f : x >= 1.0f ? 0 : c;
+        *r1 = x <= 0 ? 0 : x >= 1.0f ? 1.0f : s;
     }
     M->xf = x1;
     M->gl = *l1;
@@ -542,12 +662,13 @@ static void part(float *l, float *r, int n, int cont)
     M->tq = tq;
     M->playing = (unsigned char)play;
     requests(t);
-    if (play)
+    M->want = DJ_LOOP_LEN > 0 || M->state != ST_IDLE;   /* mx_stream_poll borrows / gives back */
+    if (play && ready())                     /* no ring (not borrowed): never anything to play */
         held(t);
 
     /* record the project, before anything of ours */
     M->rec = 0;
-    if (M->ring && play) {
+    if (ready() && play) {
         if (M->state == ST_IDLE)
             M->rec = 1;
         else if (M->wblk < M->rec_stop || M->state == ST_ARMED)
@@ -570,15 +691,18 @@ static void part(float *l, float *r, int n, int cont)
         filter(0, r, 1, n);
     }
     if (loop && M->fon[1]) {
-        filter(1, M->lp, 0, n);
-        filter(1, M->rp, 1, n);
+        filter(1, scratch(0), 0, n);
+        filter(1, scratch(1), 1, n);
     }
     dl = (l1 - l0) / n;
     dr = (r1 - r0) / n;
-    for (i = 0; i < n; i++) {
-        float gl = l0 + dl * (i + 1), gr = r0 + dr * (i + 1);
-        l[i] = l[i] * gr + (loop ? M->lp[i] * gl : 0);
-        r[i] = r[i] * gr + (loop ? M->rp[i] * gl : 0);
+    {
+        const float *lp = loop ? scratch(0) : 0, *rp = loop ? scratch(1) : 0;
+        for (i = 0; i < n; i++) {
+            float gl = l0 + dl * (i + 1), gr = r0 + dr * (i + 1);
+            l[i] = l[i] * gr + (loop ? lp[i] * gl : 0);
+            r[i] = r[i] * gr + (loop ? rp[i] * gl : 0);
+        }
     }
 }
 
@@ -621,8 +745,28 @@ void mx_bus_tap(void *bus, float **l, float **r)
 int mx_state(void) { return live() ? M->state : 0; }
 int mx_len(void) { return live() ? M->len : 0; }
 int mx_xf(void) { return live() ? M->xf_now : 1000; }
+/* The crossfader's gains now, per mille (for the strip's level bars). */
+void mx_gains(int *l, int *r)
+{
+    *l = live() ? (int)(M->gl * 1000.0f + 0.5f) : 0;
+    *r = live() ? (int)(M->gr * 1000.0f + 0.5f) : 1000;
+}
+
+int mx_xf_target(void) { return live() ? M->xf_ui : 1000; }   /* where the UI last put it */
 int mx_filter(unsigned side) { return live() && side < 2 ? M->filt[side] : 0; }
-int mx_ready(void) { return live() && M->ring; }
+/* The ring is borrowed and in use (for the strip). */
+int mx_have(void) { return live() && ready(); }
+
+/* BACK may capture the DJ loop (a, len): the ring has recorded the whole pass playing now. */
+int mx_ready(long long a, int len)
+{
+    long long now, pass;
+    if (!live() || !ready() || len <= 0 || M->wblk - M->vblk < 2)
+        return 0;
+    now = M->tq >> TQ_SHIFT;
+    pass = now < a ? a : a + floor_div(now - a, len) * len;
+    return (anc_of(M->vblk) >> TQ_SHIFT) <= pass;
+}
 
 /* BACK with the DJ loop on: the DJ loop (a, len) was switched off by loop_seq off_seq. */
 void mx_capture(long long a, int len, unsigned off_seq)

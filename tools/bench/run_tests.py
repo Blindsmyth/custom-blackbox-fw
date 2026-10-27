@@ -2188,7 +2188,8 @@ def t_seqrec_templates(bench, res):
     adds = []
     b.stub(0x08093EF6, lambda board: adds.append((board.arg(1), board.arg(2))))
     b.call(bench.sym["seqrec_global_tpl"], 0x30040000, 0x19B, 0)
-    res.check(adds == [(0x19B, 0), (SR_DEF, 4), (0x1A0, 2), (0x1A1, 1)],
+    mixer = [(0x1D8, 0)] if "mx_global_tpl" in bench.sym else []    # 3.1.T: Tools -> Clock BPM
+    res.check(adds == [(0x19B, 0), (SR_DEF, 4), (0x1A0, 2), (0x1A1, 1)] + mixer,
               f"global template adds Seq Default = 1 bar, Loop BPM 80-160, Dbl Copy On {adds}")
     for glob, want in ((4, 4), (0, 0), (6, 6), (99, 4)):
         adds.clear()
@@ -5861,7 +5862,12 @@ def t_dj_ui(bench, res):
     b.call(event, DJ_SONG_W, ev(0x32, 1, -400 * 20))
     res.check(b.u8(DJ_UI + 6) == 0, "jump size stops at 1/4 bar")
     b.call(event, DJ_SONG_W, ev(0x32, 0, 400))
-    res.check(("event", 0x32) in stock, "top-left knob stays BPM")
+    if "mx_block" in bench.sym:              # 3.1.T mixer: the project filter while the row is shown
+        res.check(("event", 0x32) not in stock and b.u16(0x38007A60 + 0x2C) == 50,
+                  "top-left knob: the loop filter, not BPM")
+        b.call(sym["mx_set_filter"], 1, 0)
+    else:
+        res.check(("event", 0x32) in stock, "top-left knob stays BPM")
     b.call(tick, DJ_SONG_W, 0, 0, 0)
     texts = [b.cstr(DJ_UI + 0x20 + 16 * i) for i in range(3)]
     res.check(texts == ["<< 1/4", "1/4 >>", "Loop 4"], f"labels follow {texts}")
@@ -5884,6 +5890,341 @@ def t_dj_ui(bench, res):
     res.check(b.u8(DJ_UI + 4) == 0 and b.u8(DJ_BTN + 0x30) == 1, "leaving Song hides the row")
     for a in (0x080C3540, 0x080C3860, 0x080C26FC):
         b.unstub(a)
+
+
+# ---- Song DJ mixer (3.1.T, firmware/patches/3.1.9-song-dj/mixer.c, docs/song-dj.md "Mixer") ----
+
+MX = 0x38007A60                 # MxState
+MX_SE = 0xC0900000              # fake sequencer engine: tempo +0x18, ticks +0x30, playing +0x38
+MX_RING = 0xC1000000            # the fake sample cache's buffers (64 KB per entry)
+MX_CACHE = 0x2400A9C0           # sample manager: 615 entries of 0x1C
+MX_BUF = 0xC0980000             # one block, L then R
+MX_FR = 70000                   # test signal: a saw this many frames long (not a loop multiple)
+
+
+class _MxClock:
+    """The engine's transport for the mixer: frames at 48 kHz, ticks (960 per beat) at a BPM."""
+
+    def __init__(self, b, bpm=120.0):
+        self.b, self.frame, self.tick, self.bpm = b, 0, 0.0, bpm
+        b.w32(0x2400A9C0 + 0x9A74, MX_SE)
+        b.mu.mem_write(MX_SE, b"\x00" * 0x40)
+        self.set_bpm(bpm)
+        b.mu.mem_write(MX_SE + 0x38, b"\x01")
+
+    def set_bpm(self, bpm):
+        self.bpm = bpm
+        self.b.mu.mem_write(MX_SE + 0x18, struct.pack("<f", bpm))
+
+    def tpf(self):
+        return self.bpm * 960 / 60 / 48000
+
+    def block(self, sym, left=None, right=0.25):
+        """One master block through mx_block: returns (L, R) out. The project is the saw on L
+        (by frame) and a constant on R."""
+        b = self.b
+        b.w32(MX_SE + 0x30, int(self.tick))
+        b.w32(MX_SE + 0x34, 0)
+        ls = [((self.frame + i) % MX_FR) / MX_FR - 0.5 if left is None else left(i) for i in range(128)]
+        b.mu.mem_write(MX_BUF, struct.pack("<128f", *ls))
+        b.mu.mem_write(MX_BUF + 512, struct.pack("<128f", *([right] * 128)))
+        b.call(sym["mx_block"], MX_BUF, MX_BUF + 512, 128)
+        self.frame += 128
+        self.tick += 128 * self.tpf()
+        return (struct.unpack("<128f", bytes(b.mu.mem_read(MX_BUF, 512))),
+                struct.unpack("<128f", bytes(b.mu.mem_read(MX_BUF + 512, 512))))
+
+
+def _mx_setup(bench):
+    """A stock-like sample cache: 160 free entries with buffers, the rest loaded and old."""
+    b = bench.b
+    b.mu.mem_write(0xE000ED88, struct.pack("<I", 0xF << 20))    # FPU on
+    b.call(bench.sym["deck_init"])
+    for i in range(0x267):
+        e = MX_CACHE + i * 0x1C
+        free = i < 160
+        # stock's fields run +0x04..+0x1F (they overlap the next entry's first word)
+        b.mu.mem_write(e + 4, struct.pack("<IIIIIIHBB", MX_RING + i * 0x10000 if free else 0,
+                                          MX_RING + i * 0x10000 + 0x8000 if free else 0, 0, 0, 0,
+                                          0xFFFF, 0xFFFF, 0, 0 if free else 1))
+    return _MxClock(b)
+
+
+def _mx_cache_state(b, i):
+    return b.u8(MX_CACHE + i * 0x1C + 0x1F)
+
+
+def _mx_borrow(bench, clk, loop_len=3840, loop_a=0):
+    """The DJ loop on: the audio task wants the ring, pcmStreamer's poll borrows it."""
+    b = bench.b
+    b.w32(DJ + 0x3C, loop_len)
+    b.w32(DJ + 0x40, loop_a)
+    b.w32(DJ + 0x44, 0)
+    clk.block(bench.sym)
+    b.call(bench.sym["mx_stream_poll"])
+
+
+def _mx_s64(b, a):
+    v = b.u32(a) | (b.u32(a + 4) << 32)
+    return v - (1 << 64) if v >> 63 else v
+
+
+def t_mx_loop(bench, res):
+    """Capture, play, grow, load, repitch and clear: the loop is the DJ loop's last pass, read by
+    transport tick from the ring; the crossfader goes left at W and right again on Loop off."""
+    b = bench.b
+    sym = bench.sym
+    clk = _mx_setup(bench)
+    res.check(b.u32(MX) == 0x31584D53 and b.u8(MX + 0x4C) == 0xE8, "mx_init: live, crossfader right")
+    clk.block(sym)
+    res.check(b.u32(MX + 0x50) == 0 and b.u32(MX + 0x58) == 0, "no DJ loop: no ring, nothing recorded")
+    _mx_borrow(bench, clk, 3840, 7680)
+    borrowed = [i for i in range(0x267) if _mx_cache_state(b, i) == 3]
+    res.check(b.u32(MX + 0x50) == 2 and len(borrowed) == 131 and borrowed == list(range(131)),
+              f"Loop on: 131 cache entries borrowed, reserved (state 3) {len(borrowed)}")
+    w0 = b.u32(MX + 0x58)
+    for _ in range(1499):                       # 4 s recorded
+        lo, ro = clk.block(sym)
+    res.check(b.u32(MX + 0x58) - w0 == 1499, f"ring records: {b.u32(MX + 0x58) - w0} blocks")
+    res.check(abs(ro[5] - 0.25) < 1e-6, "no loop: the project passes untouched")
+    w0 = b.u32(MX + 0x58)                       # the unit's audio task: 256-frame blocks
+    b.w32(MX_SE + 0x30, int(clk.tick))
+    b.mu.mem_write(0xC09A0000, struct.pack("<256f", *([0.1] * 256)))
+    b.mu.mem_write(0xC09A1000, struct.pack("<256f", *([0.2] * 256)))
+    b.call(sym["mx_block"], 0xC09A0000, 0xC09A1000, 256)
+    clk.frame += 256
+    clk.tick += 256 * clk.tpf()
+    res.check(b.u32(MX + 0x58) == w0 + 2, f"a 256-frame block records as two ({b.u32(MX + 0x58) - w0})")
+    ok, idx = b.call(sym["mx_ready"], 7680, 0, 3840), None
+    res.check(ok == 1, "the pass playing now is recorded: BACK may capture")
+    # the DJ loop: 1 bar from bar 2 (7680), switched off for the capture now
+    t = int(clk.tick)
+    b.w32(DJ + 0x1C, 2)
+    b.w32(DJ + 0x38, 2)
+    b.w32(DJ + 0x650, t & 0xFFFFFFFF)
+    b.w32(DJ + 0x654, t >> 32)
+    b.call(sym["mx_capture"], 7680, 0, 3840, 2)
+    clk.block(sym)
+    w = _mx_s64(b, MX + 0x78)
+    exp_w = 7680 + max(1, -(-(t - 7680) // 3840)) * 3840
+    res.check(b.u8(MX + 0x48) == 1 and w == exp_w, f"armed: W {w} = the DJ loop's first end after the off ({exp_w})")
+    while clk.tick < w + 3 * 128 * clk.tpf():
+        lo, ro = clk.block(sym)
+    res.check(b.u8(MX + 0x48) == 2 and b.u16(MX + 0x4C) == 0, "held at W, crossfader fully left")
+    a = w - 3840
+
+    def expect(tick):
+        d = (tick - a) % b.u32(MX + 0x68)
+        fr = (a + d) / clk_tpf_rec
+        return (fr % MX_FR) / MX_FR - 0.5
+    clk_tpf_rec = clk.tpf()
+    errs = []
+    for _ in range(40):
+        t0 = clk.tick
+        lo, ro = clk.block(sym)
+        for i in (3, 64, 120):
+            e = expect(t0 + i * clk.tpf())
+            if 0.02 < e + 0.5 < 0.98:            # away from the saw's edge
+                errs.append(abs(lo[i] - e))
+    res.check(errs and max(errs) < 0.004, f"plays the pass [W - 1 bar, W) by tick (max err {max(errs or [9]):.4f})")
+    res.check(abs(ro[64] - 0.25) < 0.002, f"loop only on R {ro[64]:.4f}")
+    b.call(sym["mx_size"], 7680)
+    clk.block(sym)
+    early = b.u32(MX + 0x68)
+    while clk.tick < a + 7680 + 8 * 128 * clk.tpf():
+        clk.block(sym)
+    res.check(early == 3840 and b.u32(MX + 0x68) == 7680, f"2 bars waits for the recording ({early} then {b.u32(MX + 0x68)}, "
+              f"pend {b.u32(MX + 0x6C)} wblk {b.u32(MX + 0x58)} stop {b.u32(MX + 0x64)} a {a} t {clk.tick:.0f})")
+    errs = []
+    for _ in range(40):
+        t0 = clk.tick
+        lo, ro = clk.block(sym)
+        e = expect(t0 + 64 * clk.tpf())
+        if 0.02 < e + 0.5 < 0.98:
+            errs.append(abs(lo[64] - e))
+    res.check(errs and max(errs) < 0.004, f"2 bars: the bar that followed (max err {max(errs or [9]):.4f})")
+    b.stub(0x0804C764, lambda bd_: 0)
+    b.stub(0x08093E9C, lambda bd_: 1)
+    b.call(sym["mx_load_begin"], 0x2400A9C0)
+    clk.block(sym)
+    stop = b.u32(MX + 0x64)
+    for _ in range(50):
+        clk.block(sym)
+    res.check(b.u32(MX + 0x58) == stop and b.u8(MX + 0x2E) == 1, "a preset load stops the recording, BPM Global read")
+    clk.set_bpm(140.0)
+    for _ in range(4):
+        clk.block(sym)
+    errs = []
+    for _ in range(60):
+        t0 = clk.tick
+        lo, ro = clk.block(sym)
+        e = expect(t0 + 64 * clk.tpf())
+        if 0.02 < e + 0.5 < 0.98:
+            errs.append(abs(lo[64] - e))
+    res.check(errs and max(errs) < 0.006, f"140 BPM: repitched, still on the grid (max err {max(errs or [9]):.4f})")
+    b.call(sym["mx_size"], 1920)
+    clk.block(sym)
+    res.check(b.u32(MX + 0x68) == 1920, "half a bar: at once")
+    b.call(sym["mx_set_xf"], 500)
+    clk.block(sym)
+    lo, ro = clk.block(sym)
+    res.check(abs(ro[64] - 0.25 * 2 * 0.70710678) < 0.003, f"crossfader centre: equal power ({ro[64]:.4f})")
+    clk.block(sym)
+    b.call(sym["mx_set_xf"], 120)
+    clk.block(sym)
+    lo, ro = clk.block(sym)
+    res.check(abs(ro[64] - 0.25) < 0.002 and b.u32(MX + 0x9C + 4) == 0, f"12%: still in the dead zone, project silent ({ro[64]:.4f})")
+    b.call(sym["mx_set_xf"], 900)
+    clk.block(sym)
+    lo, ro = clk.block(sym)
+    res.check(b.u32(MX + 0x9C) == 0, "90%: the loop fully down")
+    b.call(sym["mx_clear"])
+    clk.block(sym)
+    lo, ro = clk.block(sym)
+    res.check(b.u8(MX + 0x48) == 0 and b.u16(MX + 0x4C) == 1000 and abs(ro[64] - 0.25) < 1e-6,
+              "Loop off: no loop, crossfader right, the project alone")
+    w0 = b.u32(MX + 0x58)
+    clk.block(sym)
+    res.check(b.u32(MX + 0x58) == w0 + 1, "and the ring records again (the DJ loop is still on)")
+    b.w32(DJ + 0x3C, 0)                         # DJ loop off too: the ring goes back
+    clk.block(sym)
+    b.call(sym["mx_stream_poll"])
+    res.check(b.u32(MX + 0x50) == 3, "draining once nothing wants it")
+    for _ in range(3):
+        clk.block(sym)
+    b.call(sym["mx_stream_poll"])
+    states = {_mx_cache_state(b, i) for i in range(131)}
+    res.check(b.u32(MX + 0x50) == 0 and states == {0}
+              and all(b.u32(MX_CACHE + i * 0x1C + 0x18) == 0xFFFF for i in range(131)),
+              f"given back: the 131 entries free again {states}")
+
+
+def t_mx_noring(bench, res):
+    """Without a ring (not taken), a playing transport only passes the project through: nothing
+    reads the ring's tables (a null read faulted on the unit when PLAY was pressed)."""
+    b = bench.b
+    sym = bench.sym
+    clk = _mx_setup(bench)
+    b.w32(DJ + 0x3C, 3840)                      # wanted, but pcmStreamer has not borrowed it yet
+    for _ in range(20):
+        lo, ro = clk.block(sym)
+    res.check(abs(ro[64] - 0.25) < 1e-6 and b.u32(MX + 0x58) == 0 and b.u8(MX + 0x202) == 1,
+              "playing, ring wanted but not borrowed: project untouched, nothing recorded")
+    b.call(sym["mx_capture"], 0, 0, 3840, 0)
+    for _ in range(5):
+        lo, ro = clk.block(sym)
+    res.check(b.u8(MX + 0x48) == 0, "a capture without a ring does nothing")
+
+
+def t_mx_filters(bench, res):
+    """The DJ filters: low-pass left of centre, high-pass right of it, off at the centre."""
+    b = bench.b
+    sym = bench.sym
+    clk = _mx_setup(bench)
+    alt = lambda i: 0.5 if i % 2 == 0 else -0.5
+    b.call(sym["mx_set_filter"], 0, -950)
+    for _ in range(200):
+        lo, ro = clk.block(sym, left=alt)
+    rms = (sum(x * x for x in lo) / 128) ** 0.5
+    res.check(rms < 0.02, f"LP: Nyquist taken out (rms {rms:.4f})")
+    res.check(abs(ro[100] - 0.25) < 0.01, f"LP: DC through ({ro[100]:.4f})")
+    b.call(sym["mx_set_filter"], 0, 950)
+    for _ in range(60):
+        lo, ro = clk.block(sym, left=alt)
+    res.check(abs(ro[100]) < 0.01, f"HP: DC taken out ({ro[100]:.4f})")
+    res.check(abs(abs(lo[100]) - 0.5) < 0.1, f"HP: Nyquist through ({lo[100]:.4f})")
+    b.call(sym["mx_set_filter"], 0, 0)
+    for _ in range(20):
+        lo, ro = clk.block(sym, left=alt)
+    res.check(lo[10] == 0.5 and ro[10] == 0.25, "centre: off, untouched")
+
+
+def t_mx_bpm(bench, res):
+    """BPM Global: a loaded preset's BPM is kept (session bag set to the playing tempo), Swing goes
+    through; Project: both go through."""
+    b = bench.b
+    sym = bench.sym
+    _mx_setup(bench)
+    sent, set_ = [], []
+    b.stub(0x0804C59C, lambda bd_: sent.append((bd_.arg(2), bd_.arg(3))) or 0)
+    b.stub(0x08093ECC, lambda bd_: set_.append((bd_.arg(0), bd_.arg(1), bd_.arg(2))) or 0)
+    send = sym["mx_bpm_send"]
+    b.call(send, 0x2400A9C0, 0x10400, 0x84, 140, 0, 0)
+    res.check(sent == [(0x84, 140)] and set_ == [], "Project: the preset's BPM goes to the engine")
+    b.mu.mem_write(MX + 0x2E, b"\x01")
+    sent.clear()
+    b.call(send, 0x2400A9C0, 0x10400, 0x84, 140, 0, 0)
+    b.call(send, 0x2400A9C0, 0x10400, 0xD7, 60, 0, 0)
+    res.check(sent == [(0xD7, 60)], f"Global: BPM kept, Swing sent {sent}")
+    res.check(set_ == [(0x240230C0, 0x84, 120)], f"... and the session bag shows the playing 120 {set_}")
+
+
+def t_mx_ui(bench, res):
+    """Song screen with the row: BACK captures (DJ loop off, capture posted), top knobs set the
+    filters, the loop knob sizes the audio loop, Loop clears it."""
+    b = bench.b
+    sym = bench.sym
+    _mx_setup(bench)
+    b.stub(0x080C3860, lambda bd_: 0)
+    b.stub(0x080C3540, lambda bd_: 1)
+
+    def ev(kind, a=0, c=0):
+        b.mu.mem_write(DJ_EV, b"\x00" * 0x20)
+        b.mu.mem_write(DJ_EV, kind.to_bytes(2, "little"))
+        b.w32(DJ_EV + 0xC, a)
+        b.mu.mem_write(DJ_EV + 0x10, (c & 0xFFFF).to_bytes(2, "little"))
+        return DJ_EV
+    event, child = sym["dj_song_event"], sym["dj_song_child"]
+    clk = _MxClock(b)
+    _mx_borrow(bench, clk, 3840, 11520)
+    for _ in range(20):
+        clk.block(sym)
+    b.mu.mem_write(DJ_UI + 5, b"\x01")           # shown
+    b.call(child, DJ_SONG_W, ev(1, ID_DJ + 2))    # Loop on
+    b.w32(DJ + 0x38, b.u32(DJ + 0x1C))            # armed by the audio task
+    b.w32(DJ + 0x3C, 3840)
+    b.w32(DJ + 0x40, 11520)
+    seq = b.u32(DJ + 0x1C)
+    b.mu.mem_write(DJ_APP, b"\x00" * 0x9000)
+    b.mu.mem_write(DJ_APP + 0x8CA4, bytes([2]))
+    res.check(b.call(sym["dj_back_key"], DJ_APP) == 1 and b.u32(MX + 0x04) == 0, "BACK off the Song screen: stock's")
+    b.mu.mem_write(DJ_APP + 0x8CA4, bytes([0x2D]))
+    b.call(sym["mx_set_filter"], 0, 300)
+    b.call(sym["mx_set_filter"], 1, -500)
+    took = b.call(sym["dj_back_key"], DJ_APP)
+    res.check(b.u16(MX + 0x2A) == 0 and b.u16(MX + 0x2C) == 0, "a capture resets both filters")
+    res.check(took == 0 and b.u32(MX + 0x04) == 1 and b.u32(MX + 0x0C) == 3840 and b.u32(MX + 0x10) == 11520,
+              "hardware BACK (App_HandleInput type 7) with Loop on: taken, capture of the DJ loop posted")
+    res.check(b.u8(DJ_UI + 8) == 0 and b.u32(DJ + 0x20) == 0 and b.u32(DJ + 0x1C) == seq + 1
+              and b.u32(MX + 0x08) == seq + 1, "... and the DJ loop switched off by that request")
+    b.mu.mem_write(MX + 0x48, b"\x02")
+    b.call(event, DJ_SONG_W, ev(0x32, 0, 80))
+    b.call(event, DJ_SONG_W, ev(0x32, 2, -800))
+    res.check(b.u16(MX + 0x2C) == 10 and b.u16(MX + 0x2A) == (-100) & 0xFFFF,
+              "top knobs: loop filter left +10, project filter right -100")
+    b.mu.mem_write(MX + 0x28, b"\x00\x00")
+    xs = b.u32(MX + 0x24)
+    b.call(event, DJ_SONG_W, ev(0x32, 1, 800))
+    res.check(b.u16(MX + 0x28) == 100 and b.u32(MX + 0x24) == xs + 1 and b.u8(DJ_UI + 6) == 6,
+              "audio loop playing: bottom-left knob moves the crossfader, not the jump size")
+    b.w32(MX + 0x68, 3840)
+    b.call(event, DJ_SONG_W, ev(0x32, 3, 400))
+    res.check(b.u32(MX + 0x1C) == 1 and b.u32(MX + 0x20) == 7680, "loop knob: the audio loop to 2 bars")
+    b.call(child, DJ_SONG_W, ev(1, ID_DJ + 2))
+    res.check(b.u32(MX + 0x18) == 1 and b.u8(DJ_UI + 8) == 0, "Loop: the audio loop off, the DJ loop stays off")
+    res.check(b.u16(MX + 0x2A) == 0xFF9C and b.u16(MX + 0x2C) == 10, "filters as set before")
+    posted = []
+    b.stub(0x08093E9C, lambda bd_: 4)                       # four scenes
+    b.stub(0x080AED14, lambda bd_: posted.append((bd_.u16(bd_.arg(1)), bd_.u32(bd_.arg(1) + 0xC))) or 0)
+    b.w32(0x24020088 + 0x20, 1)
+    b.mu.mem_write(DJ_SONG_W + 0x12194, b"\x00")
+    r1 = b.call(child, DJ_SONG_W, ev(1, 0x115))
+    b.call(child, DJ_SONG_W, ev(2, 0x115))
+    b.call(child, DJ_SONG_W, ev(2, 0x27))
+    b.w32(0x24020088 + 0x20, 3)
+    b.call(child, DJ_SONG_W, ev(2, 0x115))
+    res.check(r1 == 0 and posted == [(0x107, 2), (0x107, 0)],
+              f"Loop1 = Scene v, Edit = Scene ^ (a row press for the next / previous scene), none past the last {posted}")
 
 
 def t_dj_gui(bench, res):
@@ -6773,7 +7114,7 @@ def t_deck_memory(bench, res):
     b = bench.b
     sym = bench.sym
     writes = []
-    dj = (0x38007400, 0x38007A58) if "dj_seq_step" in sym else (0, 0)
+    dj = (0x38007400, 0x38008000 if "mx_block" in sym else 0x38007A58) if "dj_seq_step" in sym else (0, 0)
 
     song = "song_step" in sym                  # 3.1.T Song cues: their own block (SG_BASE)
 
@@ -7480,6 +7821,14 @@ def main():
             ("Song DJ: Autoloop as Mixxx (closest beat, start kept, halve jumps in)", t_dj_loop_mixxx),
             ("Song DJ: SONG toggles the row, buttons, knobs, labels, blink", t_dj_ui),
             ("Song DJ: real GUI, SONG on the Song screen", t_dj_gui),
+        ]
+    if "mx_block" in sym:
+        cases += [
+            ("Song DJ mixer: capture, play, grow, load, repitch, clear", t_mx_loop),
+            ("Song DJ mixer: no ring, playing", t_mx_noring),
+            ("Song DJ mixer: DJ filters", t_mx_filters),
+            ("Song DJ mixer: BPM Global keeps the tempo on load", t_mx_bpm),
+            ("Song DJ mixer: BACK, knobs, Loop on the Song screen", t_mx_ui),
         ]
     if "deck_knob_turn" in sym:
         kind = kind + "+editor"

@@ -76,16 +76,16 @@ if REPITCH:
     OUT, OUT_B2, SYMS = (OUT.parent / "repitch" / OUT.name, OUT_B2.parent / "repitch" / OUT_B2.name,
                          SYMS.parent / "repitch" / SYMS.name)
     OUT.parent.mkdir(exist_ok=True)
-# --mx-safe (with --lineup): the Song DJ mixer without its boot-time parts, to find a boot hang on
-# the unit: no SDRAM ring at boot (mx_boot) and no audio taps (mx_comp_tap, mx_bus_tap). The BPM
-# setting and the Song screen stay. Images go to lineup/mx-safe/.
+# --mx-safe (with --lineup): the Song DJ mixer without its audio taps (mx_comp_tap, mx_bus_tap), for
+# finding faults on the unit. The BPM setting and the Song screen stay. Images go to lineup/mx-safe/.
 MX_SAFE = LINEUP and "--mx-safe" in sys.argv
 MX_TAPS = {"mx_comp_tap", "mx_bus_tap"}
 if MX_SAFE:
-    BUILD = BUNGEE / "build-lineup-mxsafe"
+    _sub = "mx-safe"
+    BUILD = BUNGEE / f"build-lineup-{_sub}"
     ELF = BUILD / "bungee.elf"
-    OUT, OUT_B2, SYMS = (OUT.parent / "mx-safe" / OUT.name, OUT_B2.parent / "mx-safe" / OUT_B2.name,
-                         SYMS.parent / "mx-safe" / SYMS.name)
+    OUT, OUT_B2, SYMS = (OUT.parent / _sub / OUT.name, OUT_B2.parent / _sub / OUT_B2.name,
+                         SYMS.parent / _sub / SYMS.name)
     OUT.parent.mkdir(exist_ok=True)
 LETTER = "T" if LINEUP else "B"
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
@@ -138,7 +138,6 @@ def compile_all(rb_id):
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
          *(["-DWITH_REPITCH"] if REPITCH else []),
          *(["-DWITH_LINEUP", "-DWITH_DECK", "-DWITH_SONG", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-DWITH_SONG_DJ"] if LINEUP else []),
-         *(["-DMX_SAFE"] if MX_SAFE else []),
          "-I", MIX_DIR, "-I", mix.BASE_DIR, "-I", DECK_DIR, "-I", DJ_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \

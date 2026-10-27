@@ -145,6 +145,10 @@ seqrec_global_tpl:
     movw    r1, #SR_DBL
     movs    r2, #1                  @ On
     call    PARAM_ADD
+.ifdef WARP_SONG_DJ
+    mov     r0, r4                  @ 3.1.T: Tools -> Clock BPM Project / Global (mixer.c)
+    bl      mx_global_tpl
+.endif
     pop     {r4, pc}
 
 @ r0 = the Rec Len a new or reset sequence gets: Custom (0) or 1 bar (4), from 0x19E.

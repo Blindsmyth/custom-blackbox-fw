@@ -15,9 +15,6 @@
 #endif
 #ifdef WITH_SONG_DJ
 .set WARP_SONG_DJ, 1                    @ 3.1.T: Song DJ mixer (mixer.c): BPM setting
-#ifndef MX_SAFE
-.set WARP_SONG_DJ_RING, 1               @ the audio loop's SDRAM ring at boot (left out by --mx-safe)
-#endif
 #endif
 #ifdef WITH_SONG
 .set WARP_SONG, 1                       @ 3.1.T: Song cues (deck.c song_*, deck.S hook_song_step, hook_pad_start)
@@ -41,6 +38,9 @@
 b2load_thunk:
     push    {r0, r1, r2, r3, r12, lr}
     bl      rb_load_poll
+#ifdef WITH_SONG_DJ
+    bl      mx_stream_poll          @ 3.1.T: borrow / give back the mixer's sample-cache entries
+#endif
     pop     {r0, r1, r2, r3, r12, lr}
     ldr     r12, =0x08092F5D
     bx      r12
