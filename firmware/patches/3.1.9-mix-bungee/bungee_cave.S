@@ -13,6 +13,12 @@
 .set WARP_DECK, 1                       @ 3.1.T: Clip Deck (../3.1.9-clip-deck deck.S, deck.c)
 .set ID_DECK, DECK_ID_BASE
 #endif
+#ifdef WITH_SONG_DJ
+.set WARP_SONG_DJ, 1                    @ 3.1.T: Song DJ mixer (mixer.c): BPM setting
+#ifndef MX_SAFE
+.set WARP_SONG_DJ_RING, 1               @ the audio loop's SDRAM ring at boot (left out by --mx-safe)
+#endif
+#endif
 #ifdef WITH_SONG
 .set WARP_SONG, 1                       @ 3.1.T: Song cues (deck.c song_*, deck.S hook_song_step, hook_pad_start)
 #endif

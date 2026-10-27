@@ -76,6 +76,17 @@ if REPITCH:
     OUT, OUT_B2, SYMS = (OUT.parent / "repitch" / OUT.name, OUT_B2.parent / "repitch" / OUT_B2.name,
                          SYMS.parent / "repitch" / SYMS.name)
     OUT.parent.mkdir(exist_ok=True)
+# --mx-safe (with --lineup): the Song DJ mixer without its boot-time parts, to find a boot hang on
+# the unit: no SDRAM ring at boot (mx_boot) and no audio taps (mx_comp_tap, mx_bus_tap). The BPM
+# setting and the Song screen stay. Images go to lineup/mx-safe/.
+MX_SAFE = LINEUP and "--mx-safe" in sys.argv
+MX_TAPS = {"mx_comp_tap", "mx_bus_tap"}
+if MX_SAFE:
+    BUILD = BUNGEE / "build-lineup-mxsafe"
+    ELF = BUILD / "bungee.elf"
+    OUT, OUT_B2, SYMS = (OUT.parent / "mx-safe" / OUT.name, OUT_B2.parent / "mx-safe" / OUT_B2.name,
+                         SYMS.parent / "mx-safe" / SYMS.name)
+    OUT.parent.mkdir(exist_ok=True)
 LETTER = "T" if LINEUP else "B"
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
@@ -127,10 +138,11 @@ def compile_all(rb_id):
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
          *(["-DWITH_REPITCH"] if REPITCH else []),
          *(["-DWITH_LINEUP", "-DWITH_DECK", "-DWITH_SONG", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-DWITH_SONG_DJ"] if LINEUP else []),
+         *(["-DMX_SAFE"] if MX_SAFE else []),
          "-I", MIX_DIR, "-I", mix.BASE_DIR, "-I", DECK_DIR, "-I", DJ_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \
-        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c"] if LINEUP else [])
+        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c"] if LINEUP else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
         run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DSONG_CUES", "-DWITH_SONG_DJ"] if LINEUP else []),
@@ -281,8 +293,11 @@ def add_rubber_sites(stock):
         dj = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(dj)
         sites, vtable = dj.parts(stock, stock_bl)
+        if MX_SAFE:
+            sites = [s for s in sites if s[1] not in MX_TAPS]
         mix.SITES.extend(sites)
         mix.VTABLE.extend(vtable)
+        mix.BYTES.extend(dj.BYTES)
         mix.SITES.extend(SONG_SITES)
         mix.VTABLE.extend(SONG_VTABLE)
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves

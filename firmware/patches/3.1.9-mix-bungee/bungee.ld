@@ -27,6 +27,7 @@ SECTIONS {
     KEEP(*diag.o(.text .text.* .rodata .rodata.*))
     KEEP(*deck.o(.text .text.* .rodata .rodata.*))   /* 3.1.T: Clip Deck */
     KEEP(*dj.o(.text .text.* .rodata .rodata.*))     /* 3.1.T: Song DJ row */
+    KEEP(*mixer.o(.text .text.* .rodata .rodata.*))  /* 3.1.T: Song DJ mixer */
   } > CAVE
 
   .b2head : { KEEP(*(.b2head)) } > BANK2

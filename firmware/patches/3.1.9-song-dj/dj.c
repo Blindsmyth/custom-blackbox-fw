@@ -15,6 +15,10 @@
  * moves with them, so the scene ends correspondingly earlier or later, and a jump that would leave
  * the scene (its end, or its start going back) is not taken: the scene it would have reached blinks.
  * The loop is cut on the scene's grid and never crosses the scene's end.
+ *
+ * The mixer (mixer.c) adds the audio loop: BACK with Loop on captures it, and while it plays the Loop
+ * button and the loop knob act on it. The top knobs are the project and loop filters while the row is
+ * shown, and a crossfader strip sits above the row.
  */
 
 #define DJ_BASE      0x38007400u   /* SRAM4: past RbVoice + diag (0x38007000-0x38007148), below */
@@ -154,6 +158,41 @@ extern void song_event2(void *song, void *ev);
 #define S_SCENE     0x12180    /* Song: selected scene */
 #define S_MODE      0x12194    /* Song: byte, 0 list, 1 Edit popup, 2 / 3 grids */
 #define W_HIDDEN    0x30
+#define S_BTN_BPM   0x1049C    /* Song: top-left frame button (BPM) */
+#define S_BTN_SWING 0x1053C    /* Song: top-right frame button (Swing) */
+#define BTN_LABEL   0x34       /* button: its label widget; the text is at +0x65 */
+#define EV_BACK     0x7F       /* BACK on the screen */
+#define EV_REFRESH  0x66       /* Song: read BPM / Swing again and label them */
+#define FILT_STEP   8          /* encoder counts per filter step of 1 (of -1000..1000) */
+
+/* The crossfader strip and the top labels: SRAM4 0x38006F00, free on 3.1.T between Song cues'
+ * SgState (ends 0x38006C2C) and RbVoice (0x38007000). */
+#define XF_BASE     0x38006F00u
+#define XF_END      0x38007000u
+#define XF_ID       0x1D3
+#define XF_CELLS    20
+typedef struct {
+    unsigned btn[0x28];        /* +0x00 a stock button with our vtable (xf_vt) */
+    char bar[28];              /* +0xA0 "L ------|------ P" */
+    char top[2][16];           /* +0xBC top-left / top-right labels while the row is shown */
+    int facc[2];               /* +0xDC encoder counts not yet a filter step */
+    unsigned char tops;        /* +0xE4 top labels are ours */
+    unsigned char rsv[3];
+} DjXf;
+typedef char xf_fits[(XF_BASE + sizeof(DjXf) <= XF_END) ? 1 : -1];
+#define X ((DjXf *)XF_BASE)
+
+void mx_init(void);
+int mx_state(void);
+int mx_len(void);
+int mx_xf(void);
+int mx_filter(unsigned side);
+int mx_ready(void);
+void mx_capture(long long a, int len, unsigned off_seq);
+void mx_clear(void);
+void mx_size(int ticks);
+void mx_set_xf(int v);
+void mx_set_filter(unsigned side, int v);
 
 static unsigned u8(const void *p, unsigned off) { return ((const unsigned char *)p)[off]; }
 static unsigned u16(const void *p, unsigned off) { return *(const unsigned short *)((const char *)p + off); }
@@ -179,6 +218,13 @@ static const char *const loop_n[LOOP_SIZES] = {n_16, n_8, n_4, n_2, n_1, n_2b, n
 static const char s_back[] = "<< ";
 static const char s_fwd[] = " >>";
 static const char s_loop[] = "Loop ";
+static const char s_audio[] = "Audio ";
+static const char s_capture[] = "BACK: audio loop";
+static const char s_lp[] = "LP ";
+static const char s_hp[] = "HP ";
+static const char s_off_f[] = "Off";
+static const char s_proj[] = "P ";
+static const char s_loopside[] = "L "; 
 
 static int live(void)
 {
@@ -198,6 +244,9 @@ void dj_init(void)
     D->ui.blink = NO_SCENE;
     D->refuse_scene = NO_SCENE;
     D->magic = DJ_MAGIC;
+    for (i = 0; i < sizeof(DjXf) / 4; i++)
+        ((unsigned *)XF_BASE)[i] = 0;
+    mx_init();
 }
 
 /* ---- the timeline (audio task) ---- */
@@ -565,10 +614,47 @@ static void add_oldest(void *parent, void *w)
     *(void **)at(w, 0x2C) = parent;
 }
 
+/* The crossfader strip: a stock button (it draws its label) whose touches set the crossfader from
+ * x instead of pressing it. Copy of the button vtable 0x080EFE48 with touchDown / touchMove / touchUp
+ * ours. Rect {x, y, w, h} at +4; touch points are in the same frame. */
+static void xf_touch(void *w, const int *pt)
+{
+    int x = pt[0] - (int)u32(w, 4) - 12, span = (int)u32(w, 0xC) - 24;
+    if (mx_state() != 2 || span <= 0)
+        return;
+    mx_set_xf(x <= 0 ? 0 : x >= span ? 1000 : x * 1000 / span);
+}
+
+static void xf_up(void *w)
+{
+    (void)w;
+}
+
+static const void *const xf_vt[16] = {
+    (const void *)0x080A3D03u, (const void *)0x080A3B6Du, (const void *)0x080AEB1Du,
+    (const void *)0x080AEBABu,
+    (const void *)xf_touch,    /* +0x10 touchDown */
+    (const void *)xf_touch,    /* +0x14 touchMove */
+    (const void *)xf_up,       /* +0x18 touchUp */
+    (const void *)0x080A3323u, (const void *)0x080A3759u, (const void *)0x080A3317u,
+    (const void *)0x080AEB5Fu, (const void *)0x080A331Bu, (const void *)0x080AEC05u,
+    (const void *)0x080A3321u, (const void *)0x080A3773u, (const void *)0x080A3979u,
+};
+
 static void build(void *song)
 {
     static const int x[NBTN] = {0, 100, 200}, w[NBTN] = {99, 99, 120};
     unsigned i;
+    void *xf = X->btn;
+    BTN_CTOR(xf);
+    *(const void *const **)xf = xf_vt;
+    ((set_id_fn)xf_vt[9])(xf, XF_ID);
+    BTN_LATCH(xf, 1);
+    add_oldest(song, xf);
+    set_rect(xf, 0, 40, 320, 30);
+    HIDE(xf, 1);
+    X->bar[0] = 0;
+    X->tops = 0;
     for (i = 0; i < NBTN; i++) {
         void *b = D->btn[i];
         BTN_CTOR(b);
@@ -591,9 +677,84 @@ static void cat(char *d, const char *a, const char *b)
     *d = 0;
 }
 
+static int size_idx(int ticks)
+{
+    unsigned i;
+    for (i = 0; i < LOOP_SIZES; i++)
+        if (loop_t[i] >= ticks)
+            return (int)i;
+    return LOOP_SIZES - 1;
+}
+
+/* Filter knob as a label: "P LP 45", "L HP 30", "P Off". */
+static void filt_text(char *d, const char *side, int v)
+{
+    char n[8];
+    int a = v < 0 ? -v : v, k = 0, q = a / 10;
+    if (a <= 8) {
+        cat(d, side, s_off_f);
+        return;
+    }
+    if (q >= 100)
+        n[k++] = '1', q -= 100, n[k++] = (char)('0' + q / 10), n[k++] = (char)('0' + q % 10);
+    else if (q >= 10)
+        n[k++] = (char)('0' + q / 10), n[k++] = (char)('0' + q % 10);
+    else
+        n[k++] = (char)('0' + q);
+    n[k] = 0;
+    cat(d, side, v < 0 ? s_lp : s_hp);
+    cat(d + 5, n, "");
+}
+
+static int same(const char *a, const char *b)
+{
+    while (*a && *a == *b)
+        a++, b++;
+    return *a == *b;
+}
+
+/* Our text on a stock button, again only when it shows something else (stock relabels BPM / Swing
+ * on tempo changes). */
+static void keep_text(void *btn, const char *t)
+{
+    void *lbl = (void *)u32(btn, BTN_LABEL);
+    if (!u32(btn, 0))                /* not built (yet) */
+        return;
+    if (!lbl || !same((const char *)at(lbl, 0x65), t))
+        BTN_TEXT(btn, t);
+}
+
+static void mixer_labels(void *song)
+{
+    int st = mx_state(), i;
+    char *b = X->bar;
+    filt_text(X->top[0], s_proj, mx_filter(0));
+    filt_text(X->top[1], s_loopside, mx_filter(1));
+    keep_text(at(song, S_BTN_BPM), X->top[0]);
+    keep_text(at(song, S_BTN_SWING), X->top[1]);
+    X->tops = 1;
+    if (st != 2) {
+        keep_text(X->btn, s_capture);
+        return;
+    }
+    {
+        int pos = (mx_xf() * XF_CELLS + 500) / 1000;
+        *b++ = 'L';
+        *b++ = ' ';
+        for (i = 0; i <= XF_CELLS; i++)
+            *b++ = i == pos ? '|' : '-';
+        *b++ = ' ';
+        *b++ = 'P';
+        *b = 0;
+    }
+    keep_text(X->btn, X->bar);
+}
+
 static void labels(void)
 {
     DjUi *ui = &D->ui;
+    int audio = mx_state() != 0;
+    unsigned char want = (unsigned char)(audio ? size_idx(mx_len()) | 0x80 : ui->loop_idx);
     if (ui->lbl_jump != ui->jump_idx) {
         cat(ui->text[0], s_back, jump_n[ui->jump_idx]);
         cat(ui->text[1], jump_n[ui->jump_idx], s_fwd);
@@ -601,14 +762,14 @@ static void labels(void)
         BTN_TEXT(D->btn[1], ui->text[1]);
         ui->lbl_jump = ui->jump_idx;
     }
-    if (ui->lbl_loop != ui->loop_idx) {
-        cat(ui->text[2], s_loop, loop_n[ui->loop_idx]);
+    if (ui->lbl_loop != want) {
+        cat(ui->text[2], audio ? s_audio : s_loop, loop_n[want & 0x7F]);
         BTN_TEXT(D->btn[2], ui->text[2]);
-        ui->lbl_loop = ui->loop_idx;
+        ui->lbl_loop = want;
     }
     BTN_STATE(D->btn[0], 0);   /* a press may have lit them */
     BTN_STATE(D->btn[1], 0);
-    BTN_STATE(D->btn[2], ui->loop_on);
+    BTN_STATE(D->btn[2], ui->loop_on || audio);
 }
 
 static void *row_of(void *song, unsigned scene)
@@ -679,12 +840,22 @@ static void ui_update(void *song)
     if (show != ui->shown) {
         for (i = 0; i < NBTN; i++)
             HIDE(D->btn[i], !show);
+        HIDE(X->btn, !show);
         if (!show)
             rows_dirty(song);    /* the list under the row paints again */
         ui->shown = (unsigned char)show;
     }
-    if (show)
+    if (show) {
         labels();
+        mixer_labels(song);
+    } else if (X->tops) {
+        unsigned ev[6], j;
+        for (j = 0; j < 6; j++)
+            ev[j] = 0;
+        ev[0] = EV_REFRESH;
+        X->tops = 0;
+        SONG_EVENT(song, ev);    /* BPM and Swing labelled again by stock */
+    }
     led(show);
     blink(song);
 }
@@ -735,7 +906,9 @@ unsigned dj_song_child(void *song, const void *ev)
             request_jump(-1);
         else if (id == ID_DJ + 1)
             request_jump(1);
-        else {
+        else if (mx_state()) {
+            mx_clear();          /* Loop off ends the audio loop */
+        } else {
             D->ui.loop_on ^= 1;
             request_loop();
         }
@@ -765,17 +938,38 @@ void dj_song_event(void *song, const void *ev)
     unsigned type = u16(ev, 0);
     if (live() && type == 0xD3)
         D->ui.want = 0;
+    if (live() && type == EV_BACK && D->ui.shown && D->ui.loop_on && !mx_state() && mx_ready() &&
+        D->loop_len > 0 && D->armed_loop == D->loop_seq) {
+        long long a = D->loop_a;           /* the DJ loop as it plays, before it is switched off */
+        int len = D->loop_len;
+        D->ui.loop_on = 0;
+        request_loop();
+        mx_capture(a, len, D->loop_seq);
+        return;
+    }
     if (live() && type == 0x32 && D->ui.shown) {
         unsigned k = u16(ev, 0xC);
         int n;
+        if (k == 0 || k == 2) {          /* top knobs: the project / loop filter */
+            int *acc = &X->facc[k == 2];
+            *acc += (short)u16(ev, 0x10);
+            n = *acc / FILT_STEP;
+            *acc -= n * FILT_STEP;
+            mx_set_filter(k == 2, mx_filter(k == 2) + n);
+            return;
+        }
         if (k == 1 || k == 3) {
             n = steps_of(k == 3, (short)u16(ev, 0x10));
             if (k == 1) {
                 D->ui.jump_idx = step_idx(D->ui.jump_idx, n, JUMP_SIZES);
             } else {
                 unsigned char was = D->ui.loop_idx;
+                if (mx_state())
+                    was = (unsigned char)size_idx(mx_len());
                 D->ui.loop_idx = step_idx(was, n, LOOP_SIZES);
-                if (D->ui.loop_on && D->ui.loop_idx != was)
+                if (mx_state() && D->ui.loop_idx != was)
+                    mx_size(loop_t[D->ui.loop_idx]);   /* the audio loop takes it */
+                else if (D->ui.loop_on && D->ui.loop_idx != was)
                     request_loop();      /* the live loop takes the new size */
             }
             return;
