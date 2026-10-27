@@ -288,7 +288,7 @@ def run_case(image, name, fn, res, tree=None, writes=False, fs="fat"):
         if fs == "exfat":
             mkcard.build_exfat(card, tree or TREE, size_mb=160, cluster_kb=32)
         else:
-            mkcard.build(card, tree or TREE, size_mb=160 if writes else 64)
+            mkcard.build_cached(card, tree or TREE, size_mb=160 if writes else 64)
         bench = Bench(image, card, allow_writes=writes)
         itcm = itcm_watch(bench)
         try:

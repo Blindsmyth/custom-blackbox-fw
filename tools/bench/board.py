@@ -7,6 +7,7 @@ filesystem. Nothing here touches a real SD card.
 
 Addresses are 3.1.9 addresses (docs/map-319.md).
 """
+import hashlib
 import struct
 
 from unicorn import (UC_ARCH_ARM, UC_HOOK_CODE, UC_HOOK_MEM_UNMAPPED, UC_MODE_MCLASS,
@@ -48,6 +49,9 @@ BENCH_SP = 0x2001F7F0
 
 class StopCall(Exception):
     pass
+
+
+_BOOTED = {}   # sha1 of the image -> RAM after reset_init and ENGINE_INIT, before the card is mounted
 
 
 class Board:
@@ -254,15 +258,26 @@ class Board:
             self.mu.mem_write(a, data)
 
     def boot(self):
-        """Boot-equivalent state: C runtime init, engine/PresetMgr init, card mounted."""
-        self.reset_init()
-        self.call(ENGINE_INIT, ENGINE_OBJ)
-        if self.u32(SHARED_FIL_PTR) == 0:
-            self.w32(SHARED_FIL_PTR, BENCH_FIL)
+        """Boot-equivalent state: C runtime init, engine/PresetMgr init, card mounted.
+
+        ENGINE_INIT takes about 4 s of emulated time and does not touch the card, so its RAM
+        is taken once per image and restored for every later Board of that image."""
+        key = hashlib.sha1(self.image).digest()
+        booted = _BOOTED.get(key)
+        if booted is None:
+            self.reset_init()
+            self.call(ENGINE_INIT, ENGINE_OBJ)
+            if self.u32(SHARED_FIL_PTR) == 0:
+                self.w32(SHARED_FIL_PTR, BENCH_FIL)
+            _BOOTED[key] = self.snapshot()
+        else:
+            self.restore(booted)
         self.mount()
 
     # ---- card checks
     def changed_sectors(self):
+        if self.card == self.card_orig:
+            return []
         out = []
         for s in range(0, len(self.card), 512):
             if self.card[s:s + 512] != self.card_orig[s:s + 512]:

@@ -10,6 +10,7 @@ Default tree:
   Presets/_Test/Two/preset.xml
   Presets/_Test/Sub/Deep/preset.xml
 """
+import atexit
 import contextlib
 import os
 import re
@@ -53,6 +54,22 @@ def build(path, tree=None, size_mb=64):
             with open(src, "wb") as f:
                 f.write(content.encode("latin1"))
             run("mcopy", "-i", path, src, "::/" + rel)
+    return path
+
+
+_TEMPLATES = {}
+
+
+def build_cached(path, tree=None, size_mb=64):
+    """build(), but each (tree, size) is made once per run and copied after that: mkfs and mtools are most
+    of what a bench case costs to set up."""
+    tree = DEFAULT_TREE if tree is None else tree
+    key = (size_mb, tuple(sorted(tree.items())))
+    if key not in _TEMPLATES:
+        tmp = tempfile.mkdtemp(prefix="bench-card-")
+        atexit.register(shutil.rmtree, tmp, True)
+        _TEMPLATES[key] = build(os.path.join(tmp, "card.img"), tree, size_mb)
+    shutil.copyfile(_TEMPLATES[key], path)
     return path
 
 
