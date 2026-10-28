@@ -19,6 +19,7 @@
 .global fx_to_return
 .global fxret_on_event
 .global fxret_child_event
+.global fx_row_button
 
 @ r0 = app. Returns r0 = 0x300 or 0x310: App+0x28 if it is a return, else the last one.
 .thumb_func
@@ -136,9 +137,17 @@ fx_row_button:
 fxr_btns:
     .hword  FXR_TABS + 2 * FXR_TAB_SZ, FXR_TABS + FXR_TAB_SZ, FXR_TABS, 0x3AC
 fxr_labels:
+.ifdef WARP_LINEUP
+    .word   s_ra_short, s_rb_short, s_eq, s_master_tab  @ 3.1.T: Master (Tools page 4) next to EQ
+.else
     .word   s_ra, s_rb, s_eq, s_none
+.endif
 fxr_x:                              @ button edges: labels are 12 px per character
+.ifdef WARP_LINEUP
+    .hword  0, 80, 160, 240, 320    @ A Dly | B Rvb | EQ | Master, 80 px each
+.else
     .hword  0, 104, 216, 268, 320
+.endif
 @ LDM-read by the stock setRect: must be word aligned (an unaligned LDM hard-faults).
 .align 2
 fxr_bar_rect:
@@ -155,12 +164,20 @@ fxret_child_event:
     subs    r2, r2, r3
     cmp     r2, #3
     bhi     9f
+.ifdef WARP_LINEUP
+    push    {r4, lr}
+    ldr     r0, =APP
+    movs    r1, #0x29               @ Master: Tools page 4, shown with this row (dj.c)
+    cmp     r2, #3
+    beq     1f
+.else
     bne     2f
     movs    r0, #0                  @ the empty fourth button does nothing
     bx      lr
 2:
     push    {r4, lr}
     ldr     r0, =APP
+.endif
     movs    r1, #0x36
     cmp     r2, #2
     beq     1f
@@ -188,6 +205,11 @@ s_ra: .asciz "A Delay"
 s_rb: .asciz "B Reverb"
 s_eq: .asciz "EQ"
 s_none: .asciz ""
+.ifdef WARP_LINEUP
+s_master_tab: .asciz "Master"
+s_ra_short: .asciz "A Dly"
+s_rb_short: .asciz "B Rvb"
+.endif
 .align 2
 .ltorg
 

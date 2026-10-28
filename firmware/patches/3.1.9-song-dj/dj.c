@@ -21,7 +21,8 @@
  * shown, and a crossfader strip sits above the row.
  *
  * On the DJ FX screen, Proj / Loop under each Hold button pick what goes into that FX, and the bottom
- * knobs are the loop / project filters; with INFO held the knobs swap the FX as stock.
+ * knobs are the loop / project filters; with INFO held the knobs swap the FX as stock. Master (Tools
+ * page 4) sits in the FX row next to EQ (fxret.S) and shows that row instead of the Tools tabs.
  */
 
 #define DJ_BASE      0x38007400u   /* SRAM4: past RbVoice + diag (0x38007000-0x38007148), below */
@@ -206,13 +207,13 @@ typedef void (*post_fn)(void *, void *);
 #define N_FXR       4
 #define R_PROJ      1          /* as mixer.c */
 #define R_LOOP      2
-#define FX_TICK     ((tick_fn)0x080AEB45u)     /* DJ FX vtable +0x00 (the generic container tick) */
+#define FX_TICK     ((tick_fn)0x080AEB45u)     /* DJ FX and Tools vtable +0x00 (the generic container tick) */
 #define FX_CHILD    ((child_fn)0x080B1EE5u)    /* DJ FX vtable +0x30 */
 #define FX_EVENT    ((event_fn)0x080B1E9Du)    /* DJ FX vtable +0x34 */
 #define INFO_LEVEL  (*(volatile const unsigned char *)0x24009BDEu)   /* INFO debounced: 0 = held */
 #define FX_N        512        /* as mixer.c */
 
-/* The deck's own widgets, the project's peaks and the mixer's FX buffers: 35 KB from the bottom SDRAM
+/* The deck's own widgets, the project's peaks and the mixer's FX buffers: 36 KB from the bottom SDRAM
  * allocator at boot (SRAM4 has no room; SDRAM has ~1 MB free after boot, measured on the unit). */
 typedef struct {
     unsigned panel[0x28], up[0x28], dn[0x28], line[0x28], wave[0x28];
@@ -222,6 +223,7 @@ typedef struct {
     unsigned proj_t[4096];                     /* and the transport tick of each */
     unsigned char lane[2][160];                /* columns being drawn */
     unsigned fxr[N_FXR][0x28];                 /* DJ FX screen: the Proj / Loop toggles */
+    unsigned mrow[4][0x28];                    /* Master page: the FX row (A, B, EQ, Master) */
     float fx[6][FX_N];                         /* mixer.c's FX buffers (audio task) */
 } DjDeck;
 
@@ -242,6 +244,7 @@ typedef struct {
     unsigned char rsv;
     char line[32];             /* +0xC0 scene line text */
     void *fx_scr;              /* +0xE0 the DJ FX screen our toggles were built on */
+    void *tools;               /* +0xE4 the Tools screen the Master page's FX row was built on */
 } DjXf;
 typedef char xf_fits[(XF_BASE + sizeof(DjXf) <= XF_END) ? 1 : -1];
 #define X ((DjXf *)XF_BASE)
@@ -1480,18 +1483,24 @@ void dj_song_event(void *song, const void *ev)
 
 /* ---- DJ FX screen (UI task) ---- */
 
-/* Under each Hold button (moved up by sites.py: A 176-240, B 56-120), y bottom-up:
- *   150-174 Proj, 124-148 Loop: into FX A
- *    30- 54 Proj,   4- 28 Loop: into FX B
+/* Each half: Hold, Loop, Proj top-down, evenly spaced (y bottom-up), the upper one clear of the bar:
+ *   176-202 Hold A, 148-174 Loop, 120-146 Proj: into FX A
+ *    56- 82 Hold B,  28- 54 Loop,   0- 26 Proj: into FX B
+ * Stock's Hold buttons (+0x3C, +0x134) are moved here; their "A" / "B" line is blanked by sites.py.
  * The screen is built once at boot (App+0x905A0); our toggles join it on its first tick. */
+#define FX_HOLD_A   0x3C
+#define FX_HOLD_B   0x134
+#define FX_ROW_H    26
 static void fx_build(void *scr)
 {
-    static const int y[N_FXR] = {150, 124, 30, 4};
+    static const int y[N_FXR] = {120, 148, 0, 28};   /* Proj A, Loop A, Proj B, Loop B */
     DjDeck *d = X->deck;
     unsigned i;
     X->fx_scr = scr;
+    set_rect(at(scr, FX_HOLD_A), 0, 176, 64, FX_ROW_H);
+    set_rect(at(scr, FX_HOLD_B), 0, 56, 64, FX_ROW_H);
     for (i = 0; i < N_FXR; i++) {
-        place(scr, d->fxr[i], 0, ID_FXR + i, 0, y[i], 64, 24);
+        place(scr, d->fxr[i], 0, ID_FXR + i, 0, y[i], 64, FX_ROW_H);
         BTN_TEXT(d->fxr[i], i & 1 ? s_cap_loop : s_cap_proj);
         HIDE(d->fxr[i], 0);
     }
@@ -1536,4 +1545,71 @@ void dj_fx_event(void *scr, const void *ev)
         return;
     }
     FX_EVENT(scr, ev);
+}
+
+/* ---- Master in the FX row (UI task) ---- */
+
+/* Tools page 4 (Master, screen 0x29) is opened from the FX row's fourth button (fxret.S). There the
+ * row (A Delay | B Reverb | EQ | Master) replaces the Tools tabs along the bottom (0-38), as on the
+ * Return and EQ pages; the other Tools pages keep their tabs. */
+#define TOOLS_CHILD ((child_fn)0x080C5361u)    /* Tools vtable +0x30 */
+#define TOOLS_EVENT ((event_fn)0x080C52E1u)    /* Tools vtable +0x34 */
+#define T_PAGE      0xA5E0     /* Tools: page shown (byte) */
+#define T_TABS      0x9E28     /* Tools: the tab bar along the bottom */
+#define PAGE_MASTER 4
+#define FXR_ID      0x7A0      /* fxret.S: the FX row's ids, A B EQ Master */
+#define N_ROW       4
+extern void fx_row_button(void *btn, unsigned pos, unsigned lit);
+extern unsigned fxret_child_event(void *page, const void *ev);
+
+static void master_row(void *tools)
+{
+    DjDeck *d = X->deck;
+    unsigned i, m = u8(tools, T_PAGE) == PAGE_MASTER;
+    if (!d)
+        return;
+    if (X->tools != tools) {
+        X->tools = tools;
+        for (i = 0; i < N_ROW; i++) {
+            BTN_CTOR(d->mrow[i]);
+            add_oldest(tools, d->mrow[i]);
+            fx_row_button(d->mrow[i], i, i == 3);
+            HIDE(d->mrow[i], 1);
+        }
+    }
+    if (u8(at(tools, T_TABS), W_HIDDEN) != m) {
+        HIDE(at(tools, T_TABS), m);
+        X->ask |= 3;
+    }
+    for (i = 0; i < N_ROW; i++)
+        if (u8(d->mrow[i], W_HIDDEN) == m)
+            HIDE(d->mrow[i], !m);
+}
+
+/* Tools vtable +0x34: stock, then the bottom row as the page wants it (0xD4 shows the screen). */
+void dj_tools_event(void *tools, const void *ev)
+{
+    TOOLS_EVENT(tools, ev);
+    if (live())
+        master_row(tools);
+}
+
+/* Tools vtable +0x00: again every tick, whatever order the page byte and the show come in. */
+void dj_tools_tick(void *tools, void *flags, void *a, void *b)
+{
+    if (live())
+        master_row(tools);
+    FX_TICK(tools, flags, a, b);
+    ask_passes(flags);
+}
+
+/* Tools vtable +0x30: the FX row's A / B / EQ go there as on the Return page; Master is shown. */
+unsigned dj_tools_child(void *tools, const void *ev)
+{
+    unsigned type = u16(ev, 0), id = u32(ev, 0xC) - FXR_ID;
+    if (!live() || !X->tools || (type != 1 && type != 2) || id >= N_ROW)
+        return TOOLS_CHILD(tools, ev);
+    if (type == 1 && id < 3)
+        return fxret_child_event(tools, ev);
+    return 0;
 }

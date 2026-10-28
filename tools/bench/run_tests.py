@@ -1933,7 +1933,9 @@ def t_fx_return(bench, res):
     sel = [b.u8(btn + 0x96) for btn in btns]
     xs = [struct.unpack("<4i", b.mu.mem_read(btn + 4, 16)) for btn in btns]
     res.check(ids == [0x7A0, 0x7A1, 0x7A2, 0x7A3] and sel == [1, 0, 0, 0], f"buttons A Delay / B Reverb / EQ / empty, A lit {ids} {sel}")
-    res.check([r[1] for r in xs] == [0, 0, 0, 0] and [r[0] for r in xs] == [0, 104, 216, 268], f"row along the bottom edge {xs}")
+    lineup = "dj_tools_tick" in bench.sym       # 3.1.T: A Dly | B Rvb | EQ | Master, 80 px each
+    edges = [0, 80, 160, 240] if lineup else [0, 104, 216, 268]
+    res.check([r[1] for r in xs] == [0, 0, 0, 0] and [r[0] for r in xs] == edges, f"row along the bottom edge {xs}")
     res.check(struct.unpack("<4i", b.mu.mem_read(page + 0x34 + 4, 16))[1] == 0, "button bar moved to the bottom")
     screens.clear()
     ev = _mix_ev(b, 1)
@@ -1947,7 +1949,10 @@ def t_fx_return(bench, res):
     screens.clear()
     b.w32(ev + 0xC, 0x7A3)
     r = b.call(bench.sym["fxret_child_event"], page, ev)
-    res.check(r == 0 and not screens, "the empty button does nothing")
+    if lineup:
+        res.check(r == 0 and screens == [0x29], f"Master opens Tools page 4 {screens}")
+    else:
+        res.check(r == 0 and not screens, "the empty button does nothing")
     b.mu.mem_write(APP_OBJ + 0x28, struct.pack("<H", 0x37))
     screens.clear()
     b.call(bench.sym["fx_to_return"], APP_OBJ, 0x30, 0, 0)
@@ -2678,7 +2683,10 @@ def t_master_image(bench, res):
     res.check(page4 == MASTER_IDS + [0], f"Tools -> Master lists the eight ids {[hex(x) for x in page4]}")
     res.check(_u16s(img, 0x080EED60, 1) == [0x9D], "Tools -> Rec list untouched")
     name = struct.unpack_from("<I", img, 0x080EEE90 - bd.BASE)[0]
-    res.check(name == bench.sym["s_master"], "tab name 4 points at \"Master\"")
+    if "dj_tools_tick" in bench.sym:            # 3.1.T: Master is in the FX row instead
+        res.check(name == 0x080CB060, "tab name 4 stays empty (Master is in the FX row)")
+    else:
+        res.check(name == bench.sym["s_master"], "tab name 4 points at \"Master\"")
     res.check(struct.unpack_from("<I", img, 0x080EEE94 - bd.BASE)[0] == 0x080CB060,
               "tab name 5 stays empty (5 tabs)")
     res.check(img[0x080996D2 - bd.BASE:0x080996D4 - bd.BASE].hex() == "042e"
@@ -2726,8 +2734,12 @@ def t_master_page(bench, res):
         return ok, ids, names, count, m
     ok, ids, names, count, m = model(4)
     res.check(ok == 1 and ids == MASTER_IDS, f"page 4 model holds the Master ids {[hex(i) for i in ids]}")
-    res.check(names[:5] == ["Main", "Rec", names[2], names[3], "Master"] and count == 5,
-              f"five tabs {names} count {count}")
+    if "dj_tools_tick" in bench.sym:            # 3.1.T: Master is in the FX row, Tools keeps 4 tabs
+        res.check(names[:5] == ["Main", "Rec", names[2], names[3], ""] and count == 4,
+                  f"four tabs, page 4 still built {names} count {count}")
+    else:
+        res.check(names[:5] == ["Main", "Rec", names[2], names[3], "Master"] and count == 5,
+                  f"five tabs {names} count {count}")
     vals = list(struct.unpack_from("<8i", m, 0x14))
     res.check(vals == [1] + [v for _, v in DEFAULTS], f"page 4 values from the global bag {vals}")
     ok, ids, *_ = model(0)
@@ -2831,7 +2843,10 @@ def t_master_gui(bench, res):
     ids = [x for x in struct.unpack_from("<8H", m, 2) if x]
     res.check(b.u8(page2 + 0xA5E0) == 4, f"Tools page index 4 ({b.u8(page2 + 0xA5E0)}, screen {scr:#x})")
     res.check(ids == MASTER_IDS, f"Master page model {[hex(i) for i in ids]}")
-    res.check("Master" in labels and "Main" in labels, f"tab labels {labels}")
+    if "dj_tools_tick" in bench.sym:
+        res.check("Master" not in labels and "Main" in labels, f"tab labels, no Master tab {labels}")
+    else:
+        res.check("Master" in labels and "Main" in labels, f"tab labels {labels}")
     vals = dict(DEFAULTS + [(0xB4, 1)])
     want = [(i, vals[i] & 0xFFFFFFFF) for i in MASTER_IDS]
     res.check(rows[-8:] == want, f"Master list rows (id, value) {[(hex(i), v) for i, v in rows[-8:]]}")
@@ -6407,14 +6422,16 @@ def t_mx_fx(bench, res):
 
 
 def t_dj_fx(bench, res):
-    """The DJ FX screen: Proj / Loop toggles under each Hold button route into FX A / B; the bottom
-    knobs are the filters, all four stock's with INFO held; Hold A / B moved up."""
+    """The DJ FX screen: Hold, Loop, Proj evenly in each half, the toggles routing into FX A / B; the
+    bottom knobs are the filters, all four stock's with INFO held; Hold's A / B line blank."""
     b = bench.b
     sym = bench.sym
     b.call(sym["deck_init"])
     scr, flags = MX_FXW + 0x1000, MX_FXW + 0x3000
     b.mu.mem_write(scr, b"\x00" * 0x1000)
     b.mu.mem_write(flags, b"\x00" * 4)
+    b.call(0x080A3F9D, scr + 0x3C)                      # stock's Hold buttons (their class)
+    b.call(0x080A3F9D, scr + 0x134)
     stock = []
     b.stub(0x080AEB44, lambda bd_: stock.append(("tick", 0)))
     b.stub(0x080B1EE4, lambda bd_: stock.append(("child", bd_.u32(bd_.arg(1) + 0xC))) or 1)
@@ -6430,17 +6447,21 @@ def t_dj_fx(bench, res):
     def toggles():
         out, w = {}, b.u32(scr + 0x18)
         while w:
-            out[b.u16(w + 0x14)] = (tuple(_dj_s32(b.u32(w + 4 + 4 * i)) for i in range(4)), b.u8(w + 0x96),
-                                    b.u8(w + 0x30), b.cstr(w + 0x65, 8))
+            if b.u16(w + 0x14) >= 0x1E4:
+                out[b.u16(w + 0x14)] = (tuple(_dj_s32(b.u32(w + 4 + 4 * i)) for i in range(4)), b.u8(w + 0x96),
+                                        b.u8(w + 0x30), b.cstr(w + 0x65, 8))
             w = b.u32(w + 0x20)
         return out
 
     tick, child, event = sym["dj_fx_tick"], sym["dj_fx_child"], sym["dj_fx_event"]
     b.call(tick, scr, flags, 0, 0)
     t = toggles()
-    want = {0x1E4: ((0, 150, 64, 24), 1, 0, "Proj"), 0x1E5: ((0, 124, 64, 24), 0, 0, "Loop"),
-            0x1E6: ((0, 30, 64, 24), 1, 0, "Proj"), 0x1E7: ((0, 4, 64, 24), 0, 0, "Loop")}
+    want = {0x1E4: ((0, 120, 64, 26), 1, 0, "Proj"), 0x1E5: ((0, 148, 64, 26), 0, 0, "Loop"),
+            0x1E6: ((0, 0, 64, 26), 1, 0, "Proj"), 0x1E7: ((0, 28, 64, 26), 0, 0, "Loop")}
     res.check(t == want, f"first tick: four toggles under the Hold buttons, Proj lit {t}")
+    hold = [tuple(_dj_s32(b.u32(scr + o + 4 + 4 * i)) for i in range(4)) for o in (0x3C, 0x134)]
+    res.check(hold == [(0, 176, 64, 26), (0, 56, 64, 26)],
+              f"Hold A over Loop over Proj (top 202, clear of the bar), Hold B likewise below {hold}")
     res.check(stock == [("tick", 0)] and b.u8(flags) == 1 and b.u8(flags + 1) == 1, "stock tick runs, both passes asked")
     b.call(tick, scr, flags, 0, 0)
     res.check(len(toggles()) == 4, "built once")
@@ -6470,10 +6491,68 @@ def t_dj_fx(bench, res):
     stock.clear()
     b.call(event, scr, ev(0x66, 0))
     res.check(stock == [("event", 0x66)], "other events reach stock")
-    res.check(bytes(b.mu.mem_read(0x080B231E, 2)) == b"\xb0\x23" and bytes(b.mu.mem_read(0x080B2352, 2)) == b"\x38\x23",
-              "Hold A at y 176, Hold B at y 56")
+    blank = [b.cstr(b.u32(a), 4) for a in (0x080B2458, 0x080B245C)]
+    res.check(blank == ["", ""], f"Hold's second line (A / B) is blank {blank}")
     b.call(sym["mx_set_route"], 0, 1)
     b.call(sym["mx_set_route"], 1, 1)
+
+
+def t_master_row(bench, res):
+    """Master sits in the FX row next to EQ: its button opens Tools page 4, where the row replaces
+    the Tools tabs; the other Tools pages keep them; INFO's Tools cycle skips Master."""
+    b = bench.b
+    sym = bench.sym
+    b.call(sym["deck_init"])
+    tools, flags = 0xC0600000, MX_FXW + 0x3000
+    b.mu.mem_write(tools, b"\x00" * 0xA600)
+    b.call(0x080C4E71, tools + 0x9E28)                  # the tab bar (stock class)
+    stock, shown = [], []
+    b.stub(0x080C52E0, lambda bd_: stock.append(("event", bd_.u16(bd_.arg(1)))))
+    b.stub(0x080C5360, lambda bd_: stock.append(("child", bd_.u32(bd_.arg(1) + 0xC))) or 1)
+    b.stub(0x080AEB44, lambda bd_: None)
+    b.stub(0x0809EAEC, lambda bd_: shown.append(bd_.arg(1)))
+
+    def ev(kind, a=0):
+        b.mu.mem_write(DJ_EV, b"\x00" * 0x20)
+        b.mu.mem_write(DJ_EV, kind.to_bytes(2, "little"))
+        b.w32(DJ_EV + 0xC, a)
+        return DJ_EV
+
+    def row():
+        out, w = [], b.u32(tools + 0x18)
+        while w:
+            if 0x7A0 <= b.u16(w + 0x14) < 0x7A4:
+                out.append((b.cstr(w + 0x65, 10), _dj_s32(b.u32(w + 4)), b.u32(w + 8), b.u32(w + 0xC),
+                            b.u32(w + 0x10), b.u8(w + 0x96), b.u8(w + 0x30)))
+            w = b.u32(w + 0x20)
+        return sorted(out, key=lambda r: r[1])
+
+    b.mu.mem_write(tools + 0xA5E0, b"\x00")
+    b.call(sym["dj_tools_event"], tools, ev(0xD4))
+    r = row()
+    res.check(stock == [("event", 0xD4)] and len(r) == 4 and all(x[6] == 1 for x in r)
+              and b.u8(tools + 0x9E28 + 0x30) == 0, f"Tools Main: tabs shown, the FX row hidden {r}")
+    b.mu.mem_write(tools + 0xA5E0, b"\x04")
+    b.call(sym["dj_tools_tick"], tools, flags, 0, 0)
+    r = row()
+    want = [("A Dly", 0, 0, 80, 38, 0, 0), ("B Rvb", 80, 0, 80, 38, 0, 0),
+            ("EQ", 160, 0, 80, 38, 0, 0), ("Master", 240, 0, 80, 38, 1, 0)]
+    res.check(r == want and b.u8(tools + 0x9E28 + 0x30) == 1, f"Master page: the FX row instead of the tabs, Master lit {r}")
+    res.check(len(row()) == 4, "built once")
+    stock.clear()
+    res.check(b.call(sym["dj_tools_child"], tools, ev(1, 0x7A1)) == 0 and shown == [0x23], f"B Reverb: the Return page {shown}")
+    shown.clear()
+    b.call(sym["dj_tools_child"], tools, ev(1, 0x7A2))
+    res.check(shown == [0x36], f"EQ: the EQ page {shown}")
+    shown.clear()
+    res.check(b.call(sym["dj_tools_child"], tools, ev(1, 0x7A3)) == 0 and shown == [] and stock == [], "Master: stays")
+    b.call(sym["dj_tools_child"], tools, ev(1, 0x130))
+    res.check(stock == [("child", 0x130)], "Tools' own presses reach stock")
+    shown.clear()
+    b.call(sym["fxret_child_event"], tools, ev(1, 0x7A3))
+    res.check(shown == [0x29], f"Return / EQ page: Master opens Tools page 4 {shown}")
+    res.check(b.cstr(b.u32(0x080EEE90), 8) == "" and bytes(b.mu.mem_read(0x080A30B6, 2)) == b"\x25\x21",
+              "Tools tabs: no Master; INFO after Clock goes back to Main")
 
 
 def t_dj_gui(bench, res):
@@ -8151,6 +8230,8 @@ def main():
         ]
         if "dj_fx_tick" in sym:
             cases += [("Song DJ: DJ FX screen toggles, knobs, Hold moved", t_dj_fx)]
+        if "dj_tools_tick" in sym:
+            cases += [("Song DJ: Master in the FX row, next to EQ", t_master_row)]
     if "mx_block" in sym:
         cases += [
             ("Song DJ mixer: capture, play, grow, load, repitch, clear", t_mx_loop),

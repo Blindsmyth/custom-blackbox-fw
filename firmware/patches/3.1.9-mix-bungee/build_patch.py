@@ -297,6 +297,8 @@ def add_rubber_sites(stock):
         mix.SITES.extend(sites)
         mix.VTABLE.extend(vtable)
         mix.BYTES.extend(dj.BYTES)
+        # Master moves from the Tools tabs to the FX row (fxret.S, dj.c): Tools keeps its 4 tabs.
+        mix.WORDS[:] = [w for w in mix.WORDS if w[0] != 0x080EEE90]
         mix.SITES.extend(SONG_SITES)
         mix.VTABLE.extend(SONG_VTABLE)
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves

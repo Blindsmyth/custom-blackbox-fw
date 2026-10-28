@@ -147,17 +147,18 @@ For going from one project into the next in a live set: capture a loop of the ma
 
 - **DJ FX screen** (FX from Pads): the FX run behind the compressor, and you pick what goes into each.
   ```
-  176-240  [Hold A]     (moved up from 138)
-  150-174  [ Proj ]     project into FX A
-  124-148  [ Loop ]     audio loop into FX A
-   56-120  [Hold B]     (moved up from 37)
-   30- 54  [ Proj ]     project into FX B
-    4- 28  [ Loop ]     audio loop into FX B
+  176-202  [ Hold ]     FX A (clear of the bar display above)
+  148-174  [ Loop ]     audio loop into FX A
+  120-146  [ Proj ]     project into FX A
+   56- 82  [ Hold ]     FX B
+   28- 54  [ Loop ]     audio loop into FX B
+    0- 26  [ Proj ]     project into FX B
   ```
   - A toggle is lit while that signal goes into the FX. At power on both Proj are on and both Loop off, which is stock's sound. Kept until power off.
   - **Through both FX in turn:** FX A runs first, then FX B. What went through an FX together stays mixed for the next one: with Proj and Loop into A, B gets that mix if either is routed to it. A signal not routed to an FX passes it dry.
   - **Nothing routed:** the FX runs on silence, so its echo or reverb tail rings on after you switch its last input off.
   - **Knobs:** bottom-left is the loop filter and bottom-right the project filter, as on the deck; the top ones do nothing. **Hold INFO** and turn the knobs to swap FX A / FX B as stock (right-hand knobs). Nothing on this screen shows the filters yet.
+- **Master is in the FX section:** the FX row along the bottom of the Return and EQ pages reads `A Dly | B Rvb | EQ | Master` (80 px each). Master opens the compressor and limiter settings (Tools page 4) with that same row instead of the Tools tabs. Tools itself is back to four tabs, and INFO on Tools cycles Main → Rec → MIDI → Clock → Main.
 - **Audio chain:** EQ → compressor → loop capture → filters and crossfader → DJ FX → limiter.
   - The compressor acts on the project only, so it stays per project: a captured loop keeps the compression of the project it came from.
   - Loops are recorded without the DJ FX, so you can put an FX on the loop live.
@@ -174,11 +175,15 @@ For going from one project into the next in a live set: capture a loop of the ma
   - **The tap** (`mx_block`, after the parts) then runs the slots itself (`fx_run`). P stays in bus 0's buffers, and L (the loop after its filter and crossfader gain) goes to `DjDeck.fx` instead of being added in. For each slot, bus 0's L/R point at the buffer of what is routed to it; after the slot, `FUN_0804D9C0` normalises it (silent → zeros, mono → L copied to R), and bus 0 is put back. P and L both routed: L is added into P first and they stay together. Nothing routed: a silent buffer, whose output is added to the end. Then whatever was not mixed in is added to P, and the container's own next stage runs as stock.
   - **Fallbacks:** without our buffers, or a block longer than they hold (512 frames; the audio task's are 256), the container runs as stock on bus 0 in the tap. With `--mx-safe` the thunk is left out with the taps, so the FX stay where stock has them.
 - **DJ FX screen** (screen 0x37, App+`0x905A0`, constructor `FUN_080B20F0`, vtable `0x080F0D90`):
-  - **Hold A / B** are moved by the `movs r3` y immediates at `0x080B231E` (`0x8A` → `0xB0`) and `0x080B2352` (`0x25` → `0x38`).
-  - **The toggles** are stock frame buttons (ids `0x1E4`–`0x1E7`, `DjDeck.fxr`), built on the screen's first tick as its oldest children (`dj_fx_tick`, vt `+0x00`, then stock's `0x080AEB45`). The tick lights them from `mx_route` and asks for the repaint passes as the Song tick does.
+  - **Hold A / B** (`+0x3C`, `+0x134`, class `FUN_080A3F9C` with a second text line at `+0xA0`) get their new rects from `fx_build` (the screen never lays them out again). Their second line "A" / "B" is blanked by pointing the constructor's pool words `0x080B2458` / `0x080B245C` at the NUL after stock's "A" (`0x080CF939`); with that line empty the class centres "Hold" alone.
+  - **The toggles** are stock frame buttons (ids `0x1E4`–`0x1E7`, `DjDeck.fxr`), 64 × 26 like Hold, built on the screen's first tick as its oldest children (`dj_fx_tick`, vt `+0x00`, then stock's `0x080AEB45`). The tick lights them from `mx_route` and asks for the repaint passes as the Song tick does.
   - **Presses:** `dj_fx_child` (vt `+0x30`) flips the route on the press and swallows the release; everything else goes to stock's `0x080B1EE5` (Hold A/B are ids `0x97` / `0x98`, type 2).
   - **Knobs:** `dj_fx_event` (vt `+0x34`) takes event 0x32 unless INFO is held (debounced level `0x24009BDE`, 0 = held; INFO does nothing else on this screen). Stock uses encoder 2 for FX A and 3 for FX B (`FUN_080B0D54`).
   - **Routing state:** `MxState.route[2]` (`+0x4E`), bits 1 Proj, 2 Loop.
+- **Master in the FX row** (lineup only):
+  - `fxret.S` under `WARP_LINEUP`: labels `A Dly` / `B Rvb` / `EQ` / `Master`, edges 0 / 80 / 160 / 240 / 320; the fourth button (`0x7A3`) does `App_SetScreen(0x29)`, Tools page 4. `fx_row_button` is exported for dj.c.
+  - **On the Tools screen** (App+`0x1FA58`, vtable `0x080F18A4`): `dj_tools_tick` (+0x00) and `dj_tools_event` (+0x34) keep the bottom right: on page 4 (byte `+0xA5E0`) the tab bar (`+0x9E28`, y 0–38) is hidden and our four frame buttons (`DjDeck.mrow`, built once with `fx_row_button`, Master lit) are shown; on the other pages the reverse. `dj_tools_child` (+0x30) sends A / B / EQ on to `fxret_child_event` and swallows Master.
+  - **Tools tabs:** the Mix line's tab-name word `0x080EEE90` → "Master" is left out of the lineup build (`build_patch.py`), so Tools shows four tabs; page 4 still builds (the `cmp r6,#4` patches stay). INFO's Tools cycle: `movs r1,#0x29` at `0x080A30B6` → `#0x25`.
 - **Ring:** 16384 blocks × 128 frames of int16 stereo (43.7 s, 8 MB) plus one anchor per block: the block's start in 1/65536 ticks.
   - **Borrowed from stock's sample cache, only while needed.** SDRAM has about 1 MB free after boot (measured on the unit), so the ring can't be a reservation of its own: an 8 MB grab at boot hung the unit. Instead, while a DJ loop is on or an audio loop is held, 131 of the cache's 615 entries are borrowed. Each entry is 8192 stereo frames as two 32 KB float buffers (`+0x04` L, `+0x08` R), 64 KB in all.
     - 128 entries hold the audio, 2 hold the anchors, and 1 is scratch for a block's loop audio.
@@ -263,7 +268,8 @@ These cases call the C directly with fake players and a fake Song widget:
 - **Sequence:** jump; round the steps; a starting sequence is left alone; the loop wraps; steps longer than the jump stay put.
 - **Song:** moves inside the scene; refused jumps and the scene to blink; the song flag around a moved step; the loop cut on the scene's end and holding the scene.
 - **UI:** SONG toggles the row; buttons; knobs; labels; the row is hidden in the grids; the blink; leaving the screen.
-- **DJ FX screen:** the four toggles (rects, texts, lit), built once; presses route, releases swallowed, Hold reaches stock; the bottom knobs are the filters, the top ones rest, INFO held gives them to stock; Hold A / B moved.
+- **DJ FX screen:** Hold / Loop / Proj rects in each half, the toggles' texts and lit states, built once; presses route, releases swallowed, Hold reaches stock; the bottom knobs are the filters, the top ones rest, INFO held gives them to stock; Hold's A / B line blank.
+- **Master in the FX row:** the Tools tabs on Main, the FX row (texts, rects, Master lit) on page 4; A / B / EQ go to their pages, Master stays; Master from the Return / EQ row opens page 4; no Master tab; INFO's cycle.
 
 **Not covered:** the two Player_Tick stubs inside a real Player_Tick, and drawing on the panel.
 
@@ -278,7 +284,8 @@ These cases call the C directly with fake players and a fake Song widget:
   - the loop holds the scene;
   - no pad restarts when the loop wraps over a scene start.
 - DJ FX screen:
-  - Hold A / B sit at the top of their half, the four toggles read `Proj` / `Loop` in full (64 px), and pressing them lights them.
+  - Hold, Loop, Proj read in full in each half and the upper Hold is clear of the bar display; pressing a toggle lights it.
+- Master: `A Dly | B Rvb | EQ | Master` reads in full on the Return, EQ and Master pages; Master shows the compressor settings and the row, with no Tools tabs; the knobs still edit the list there.
   - With both Proj on, the FX sound as before, now behind the compressor: a loud FX is no longer compressed, only limited.
   - Loop into an FX with Proj off: the FX on the audio loop only while the new project plays dry; switching it off lets the tail ring on.
   - Bottom knobs move the filters; with INFO held they swap FX as stock; Hold still works.

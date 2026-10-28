@@ -8,8 +8,9 @@ included by bungee_cave.S. docs/song-dj.md.
 # (address, new bytes, stock bytes)
 BYTES = [
     (0x080EEDF8, "d801", "0000"),          # Tools -> Clock: BPM Project / Global (0x1D8, mixer.c)
-    (0x080B231E, "b023", "8a23"),          # DJ FX screen: Hold A at y 176 (movs r3,#0xB0), was 138
-    (0x080B2352, "3823", "2523"),          # DJ FX screen: Hold B at y 56 (movs r3,#0x38), was 37
+    (0x080B2458, "39f90c08", "38f90c08"),  # DJ FX screen: Hold A's second line "A" -> "" (dj.c places it)
+    (0x080B245C, "39f90c08", "64ad0c08"),  # DJ FX screen: Hold B's "B" -> "" (the NUL after stock's "A")
+    (0x080A30B6, "2521", "2921"),          # INFO on Tools -> Clock: back to Main (Master is in the FX row)
 ]
 
 
@@ -34,5 +35,8 @@ def parts(stock, stock_bl):
         (0x080F0D90, "dj_fx_tick", 0x080AEB45),       # DJ FX +0x00 tick
         (0x080F0DC0, "dj_fx_child", 0x080B1EE5),      # DJ FX +0x30 onChildEvent
         (0x080F0DC4, "dj_fx_event", 0x080B1E9D),      # DJ FX +0x34 onEvent
+        (0x080F18A4, "dj_tools_tick", 0x080AEB45),    # Tools +0x00 tick
+        (0x080F18D4, "dj_tools_child", 0x080C5361),   # Tools +0x30 onChildEvent (Master: the FX row)
+        (0x080F18D8, "dj_tools_event", 0x080C52E1),   # Tools +0x34 onEvent
     ]
     return sites, vtable
