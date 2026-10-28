@@ -1150,6 +1150,19 @@ static void deck_hide(unsigned hidden)
         HIDE(w[i], hidden);
 }
 
+/* Every label lays its text out again when the deck opens. A stock label scrolls a text it thinks
+ * too wide and keeps that offset while hidden: the second open showed "op" / "oj" / "op 1" and lost
+ * "<< 16" until a knob set the text again. Setting it again starts the label from its first letter. */
+static void relabel(void)
+{
+    DjDeck *d = X->deck;
+    D->ui.lbl_jump = D->ui.lbl_loop = 0xFF;   /* labels() sets the top bar again */
+    set_text(d->cap[0], s_cap_loop);
+    set_text(d->cap[1], s_cap_proj);
+    set_text(d->line, X->line);
+    set_text(X->btn, "");                     /* labels() puts the hint back */
+}
+
 /* Every widget under w (and w) paints again in both passes: what HIDE alone does not do for the
  * children of a container coming back. Children hang off +0x18 (oldest), linked on through +0x20. */
 static void dirty_tree(void *w)
@@ -1200,6 +1213,8 @@ static void ui_update(void *song)
         deck_hide(!show);
         ui->shown = (unsigned char)show;
         X->ask |= 3;                     /* the whole screen changes: both passes */
+        if (show)
+            relabel();
     }
     if (show) {
         if (!u8(at(song, S_LIST), W_HIDDEN))
