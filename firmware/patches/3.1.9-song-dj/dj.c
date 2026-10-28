@@ -221,7 +221,8 @@ typedef struct {
     int facc[2];               /* +0xB4 encoder counts not yet a filter step: project, loop */
     unsigned char hid_list;    /* +0xBC stock's scene list was hidden before the deck */
     unsigned char hid_bar;     /* +0xBD stock's top bar likewise */
-    unsigned char rsv[2];
+    unsigned char ask;         /* +0xBE repaint passes our tick asks the GUI for: 1 partial, 2 full */
+    unsigned char rsv;
     char line[32];             /* +0xC0 scene line text */
 } DjXf;
 typedef char xf_fits[(XF_BASE + sizeof(DjXf) <= XF_END) ? 1 : -1];
@@ -716,10 +717,14 @@ static int wy(const void *w) { return (int)u32(w, 8); }
 static int ww(const void *w) { return (int)u32(w, 0xC); }
 static int wh(const void *w) { return (int)u32(w, 0x10); }
 
+/* A widget of ours paints again. The GUI only runs a pass when a screen tick raises its byte (the
+ * tick's flags: [0] full, [1] partial), and stock's Song tick knows nothing of our widgets, so
+ * dj_song_tick raises it for them (X->ask). */
 static void dirty(void *w)
 {
     *(unsigned char *)at(w, 0x31) = 1;
     *(unsigned char *)at(w, 0x32) = 1;
+    X->ask |= 1;
 }
 
 static void no_touch(void *w, const int *pt)
@@ -972,8 +977,24 @@ static void keep_text(void *btn, const char *t)
 {
     if (!u32(btn, 0))                /* not built (yet) */
         return;
-    if (!same((const char *)at(btn, BTN_TEXT_AT), t))
+    if (!same((const char *)at(btn, BTN_TEXT_AT), t)) {
         BTN_TEXT(btn, t);
+        X->ask |= 3;                 /* a label: both passes, as the Mix screen does */
+    }
+}
+
+static void set_lit(void *btn, unsigned on)
+{
+    if (u8(btn, 0x96) != on) {
+        BTN_STATE(btn, on);
+        X->ask |= 1;
+    }
+}
+
+static void set_text(void *btn, const char *t)
+{
+    BTN_TEXT(btn, t);
+    X->ask |= 3;
 }
 
 /* "3 Drop  > 4 Break": the scene playing (or last pressed with the song off) and the one queued or
@@ -1026,18 +1047,18 @@ static void labels(void *song)
     if (ui->lbl_jump != ui->jump_idx) {
         cat(ui->text[0], s_back, jump_n[ui->jump_idx]);
         cat(ui->text[1], jump_n[ui->jump_idx], s_fwd);
-        BTN_TEXT(D->btn[0], ui->text[0]);
-        BTN_TEXT(D->btn[1], ui->text[1]);
+        set_text(D->btn[0], ui->text[0]);
+        set_text(D->btn[1], ui->text[1]);
         ui->lbl_jump = ui->jump_idx;
     }
     if (ui->lbl_loop != want) {
         cat(ui->text[2], audio ? s_audio : s_loop, loop_n[want & 0x7F]);
-        BTN_TEXT(D->btn[2], ui->text[2]);
+        set_text(D->btn[2], ui->text[2]);
         ui->lbl_loop = want;
     }
-    BTN_STATE(D->btn[0], 0);   /* a press may have lit them */
-    BTN_STATE(D->btn[1], 0);
-    BTN_STATE(D->btn[2], ui->loop_on || audio);
+    set_lit(D->btn[0], 0);     /* a press may have lit them */
+    set_lit(D->btn[1], 0);
+    set_lit(D->btn[2], ui->loop_on || audio);
     line_text(X->line);
     keep_text(d->line, X->line);
     if (st != 2)                     /* the capture hint: BACK only once the pass is recorded */
@@ -1047,8 +1068,8 @@ static void labels(void *song)
         keep_text(X->btn, "");       /* xf_draw paints it; no text */
     if (X->drawn != mx_xf())
         dirty(X->btn);
-    BTN_STATE(d->cap[0], mx_filter_on(1));   /* lit while the filter is in */
-    BTN_STATE(d->cap[1], mx_filter_on(0));
+    set_lit(d->cap[0], (unsigned)mx_filter_on(1));   /* lit while the filter is in */
+    set_lit(d->cap[1], (unsigned)mx_filter_on(0));
     if (X->sl_drawn[0] != mx_filter(1) * 2 + mx_filter_on(1))
         dirty(d->sl[0]);
     if (X->sl_drawn[1] != mx_filter(0) * 2 + mx_filter_on(0))
@@ -1176,6 +1197,7 @@ static void ui_update(void *song)
         stock_hide(song, show);
         deck_hide(!show);
         ui->shown = (unsigned char)show;
+        X->ask |= 3;                     /* the whole screen changes: both passes */
     }
     if (show) {
         if (!u8(at(song, S_LIST), W_HIDDEN))
@@ -1206,6 +1228,12 @@ void dj_song_tick(void *song, void *flags, void *a, void *b)
     if (live())
         ui_update(song);
     SONG_TICK(song, flags, a, b);
+    if (live() && X->ask && flags) {     /* our widgets changed: ask the GUI for the pass(es) */
+        if (X->ask & 2)
+            ((unsigned char *)flags)[0] = 1;
+        ((unsigned char *)flags)[1] = 1;
+        X->ask = 0;
+    }
 }
 
 static void request_jump(int dir)

@@ -5881,9 +5881,18 @@ def t_dj_ui(bench, res):
     else:
         b.call(event, DJ_SONG_W, ev(0x32, 0, 400))
         res.check(("event", 0x32) in stock, "top-left knob stays BPM")
-    b.call(tick, DJ_SONG_W, 0, 0, 0)
+    flags = 0x2001C780
+    b.mu.mem_write(flags, b"\x00\x00")
+    b.call(tick, DJ_SONG_W, flags, 0, 0)
     texts = [b.cstr(DJ_UI + 0x20 + 16 * i) for i in range(3)]
     res.check(texts == ["<< 1/4", "1/4 >>", "Loop 4"], f"labels follow {texts}")
+    if deck:
+        res.check(bytes(b.mu.mem_read(flags, 2)) == b"\x01\x01",
+                  f"a changed label: the tick asks the GUI for both passes {bytes(b.mu.mem_read(flags, 2)).hex()}")
+        b.mu.mem_write(flags, b"\x00\x00")
+        b.call(tick, DJ_SONG_W, flags, 0, 0)
+        b.call(tick, DJ_SONG_W, flags, 0, 0)
+        res.check(b.u8(flags) == 0, "nothing changed: no full pass asked")
     b.mu.mem_write(DJ_SONG_W + 0x12194, b"\x02")
     b.call(tick, DJ_SONG_W, 0, 0, 0)
     res.check(b.u8(DJ_BTN + 0x30) == 1, "a scene grid open: row hidden")
