@@ -1483,22 +1483,22 @@ void dj_song_event(void *song, const void *ev)
 
 /* ---- DJ FX screen (UI task) ---- */
 
-/* Each half: Hold, Loop, Proj top-down, evenly spaced (y bottom-up), the upper one clear of the bar:
- *   176-202 Hold A, 148-174 Loop, 120-146 Proj: into FX A
- *    56- 82 Hold B,  28- 54 Loop,   0- 26 Proj: into FX B
+/* The left column, up to the counter label (y bottom-up), 5 px apart within an FX, 18 px between:
+ *   188-218 Hold A, 153-183 Loop, 118-148 Proj: into FX A
+ *    70-100 Hold B,  35- 65 Loop,   0- 30 Proj: into FX B
  * Stock's Hold buttons (+0x3C, +0x134) are moved here; their "A" / "B" line is blanked by sites.py.
  * The screen is built once at boot (App+0x905A0); our toggles join it on its first tick. */
 #define FX_HOLD_A   0x3C
 #define FX_HOLD_B   0x134
-#define FX_ROW_H    26
+#define FX_ROW_H    30
 static void fx_build(void *scr)
 {
-    static const int y[N_FXR] = {120, 148, 0, 28};   /* Proj A, Loop A, Proj B, Loop B */
+    static const int y[N_FXR] = {118, 153, 0, 35};   /* Proj A, Loop A, Proj B, Loop B */
     DjDeck *d = X->deck;
     unsigned i;
     X->fx_scr = scr;
-    set_rect(at(scr, FX_HOLD_A), 0, 176, 64, FX_ROW_H);
-    set_rect(at(scr, FX_HOLD_B), 0, 56, 64, FX_ROW_H);
+    set_rect(at(scr, FX_HOLD_A), 0, 188, 64, FX_ROW_H);
+    set_rect(at(scr, FX_HOLD_B), 0, 70, 64, FX_ROW_H);
     for (i = 0; i < N_FXR; i++) {
         place(scr, d->fxr[i], 0, ID_FXR + i, 0, y[i], 64, FX_ROW_H);
         BTN_TEXT(d->fxr[i], i & 1 ? s_cap_loop : s_cap_proj);
@@ -1557,6 +1557,7 @@ void dj_fx_event(void *scr, const void *ev)
 #define T_PAGE      0xA5E0     /* Tools: page shown (byte) */
 #define T_TABS      0x9E28     /* Tools: the tab bar along the bottom */
 #define PAGE_MASTER 4
+#define SCR_MASTER  0x29       /* App_SetScreen(0x29) shows Tools, but leaves its page byte as it was */
 #define FXR_ID      0x7A0      /* fxret.S: the FX row's ids, A B EQ Master */
 #define N_ROW       4
 extern void fx_row_button(void *btn, unsigned pos, unsigned lit);
@@ -1586,9 +1587,18 @@ static void master_row(void *tools)
             HIDE(d->mrow[i], !m);
 }
 
-/* Tools vtable +0x34: stock, then the bottom row as the page wants it (0xD4 shows the screen). */
+/* Tools vtable +0x34: stock, then the bottom row as the page wants it. On 0xD4 (shown) the page
+ * follows the screen first: Master for 0x29 (the FX row's Master), and Main for any other Tools
+ * screen that finds Master left over (it has no tab of its own). Stock then builds that page. */
 void dj_tools_event(void *tools, const void *ev)
 {
+    if (live() && u16(ev, 0) == 0xD4) {
+        unsigned char *page = (unsigned char *)at(tools, T_PAGE);
+        if (u8((void *)APP, APP_SCREEN) == SCR_MASTER)
+            *page = PAGE_MASTER;
+        else if (*page == PAGE_MASTER)
+            *page = 0;
+    }
     TOOLS_EVENT(tools, ev);
     if (live())
         master_row(tools);

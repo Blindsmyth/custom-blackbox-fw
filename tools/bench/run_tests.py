@@ -2855,6 +2855,18 @@ def t_master_gui(bench, res):
     pump()
     scr, page3 = where()
     res.check(scr == 0x29 and b.u8(page3 + 0xA5E0) == 4, f"screen 0x29 shows Master ({scr:#x})")
+    if "dj_tools_tick" in bench.sym:            # 3.1.T: Tools from elsewhere, then the FX row's Master
+        b.call(bench.sym["deck_init"])
+        b.call(SET_SCREEN, APP_OBJ, 0x25, 0, 0)
+        pump()
+        scr, page4 = where()
+        res.check(scr == 0x25 and b.u8(page4 + 0xA5E0) == 0, f"Tools from the menu: Main, not the leftover Master ({b.u8(page4 + 0xA5E0)})")
+        rows.clear()
+        b.call(SET_SCREEN, APP_OBJ, 0x29, 0, 0)
+        pump()
+        scr, page5 = where()
+        res.check(scr == 0x29 and b.u8(page5 + 0xA5E0) == 4 and rows[-8:] == want,
+                  f"Master from Main: the compressor list ({b.u8(page5 + 0xA5E0)}, {[hex(i) for i, _ in rows[-8:]]})")
 
 
 # ---- Warp Rubber (3.1.R): pairing, lane hook, card loader, engine ---------------------------
@@ -6456,12 +6468,12 @@ def t_dj_fx(bench, res):
     tick, child, event = sym["dj_fx_tick"], sym["dj_fx_child"], sym["dj_fx_event"]
     b.call(tick, scr, flags, 0, 0)
     t = toggles()
-    want = {0x1E4: ((0, 120, 64, 26), 1, 0, "Proj"), 0x1E5: ((0, 148, 64, 26), 0, 0, "Loop"),
-            0x1E6: ((0, 0, 64, 26), 1, 0, "Proj"), 0x1E7: ((0, 28, 64, 26), 0, 0, "Loop")}
+    want = {0x1E4: ((0, 118, 64, 30), 1, 0, "Proj"), 0x1E5: ((0, 153, 64, 30), 0, 0, "Loop"),
+            0x1E6: ((0, 0, 64, 30), 1, 0, "Proj"), 0x1E7: ((0, 35, 64, 30), 0, 0, "Loop")}
     res.check(t == want, f"first tick: four toggles under the Hold buttons, Proj lit {t}")
     hold = [tuple(_dj_s32(b.u32(scr + o + 4 + 4 * i)) for i in range(4)) for o in (0x3C, 0x134)]
-    res.check(hold == [(0, 176, 64, 26), (0, 56, 64, 26)],
-              f"Hold A over Loop over Proj (top 202, clear of the bar), Hold B likewise below {hold}")
+    res.check(hold == [(0, 188, 64, 30), (0, 70, 64, 30)],
+              f"Hold over Loop over Proj, up to the counter (218), Hold B likewise below {hold}")
     res.check(stock == [("tick", 0)] and b.u8(flags) == 1 and b.u8(flags + 1) == 1, "stock tick runs, both passes asked")
     b.call(tick, scr, flags, 0, 0)
     res.check(len(toggles()) == 4, "built once")
@@ -6532,7 +6544,10 @@ def t_master_row(bench, res):
     r = row()
     res.check(stock == [("event", 0xD4)] and len(r) == 4 and all(x[6] == 1 for x in r)
               and b.u8(tools + 0x9E28 + 0x30) == 0, f"Tools Main: tabs shown, the FX row hidden {r}")
-    b.mu.mem_write(tools + 0xA5E0, b"\x04")
+    app_scr = 0x24020088 + 0x8CA4
+    b.mu.mem_write(app_scr, b"\x29")                   # the FX row's Master: App_SetScreen(0x29)
+    b.call(sym["dj_tools_event"], tools, ev(0xD4))
+    res.check(b.u8(tools + 0xA5E0) == 4, f"shown as screen 0x29: the Master page (compressor), not Main ({b.u8(tools + 0xA5E0)})")
     b.call(sym["dj_tools_tick"], tools, flags, 0, 0)
     r = row()
     want = [("A Dly", 0, 0, 80, 38, 0, 0), ("B Rvb", 80, 0, 80, 38, 0, 0),
@@ -6551,6 +6566,13 @@ def t_master_row(bench, res):
     shown.clear()
     b.call(sym["fxret_child_event"], tools, ev(1, 0x7A3))
     res.check(shown == [0x29], f"Return / EQ page: Master opens Tools page 4 {shown}")
+    b.mu.mem_write(app_scr, b"\x25")                   # Tools from the menu, Master left over
+    b.call(sym["dj_tools_event"], tools, ev(0xD4))
+    res.check(b.u8(tools + 0xA5E0) == 0 and b.u8(tools + 0x9E28 + 0x30) == 0,
+              f"Tools opened otherwise: Main with its tabs ({b.u8(tools + 0xA5E0)})")
+    b.mu.mem_write(tools + 0xA5E0, b"\x02")
+    b.call(sym["dj_tools_event"], tools, ev(0xD4))
+    res.check(b.u8(tools + 0xA5E0) == 2, "another Tools page is kept")
     res.check(b.cstr(b.u32(0x080EEE90), 8) == "" and bytes(b.mu.mem_read(0x080A30B6, 2)) == b"\x25\x21",
               "Tools tabs: no Master; INFO after Clock goes back to Main")
 

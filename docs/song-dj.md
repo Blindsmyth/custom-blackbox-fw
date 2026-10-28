@@ -147,18 +147,18 @@ For going from one project into the next in a live set: capture a loop of the ma
 
 - **DJ FX screen** (FX from Pads): the FX run behind the compressor, and you pick what goes into each.
   ```
-  176-202  [ Hold ]     FX A (clear of the bar display above)
-  148-174  [ Loop ]     audio loop into FX A
-  120-146  [ Proj ]     project into FX A
-   56- 82  [ Hold ]     FX B
-   28- 54  [ Loop ]     audio loop into FX B
-    0- 26  [ Proj ]     project into FX B
+  188-218  [ Hold ]     FX A (up to the counter label)
+  153-183  [ Loop ]     audio loop into FX A
+  118-148  [ Proj ]     project into FX A
+   70-100  [ Hold ]     FX B
+   35- 65  [ Loop ]     audio loop into FX B
+    0- 30  [ Proj ]     project into FX B
   ```
   - A toggle is lit while that signal goes into the FX. At power on both Proj are on and both Loop off, which is stock's sound. Kept until power off.
   - **Through both FX in turn:** FX A runs first, then FX B. What went through an FX together stays mixed for the next one: with Proj and Loop into A, B gets that mix if either is routed to it. A signal not routed to an FX passes it dry.
   - **Nothing routed:** the FX runs on silence, so its echo or reverb tail rings on after you switch its last input off.
   - **Knobs:** bottom-left is the loop filter and bottom-right the project filter, as on the deck; the top ones do nothing. **Hold INFO** and turn the knobs to swap FX A / FX B as stock (right-hand knobs). Nothing on this screen shows the filters yet.
-- **Master is in the FX section:** the FX row along the bottom of the Return and EQ pages reads `A Dly | B Rvb | EQ | Master` (80 px each). Master opens the compressor and limiter settings (Tools page 4) with that same row instead of the Tools tabs. Tools itself is back to four tabs, and INFO on Tools cycles Main → Rec → MIDI → Clock → Main.
+- **Master is in the FX section:** the FX row along the bottom of the Return and EQ pages reads `A Dly | B Rvb | EQ | Master` (80 px each). Master opens the compressor and limiter settings (Tools page 4, starting with Compressor) with that same row instead of the Tools tabs. Tools itself is back to four tabs, and INFO on Tools cycles Main → Rec → MIDI → Clock → Main.
 - **Audio chain:** EQ → compressor → loop capture → filters and crossfader → DJ FX → limiter.
   - The compressor acts on the project only, so it stays per project: a captured loop keeps the compression of the project it came from.
   - Loops are recorded without the DJ FX, so you can put an FX on the loop live.
@@ -176,13 +176,14 @@ For going from one project into the next in a live set: capture a loop of the ma
   - **Fallbacks:** without our buffers, or a block longer than they hold (512 frames; the audio task's are 256), the container runs as stock on bus 0 in the tap. With `--mx-safe` the thunk is left out with the taps, so the FX stay where stock has them.
 - **DJ FX screen** (screen 0x37, App+`0x905A0`, constructor `FUN_080B20F0`, vtable `0x080F0D90`):
   - **Hold A / B** (`+0x3C`, `+0x134`, class `FUN_080A3F9C` with a second text line at `+0xA0`) get their new rects from `fx_build` (the screen never lays them out again). Their second line "A" / "B" is blanked by pointing the constructor's pool words `0x080B2458` / `0x080B245C` at the NUL after stock's "A" (`0x080CF939`); with that line empty the class centres "Hold" alone.
-  - **The toggles** are stock frame buttons (ids `0x1E4`–`0x1E7`, `DjDeck.fxr`), 64 × 26 like Hold, built on the screen's first tick as its oldest children (`dj_fx_tick`, vt `+0x00`, then stock's `0x080AEB45`). The tick lights them from `mx_route` and asks for the repaint passes as the Song tick does.
+  - **The toggles** are stock frame buttons (ids `0x1E4`–`0x1E7`, `DjDeck.fxr`), 64 × 30 like Hold, built on the screen's first tick as its oldest children (`dj_fx_tick`, vt `+0x00`, then stock's `0x080AEB45`). The tick lights them from `mx_route` and asks for the repaint passes as the Song tick does.
   - **Presses:** `dj_fx_child` (vt `+0x30`) flips the route on the press and swallows the release; everything else goes to stock's `0x080B1EE5` (Hold A/B are ids `0x97` / `0x98`, type 2).
   - **Knobs:** `dj_fx_event` (vt `+0x34`) takes event 0x32 unless INFO is held (debounced level `0x24009BDE`, 0 = held; INFO does nothing else on this screen). Stock uses encoder 2 for FX A and 3 for FX B (`FUN_080B0D54`).
   - **Routing state:** `MxState.route[2]` (`+0x4E`), bits 1 Proj, 2 Loop.
 - **Master in the FX row** (lineup only):
   - `fxret.S` under `WARP_LINEUP`: labels `A Dly` / `B Rvb` / `EQ` / `Master`, edges 0 / 80 / 160 / 240 / 320; the fourth button (`0x7A3`) does `App_SetScreen(0x29)`, Tools page 4. `fx_row_button` is exported for dj.c.
   - **On the Tools screen** (App+`0x1FA58`, vtable `0x080F18A4`): `dj_tools_tick` (+0x00) and `dj_tools_event` (+0x34) keep the bottom right: on page 4 (byte `+0xA5E0`) the tab bar (`+0x9E28`, y 0–38) is hidden and our four frame buttons (`DjDeck.mrow`, built once with `fx_row_button`, Master lit) are shown; on the other pages the reverse. `dj_tools_child` (+0x30) sends A / B / EQ on to `fxret_child_event` and swallows Master.
+  - **Which page:** `App_SetScreen(0x25..0x2A)` only shows the Tools screen; stock's GUI (`FUN_080AB4FC`) never sets its page byte, so 0x29 alone showed whatever page was last open (Main). `dj_tools_event` sets it on 0xD4 before stock builds the page: 4 when the app's screen (`App+0x8CA4`) is 0x29, and back to 0 when another Tools screen finds 4 left over.
   - **Tools tabs:** the Mix line's tab-name word `0x080EEE90` → "Master" is left out of the lineup build (`build_patch.py`), so Tools shows four tabs; page 4 still builds (the `cmp r6,#4` patches stay). INFO's Tools cycle: `movs r1,#0x29` at `0x080A30B6` → `#0x25`.
 - **Ring:** 16384 blocks × 128 frames of int16 stereo (43.7 s, 8 MB) plus one anchor per block: the block's start in 1/65536 ticks.
   - **Borrowed from stock's sample cache, only while needed.** SDRAM has about 1 MB free after boot (measured on the unit), so the ring can't be a reservation of its own: an 8 MB grab at boot hung the unit. Instead, while a DJ loop is on or an audio loop is held, 131 of the cache's 615 entries are borrowed. Each entry is 8192 stereo frames as two 32 KB float buffers (`+0x04` L, `+0x08` R), 64 KB in all.
