@@ -195,9 +195,12 @@ For going from one project into the next in a live set: capture a loop of the ma
 - **DJ FX routing (planned).**
   - **Layout:** on the DJ FX screen (0x37, constructor `FUN_080B20F0`), Hold A moves to y 176 and Hold B to y 56, by changing the `movs` immediates at `0x080B231E` / `0x080B2352`. Under each Hold button go two toggles, **Proj** and **Loop**, which pick what goes into that FX slot.
   - **Knobs:** bottom-left is the loop filter and bottom-right the project filter. Holding INFO gives the knobs back to stock, to swap FX.
-  - **Audio:** the mixer stage moves to just after the master EQ (`blx` `0x08053526`), before the FX container `SE+0x28D90`. Each slot then processes the sum of what is routed to it, by swapping bus 0's L/R pointers around the slot.
-  - **Open question:** should the capture point move to before the FX, so loops are captured dry?
-
+  - **Audio chain (decided):** EQ → compressor → capture → our mix → DJ FX → limiter. Stock runs the FX before the compressor (`blx` `0x08053526` is the master EQ, then the FX container `SE+0x28D90` on bus 0); they move behind it.
+    - **Compressor per track:** it acts on the project alone. A captured loop keeps the compression of the project it came from, and the new project gets its own settings.
+    - **Capture stays where it is** (`mx_comp_tap`, after the compressor), but the project there no longer has FX in it, so loops are recorded without FX and can be put through an FX live.
+    - **Our stage**, after the compressor: P = filtP(project)·gR, L = filtL(loop)·gL. The crossfader is before the FX, so echo tails ring on after a fade.
+    - **FX slots:** stock's own FX call after the EQ is skipped. We run FX A then FX B ourselves, in the compressor tap (or the bus tap when the compressor is off, where stock has no limiter either). Each slot processes the sum of what is routed to it, by pointing bus 0's L/R at our group buffer around the slot and putting them back after. Signals that went through an FX together stay mixed; signals not routed bypass it. The result is summed back into bus 0 and goes on to the limiter.
+    - **Later:** a glue compressor on the whole mix would go between the FX and the limiter.
 ### Bench
 
 ```bash
