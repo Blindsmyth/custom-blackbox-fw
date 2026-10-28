@@ -6098,14 +6098,18 @@ def t_mx_loop(bench, res):
     res.check(b.u32(MX + 0x9C) == 0x3F800000 and 0 < struct.unpack("<f", struct.pack("<I", b.u32(MX + 0xA0)))[0] < 1,
               "left of the middle: loop at full level, the project fading in")
     clk.block(sym)
-    b.call(sym["mx_set_xf"], 120)
+    b.call(sym["mx_set_xf"], 40)
     clk.block(sym)
     lo, ro = clk.block(sym)
-    res.check(abs(ro[64] - 0.25) < 0.002 and b.u32(MX + 0x9C + 4) == 0, f"12%: still in the dead zone, project silent ({ro[64]:.4f})")
-    b.call(sym["mx_set_xf"], 900)
+    res.check(abs(ro[64] - 0.25) < 0.002 and b.u32(MX + 0x9C + 4) == 0, f"4%: still in the dead zone, project silent ({ro[64]:.4f})")
+    b.call(sym["mx_set_xf"], 80)
+    clk.block(sym)
+    clk.block(sym)
+    res.check(b.u32(MX + 0x9C + 4) != 0, "8%: past the dead zone, the project starts")
+    b.call(sym["mx_set_xf"], 960)
     clk.block(sym)
     lo, ro = clk.block(sym)
-    res.check(b.u32(MX + 0x9C) == 0, "90%: the loop fully down")
+    res.check(b.u32(MX + 0x9C) == 0, "96%: the loop fully down")
     b.call(sym["mx_clear"])
     clk.block(sym)
     lo, ro = clk.block(sym)
@@ -6340,6 +6344,14 @@ def t_dj_gui(bench, res):
         deck = b.u32(0x38006F00 + 0xA4)
         widgets = [deck + i * 0xA0 for i in range(9)] + [DJ_BTN + i * 0xA0 for i in range(3)] + [0x38006F00]
         res.check(0xC0000000 <= deck < 0xC4000000, f"deck memory from SDRAM {deck:#x}")
+        pump()
+        relabels = []
+        hrel = mu.hook_add(UC_HOOK_CODE, lambda mu_, a_, s_, d: relabels.append(mu_.reg_read(bd.A.UC_ARM_REG_R0)),
+                           begin=0x080A3DEC, end=0x080A3DEC)
+        for _ in range(3):
+            pump()
+        mu.hook_del(hrel)
+        res.check(not relabels, f"no label set again while nothing changed {[hex(w) for w in relabels[:4]]}")
         res.check(b.u8(song + 0x1067C + 0x30) == 1 and b.u8(song + 0xFFE4 + 0x30) == 1,
                   "stock's scene list and top bar hidden under the deck")
         res.check(all(b.u8(w + 0x30) == 0 for w in widgets), "every deck widget shown")

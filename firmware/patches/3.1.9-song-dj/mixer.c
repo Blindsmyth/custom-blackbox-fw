@@ -60,7 +60,7 @@
 #define SEAM         96            /* samples of crossfade at the loop's seam (2 ms) */
 #define DEAD         8             /* filter knob -8..8 of -1000..1000: off */
 #define FILT_Q       0.8f
-#define XF_DEAD      0.15f         /* crossfader travel at each end with the other side silent */
+#define XF_DEAD      0.05f         /* crossfader travel at each end with the other side silent */
 #define ID_BPMG      0x1D8         /* Tools -> Clock "BPM:" Project / Global */
 
 #define ST_IDLE      0             /* no audio loop: the ring records */

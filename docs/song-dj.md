@@ -132,7 +132,7 @@ For going from one project into the next in a live set: capture a loop of the ma
     - **Loop / Proj** (the captions) take their filter out and back in. The slider keeps its place, drawn grey while out. They are lit while the filter is in.
     - **A capture resets both filters**: centred and in.
   - **Crossfader** (bottom, touch): a track that is dark at both ends, where one side is silent; a white knob; the loop's (cyan) and the project's (pink) level as bars at the edges.
-    - Each side stays at full level up to the middle and only then fades out (a cosine quarter), so both are full in the middle. The last 15% of travel at each end has the other side fully down.
+    - Each side stays at full level up to the middle and only then fades out (a cosine quarter), so both are full in the middle. The last 5% of travel at each end has the other side fully down.
     - Before a capture it reads `Loop on, then BACK`, then `Recording the loop...` until the pass playing now is fully recorded, then `BACK: capture loop`.
   - **Knobs follow the screen:**
 
@@ -166,11 +166,12 @@ For going from one project into the next in a live set: capture a loop of the ma
 - **Load** (`mx_load_begin`, at `bl` msg 0x36 `0x0809E258` in `SessionMgr_LoadBank`): it stops the held loop's recording and reads BPM Global.
 - **BPM** (`mx_bpm_send`, at `bl FUN_0804C59C` `0x0809CE82` in `SessionMgr_FinalizeBankLoading`): id 0x84 isn't sent to the tempo node; `Param_Set(App+0x3038, 0x84, playing BPM)` is done instead.
 - **Filters:** RBJ biquads with fixed Q 0.8. The cutoff comes from the pads' knob curve (`FUN_08060640`): LP from `1 + v`, HP from `v`. The knob is smoothed per block, and the coefficients are recomputed only when it moves.
-- **Crossfader:** with x the travel between the two 15% dead zones (0..1): left of the middle gL = 1 and gR = sin(x·π); right of it gL = cos((x − ½)·π) and gR = 1. Ramped over each block. Without a held loop, gR = 1.
+- **Crossfader:** with x the travel between the two 5% dead zones (0..1): left of the middle gL = 1 and gR = sin(x·π); right of it gL = cos((x − ½)·π) and gR = 1. Ramped over each block. Without a held loop, gR = 1.
 - **Deck view widgets:** stock frame buttons (`BTN_CTOR`, 0xA0 bytes) on the Song widget, each added as its oldest child, so it is drawn after stock's and hit before it.
   - **Own vtables:** the panel, waveform, sliders, crossfader and arrows use copies of the button vtable `0x080EFE48` with their own draw (vt+0x04); the panel, sliders and crossfader also have their own touches.
   - **Drawing:** stock's `FILL_RECT` `0x0808EA23` / `OUTLINE` `0x0808E995`, with palette 2 background, 17 track, 25 dead ends, 16 ticks, 3 knobs, 5 loop, 4 project. The arrows are rows of `FILL_RECT` over the stock button draw, with no font glyph. Widgets are marked dirty (+0x31/+0x32) when their value moves; the waveform repaints at most every 50 ms.
   - **Widths:** a stock button label shows the tail of a text that is too wide for it (`Loop` in 48 px read `op`), so the captions are 72 px and Loop is 120 px, enough for `Audio 1/16`.
+  - **Labels are set only when their text changes** (`keep_text` compares the button's text at `+0x65`: the label is embedded at `+0x34`, its text at label `+0x31`). Setting the same text every tick also re-lays the label out and repaints it, and that jammed the labels.
   - **Closing the deck** marks the whole Song widget tree dirty. `HIDE` alone only marks the container, so its rows and buttons stayed black until something else repainted them.
   - **Stock hidden:** while the deck is shown, the scene list container (`Song+0x1067C`) and the top bar (`Song+0xFFE4`) are hidden. They are hidden again if a refresh shows them, and restored to their own state when the deck closes.
   - **Memory:** the deck's 9 own widgets, the project peaks and the lane buffers (`DjDeck`, ~2.3 KB) come from the bottom SDRAM allocator once at boot (`dj_init`); the crossfader and the deck state stay in SRAM4 (`DjXf`).

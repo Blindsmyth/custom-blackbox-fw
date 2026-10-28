@@ -162,7 +162,7 @@ typedef void *(*alloc_fn)(unsigned);
 #define W_HIDDEN    0x30
 #define S_LIST      0x1067C    /* Song: the scene list (container of the 32 rows), 0..180 */
 #define S_BAR       0xFFE4     /* Song: the top button bar, 182..220 (its hidden byte is S_BAR_HID) */
-#define BTN_LABEL   0x34       /* button: its label widget; the text is at +0x65 */
+#define BTN_TEXT_AT 0x65       /* button: its label is embedded at +0x34, the text at label +0x31 */
 #define SCENE_TAB   0x29C0     /* App: 32 scenes of 0x30; the name (a str) at +0x2C */
 #define SCENE_SIZE  0x30
 #define SCENE_NAME  0x2C
@@ -695,6 +695,7 @@ typedef const char *(*cstr_fn)(const void *);
 #define PAL_TICK    16         /* 0x444444: bar ticks */
 #define XF_MARGIN   12
 #define XF_KNOB     16
+#define XF_DEAD_PCT 5          /* as mixer.c XF_DEAD: the ends where one side is silent */
 #define SL_MARGIN   8
 #define SL_KNOB     10
 #define SL_SNAP     40         /* a slider dragged this close to the centre is Off */
@@ -802,7 +803,7 @@ static void xf_draw(void *w, const void *ctx)
 {
     void *cv = canvas(ctx);
     int x = wx(w), y = wy(w), wd = ww(w), h = wh(w);
-    int r[4], tx = x + XF_MARGIN, tw = wd - 2 * XF_MARGIN, dz = tw * 15 / 100, pos, gl, gr;
+    int r[4], tx = x + XF_MARGIN, tw = wd - 2 * XF_MARGIN, dz = tw * XF_DEAD_PCT / 100, pos, gl, gr;
     if (mx_state() != 2 || tw <= 0) {
         BTN_DRAW(w, ctx);
         return;
@@ -964,13 +965,14 @@ static int same(const char *a, const char *b)
     return *a == *b;
 }
 
-/* Our text on a stock button, again only when it shows something else. */
+/* Our text on a stock button, again only when it shows something else: BTN_TEXT also lays the
+ * label out again and repaints it, so setting the same text every tick jammed the labels. The label
+ * is embedded at +0x34, its text at label +0x31 (ui_draw_cstring), i.e. button +0x65. */
 static void keep_text(void *btn, const char *t)
 {
-    void *lbl = (void *)u32(btn, BTN_LABEL);
     if (!u32(btn, 0))                /* not built (yet) */
         return;
-    if (!lbl || !same((const char *)at(lbl, 0x65), t))
+    if (!same((const char *)at(btn, BTN_TEXT_AT), t))
         BTN_TEXT(btn, t);
 }
 
