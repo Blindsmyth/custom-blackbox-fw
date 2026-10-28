@@ -907,14 +907,14 @@ static const char s_cap_loop[] = "Loop";
 static const char s_cap_proj[] = "Proj";
 
 /* The deck view, y bottom-up (stock's header 222-240 stays):
- *   182-220  << | >> | ^ | v | Loop          (Loop above the top-right knob that sizes it)
+ *   182-220  << | >> | ^ | v | Loop          (64 | 64 | 36 | 36 | 120; Loop above the top-right knob)
  *   164-180  scene line
  *    78-162  waveform: loop lane over project lane
  *    46- 76  Loop [filter] | Proj [filter]
  *     0- 44  crossfader */
 static void build(void *song)
 {
-    static const int x[NBTN] = {0, 70, 228}, w[NBTN] = {70, 70, 92};
+    static const int x[NBTN] = {0, 64, 200}, w[NBTN] = {64, 64, 120};   /* Loop: "Audio 1/16" fits */
     DjDeck *d = X->deck;
     unsigned i;
     D->ui.song = song;
@@ -925,14 +925,14 @@ static void build(void *song)
     place(song, d->panel, panel_vt, ID_PANEL, 0, 0, 320, 221);
     for (i = 0; i < NBTN; i++)
         place(song, D->btn[i], 0, ID_DJ + i, x[i], 182, w[i], 38);
-    place(song, d->up, arrow_vt, ID_UP, 140, 182, 44, 38);
-    place(song, d->dn, arrow_vt, ID_DN, 184, 182, 44, 38);
+    place(song, d->up, arrow_vt, ID_UP, 128, 182, 36, 38);
+    place(song, d->dn, arrow_vt, ID_DN, 164, 182, 36, 38);
     place(song, d->line, 0, ID_LINE, 0, 163, 320, 18);
     place(song, d->wave, wave_vt, ID_WAVE, 0, 78, 320, 84);
-    place(song, d->cap[0], 0, ID_CAP0, 0, 46, 48, 30);
-    place(song, d->sl[0], slider_vt, ID_SL0, 48, 46, 112, 30);
-    place(song, d->cap[1], 0, ID_CAP1, 160, 46, 48, 30);
-    place(song, d->sl[1], slider_vt, ID_SL1, 208, 46, 112, 30);
+    place(song, d->cap[0], 0, ID_CAP0, 0, 46, 72, 30);    /* a stock label shows the tail of a */
+    place(song, d->sl[0], slider_vt, ID_SL0, 72, 46, 88, 30);    /* text too wide: "Loop" needs ~72 */
+    place(song, d->cap[1], 0, ID_CAP1, 160, 46, 72, 30);
+    place(song, d->sl[1], slider_vt, ID_SL1, 232, 46, 88, 30);
     place(song, X->btn, xf_vt, XF_ID, 0, 0, 320, 44);
     BTN_TEXT(d->cap[0], s_cap_loop);
     BTN_TEXT(d->cap[1], s_cap_proj);

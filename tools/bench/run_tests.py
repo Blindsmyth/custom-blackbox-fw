@@ -5850,7 +5850,7 @@ def t_dj_ui(bench, res):
         res.check(b.u32(DJ_SONG_W + 0x18) == 0x38006F00 and b.u32(DJ_BTN + 0x2C) == DJ_SONG_W,
                   "deck widgets are the Song widget's oldest children (drawn last, hit first)")
         rects = [tuple(b.u32(DJ_BTN + i * 0xA0 + o) for o in (4, 8, 0xC, 0x10)) for i in range(3)]
-        res.check(rects == [(0, 182, 70, 38), (70, 182, 70, 38), (228, 182, 92, 38)],
+        res.check(rects == [(0, 182, 64, 38), (64, 182, 64, 38), (200, 182, 120, 38)],
                   f"top bar: << and >> left, Loop at the far right {rects}")
     else:
         res.check(b.u32(DJ_SONG_W + 0x18) == DJ_BTN + 2 * 0xA0 and b.u32(DJ_BTN + 0x2C) == DJ_SONG_W,
@@ -6091,7 +6091,12 @@ def t_mx_loop(bench, res):
     b.call(sym["mx_set_xf"], 500)
     clk.block(sym)
     lo, ro = clk.block(sym)
-    res.check(abs(ro[64] - 0.25 * 2 * 0.70710678) < 0.003, f"crossfader centre: equal power ({ro[64]:.4f})")
+    res.check(abs(ro[64] - 0.25 * 2) < 0.003, f"crossfader centre: both sides at full level ({ro[64]:.4f})")
+    b.call(sym["mx_set_xf"], 350)              # left of the middle: the loop still full
+    clk.block(sym)
+    clk.block(sym)
+    res.check(b.u32(MX + 0x9C) == 0x3F800000 and 0 < struct.unpack("<f", struct.pack("<I", b.u32(MX + 0xA0)))[0] < 1,
+              "left of the middle: loop at full level, the project fading in")
     clk.block(sym)
     b.call(sym["mx_set_xf"], 120)
     clk.block(sym)
@@ -6353,10 +6358,10 @@ def t_dj_gui(bench, res):
         res.check(len(fills) > 10, f"waveform and sliders painted with stock's FILL_RECT ({len(fills)} fills)")
         sl0 = deck + 7 * 0xA0                    # DjDeck: panel up dn line wave cap0 cap1 sl0 sl1
         pt = 0x2001C700
-        b.mu.mem_write(pt, struct.pack("<ii", 48 + 8 + 104, 60))            # right end of the loop slider
+        b.mu.mem_write(pt, struct.pack("<ii", 72 + 8 + 80, 60))             # right end of the loop slider
         b.call(b.u32(b.u32(sl0) + 0x10), sl0, pt)
         far = b.u16(0x38007A60 + 0x2C)
-        b.mu.mem_write(pt, struct.pack("<ii", 48 + 8 + 49, 60))             # 1 px off its centre (track 96 px)
+        b.mu.mem_write(pt, struct.pack("<ii", 72 + 8 + 37, 60))             # 1 px off its centre (track 72 px)
         b.call(b.u32(b.u32(sl0) + 0x10), sl0, pt)
         res.check(far == 1000 and b.u16(0x38007A60 + 0x2C) == 0,
                   f"loop slider: right end = 1000, near the centre snaps Off ({far}, {b.u16(0x38007A60 + 0x2C)})")

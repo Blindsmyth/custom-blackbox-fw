@@ -634,8 +634,8 @@ static void held(long long t)
 }
 
 /* The crossfader's gains for this block: from the last block's to the target's, ramped over it.
- * Equal power (sin / cos) between two dead zones: the last XF_DEAD of travel at each end has the
- * other side fully down. */
+ * Each side stays at full level up to the middle and only then fades out (a cos quarter), so both are
+ * full in the middle. The last XF_DEAD of travel at each end has the other side fully down. */
 static void gains(float *l0, float *r0, float *l1, float *r1)
 {
     float x1 = M->xf_t;
@@ -647,9 +647,15 @@ static void gains(float *l0, float *r0, float *l1, float *r1)
     } else {
         float x = (x1 - XF_DEAD) / (1.0f - 2 * XF_DEAD), s, c;
         x = x < 0 ? 0 : x > 1.0f ? 1.0f : x;
-        sincos_(x * 1.5707963f, &s, &c);
-        *l1 = x <= 0 ? 1.0f : x >= 1.0f ? 0 : c;
-        *r1 = x <= 0 ? 0 : x >= 1.0f ? 1.0f : s;
+        if (x <= 0.5f) {                     /* left half: the loop full, the project comes in */
+            sincos_(x * 3.1415927f, &s, &c);
+            *l1 = 1.0f;
+            *r1 = x <= 0 ? 0 : s;
+        } else {                             /* right half: the project full, the loop goes */
+            sincos_((x - 0.5f) * 3.1415927f, &s, &c);
+            *l1 = x >= 1.0f ? 0 : c;
+            *r1 = 1.0f;
+        }
     }
     M->xf = x1;
     M->gl = *l1;
