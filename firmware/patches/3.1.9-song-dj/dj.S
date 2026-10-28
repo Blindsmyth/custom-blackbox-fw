@@ -4,6 +4,7 @@
 
 .global hook_dj_step
 .global hook_dj_step0
+.global mx_eq_thunk
 
 @ 0x0805DD34 in Player_Tick replaces `ldr.w r4, [fp, #0x20]` (the current step; stock adds 1 next and
 @ compares it with the step count in r7). fp = player. dj_seq_step reads this step's tick and length
@@ -36,5 +37,17 @@ hook_dj_step0:
     bl      dj_seq_done
     ldr     r12, =DJ_SAVE
     ldr     lr, [r12]
+    bx      lr
+
+@ 0x08053522 in the master render replaces `mov r1, r8; ldr r3, [r3, #0xC]` before `blx r3`, the
+@ master EQ node's process: mx_eq (mixer.c) runs it without its next stage, the DJ FX. r0 = the
+@ node, r8 = SE. We return past the `blx r3`; stock reloads every register it needs after it.
+.thumb_func
+mx_eq_thunk:
+    push    {r4, lr}
+    mov     r1, r8
+    bl      mx_eq
+    pop     {r4, lr}
+    add.w   lr, lr, #2
     bx      lr
 .ltorg

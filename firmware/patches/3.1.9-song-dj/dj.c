@@ -19,6 +19,9 @@
  * The mixer (mixer.c) adds the audio loop: BACK with Loop on captures it, and while it plays the Loop
  * button and the loop knob act on it. The top knobs are the project and loop filters while the row is
  * shown, and a crossfader strip sits above the row.
+ *
+ * On the DJ FX screen, Proj / Loop under each Hold button pick what goes into that FX, and the bottom
+ * knobs are the loop / project filters; with INFO held the knobs swap the FX as stock.
  */
 
 #define DJ_BASE      0x38007400u   /* SRAM4: past RbVoice + diag (0x38007000-0x38007148), below */
@@ -199,9 +202,18 @@ typedef void (*post_fn)(void *, void *);
 #define ID_SL1      0x1E2      /* project filter */
 #define ID_JNUM     0x1E3      /* the jump size, between << and >> */
 #define N_DECK      10
+#define ID_FXR      0x1E4      /* DJ FX screen: Proj, Loop into FX A, then into FX B */
+#define N_FXR       4
+#define R_PROJ      1          /* as mixer.c */
+#define R_LOOP      2
+#define FX_TICK     ((tick_fn)0x080AEB45u)     /* DJ FX vtable +0x00 (the generic container tick) */
+#define FX_CHILD    ((child_fn)0x080B1EE5u)    /* DJ FX vtable +0x30 */
+#define FX_EVENT    ((event_fn)0x080B1E9Du)    /* DJ FX vtable +0x34 */
+#define INFO_LEVEL  (*(volatile const unsigned char *)0x24009BDEu)   /* INFO debounced: 0 = held */
+#define FX_N        512        /* as mixer.c */
 
-/* The deck's own widgets and the project's peaks: 23 KB from the bottom SDRAM allocator at boot
- * (SRAM4 has no room; SDRAM has ~1 MB free after boot, measured on the unit). */
+/* The deck's own widgets, the project's peaks and the mixer's FX buffers: 35 KB from the bottom SDRAM
+ * allocator at boot (SRAM4 has no room; SDRAM has ~1 MB free after boot, measured on the unit). */
 typedef struct {
     unsigned panel[0x28], up[0x28], dn[0x28], line[0x28], wave[0x28];
     unsigned cap[2][0x28], sl[2][0x28];        /* stock buttons, 0xA0 each */
@@ -209,6 +221,8 @@ typedef struct {
     unsigned char proj[4096];                  /* mixer.c's project peaks (PROJ_N) */
     unsigned proj_t[4096];                     /* and the transport tick of each */
     unsigned char lane[2][160];                /* columns being drawn */
+    unsigned fxr[N_FXR][0x28];                 /* DJ FX screen: the Proj / Loop toggles */
+    float fx[6][FX_N];                         /* mixer.c's FX buffers (audio task) */
 } DjDeck;
 
 /* The crossfader and the deck's state: SRAM4 0x38006F00, free on 3.1.T between Song cues' SgState
@@ -227,6 +241,7 @@ typedef struct {
     unsigned char ask;         /* +0xBE repaint passes our tick asks the GUI for: 1 partial, 2 full */
     unsigned char rsv;
     char line[32];             /* +0xC0 scene line text */
+    void *fx_scr;              /* +0xE0 the DJ FX screen our toggles were built on */
 } DjXf;
 typedef char xf_fits[(XF_BASE + sizeof(DjXf) <= XF_END) ? 1 : -1];
 #define X ((DjXf *)XF_BASE)
@@ -252,6 +267,9 @@ void mx_set_xf(int v);
 void mx_set_filter(unsigned side, int v);
 int mx_filter_on(unsigned side);
 void mx_set_filter_on(unsigned side, int on);
+int mx_route(unsigned slot);
+void mx_set_route(unsigned slot, int r);
+void mx_set_fx(float *buf);
 
 static unsigned u8(const void *p, unsigned off) { return ((const unsigned char *)p)[off]; }
 static unsigned u16(const void *p, unsigned off) { return *(const unsigned short *)((const char *)p + off); }
@@ -310,6 +328,7 @@ void dj_init(void)
                 c[i] = 0;
             X->deck = d;
             mx_set_proj(d->proj, d->proj_t);
+            mx_set_fx(d->fx[0]);
         }
     }
 }
@@ -1279,17 +1298,23 @@ void dj_song_key(void *app, unsigned screen, unsigned a, unsigned b)
 }
 
 /* Song vtable +0x00. */
-void dj_song_tick(void *song, void *flags, void *a, void *b)
+/* Our widgets changed: ask the GUI for the pass(es). */
+static void ask_passes(void *flags)
 {
-    if (live())
-        ui_update(song);
-    SONG_TICK(song, flags, a, b);
-    if (live() && X->ask && flags) {     /* our widgets changed: ask the GUI for the pass(es) */
+    if (live() && X->ask && flags) {
         if (X->ask & 2)
             ((unsigned char *)flags)[0] = 1;
         ((unsigned char *)flags)[1] = 1;
         X->ask = 0;
     }
+}
+
+void dj_song_tick(void *song, void *flags, void *a, void *b)
+{
+    if (live())
+        ui_update(song);
+    SONG_TICK(song, flags, a, b);
+    ask_passes(flags);
 }
 
 static void request_jump(int dir)
@@ -1451,4 +1476,64 @@ void dj_song_event(void *song, const void *ev)
         }
     }
     SONG_EVENT(song, ev);
+}
+
+/* ---- DJ FX screen (UI task) ---- */
+
+/* Under each Hold button (moved up by sites.py: A 176-240, B 56-120), y bottom-up:
+ *   150-174 Proj, 124-148 Loop: into FX A
+ *    30- 54 Proj,   4- 28 Loop: into FX B
+ * The screen is built once at boot (App+0x905A0); our toggles join it on its first tick. */
+static void fx_build(void *scr)
+{
+    static const int y[N_FXR] = {150, 124, 30, 4};
+    DjDeck *d = X->deck;
+    unsigned i;
+    X->fx_scr = scr;
+    for (i = 0; i < N_FXR; i++) {
+        place(scr, d->fxr[i], 0, ID_FXR + i, 0, y[i], 64, 24);
+        BTN_TEXT(d->fxr[i], i & 1 ? s_cap_loop : s_cap_proj);
+        HIDE(d->fxr[i], 0);
+    }
+    X->ask |= 3;
+}
+
+static unsigned fx_bit(unsigned i) { return i & 1 ? R_LOOP : R_PROJ; }
+
+/* DJ FX vtable +0x00: the toggles lit as the mixer routes. */
+void dj_fx_tick(void *scr, void *flags, void *a, void *b)
+{
+    unsigned i;
+    if (live() && X->deck) {
+        if (X->fx_scr != scr)
+            fx_build(scr);
+        for (i = 0; i < N_FXR; i++)
+            set_lit(X->deck->fxr[i], (mx_route(i >> 1) & fx_bit(i)) != 0);
+    }
+    FX_TICK(scr, flags, a, b);
+    ask_passes(flags);
+}
+
+/* DJ FX vtable +0x30: a toggle flips on the press; its release is swallowed. */
+unsigned dj_fx_child(void *scr, const void *ev)
+{
+    unsigned type = u16(ev, 0), id = u32(ev, 0xC) - ID_FXR;
+    if (!live() || (type != 1 && type != 2) || id >= N_FXR)
+        return FX_CHILD(scr, ev);
+    if (type == 1)
+        mx_set_route(id >> 1, mx_route(id >> 1) ^ fx_bit(id));
+    return 0;
+}
+
+/* DJ FX vtable +0x34: the bottom knobs are the loop (left) and project (right) filters, as on the
+ * deck, and the top ones rest; with INFO held all four are stock's (the right ones swap FX A / B). */
+void dj_fx_event(void *scr, const void *ev)
+{
+    if (live() && u16(ev, 0) == 0x32 && INFO_LEVEL) {
+        unsigned k = u16(ev, 0xC);
+        if (k == KNOB_BL || k == KNOB_BR)
+            filter_knob(k == KNOB_BL, (short)u16(ev, 0x10));
+        return;
+    }
+    FX_EVENT(scr, ev);
 }

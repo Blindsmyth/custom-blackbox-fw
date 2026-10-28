@@ -145,11 +145,40 @@ For going from one project into the next in a live set: capture a loop of the ma
     | Bottom-left | loop filter |
     | Bottom-right | project filter |
 
+- **DJ FX screen** (FX from Pads): the FX run behind the compressor, and you pick what goes into each.
+  ```
+  176-240  [Hold A]     (moved up from 138)
+  150-174  [ Proj ]     project into FX A
+  124-148  [ Loop ]     audio loop into FX A
+   56-120  [Hold B]     (moved up from 37)
+   30- 54  [ Proj ]     project into FX B
+    4- 28  [ Loop ]     audio loop into FX B
+  ```
+  - A toggle is lit while that signal goes into the FX. At power on both Proj are on and both Loop off, which is stock's sound. Kept until power off.
+  - **Through both FX in turn:** FX A runs first, then FX B. What went through an FX together stays mixed for the next one: with Proj and Loop into A, B gets that mix if either is routed to it. A signal not routed to an FX passes it dry.
+  - **Nothing routed:** the FX runs on silence, so its echo or reverb tail rings on after you switch its last input off.
+  - **Knobs:** bottom-left is the loop filter and bottom-right the project filter, as on the deck; the top ones do nothing. **Hold INFO** and turn the knobs to swap FX A / FX B as stock (right-hand knobs). Nothing on this screen shows the filters yet.
+- **Audio chain:** EQ → compressor → loop capture → filters and crossfader → DJ FX → limiter.
+  - The compressor acts on the project only, so it stays per project: a captured loop keeps the compression of the project it came from.
+  - Loops are recorded without the DJ FX, so you can put an FX on the loop live.
+  - The crossfader is before the FX, so tails ring on after a fade.
+
 ### How it works
 
 - **Tap:** `mx_comp_tap` replaces the compressor's gain-ramp `bl FUN_0804BE40` at `0x0804EE9A`, inside `FUN_0804EDDC`. That is after the compressor and before the limiter.
   - With the compressor off, `mx_bus_tap` does the same where both render paths meet. It replaces `bl FUN_0804D9C0` at `0x0805354A`, which gets bus 0's L/R before the output volumes.
   - A per-block flag (`done`) keeps it to one run per block.
+- **DJ FX moved behind the compressor.**
+  - **Stock:** the master render processes the master EQ node (`SE+0x28D8C`, `blx r3` at `0x08053526`). That node ends by processing its next stage (node `+8`), the DJ FX container `SE+0x28D90` (`FUN_0806E244`): slots of 0x2C at `+0x20` (count `+0x180`, 2 in stock: FX A, FX B), each processing its FX in place on bus 0 (`FUN_0805F37C(SE, 0)` = `SE+0x150E4`: cap, n, L, R, silent byte, stereo byte), then its own next (`+8`). `+0x182` set skips the slots.
+  - **Ours:** `mx_eq_thunk` replaces `mov r1, r8; ldr r3, [r3, #0xC]` at `0x08053522` and returns past the `blx r3`. `mx_eq` processes the node with `+8` cleared for the call, then puts it back and flags `fx_due`.
+  - **The tap** (`mx_block`, after the parts) then runs the slots itself (`fx_run`). P stays in bus 0's buffers, and L (the loop after its filter and crossfader gain) goes to `DjDeck.fx` instead of being added in. For each slot, bus 0's L/R point at the buffer of what is routed to it; after the slot, `FUN_0804D9C0` normalises it (silent → zeros, mono → L copied to R), and bus 0 is put back. P and L both routed: L is added into P first and they stay together. Nothing routed: a silent buffer, whose output is added to the end. Then whatever was not mixed in is added to P, and the container's own next stage runs as stock.
+  - **Fallbacks:** without our buffers, or a block longer than they hold (512 frames; the audio task's are 256), the container runs as stock on bus 0 in the tap. With `--mx-safe` the thunk is left out with the taps, so the FX stay where stock has them.
+- **DJ FX screen** (screen 0x37, App+`0x905A0`, constructor `FUN_080B20F0`, vtable `0x080F0D90`):
+  - **Hold A / B** are moved by the `movs r3` y immediates at `0x080B231E` (`0x8A` → `0xB0`) and `0x080B2352` (`0x25` → `0x38`).
+  - **The toggles** are stock frame buttons (ids `0x1E4`–`0x1E7`, `DjDeck.fxr`), built on the screen's first tick as its oldest children (`dj_fx_tick`, vt `+0x00`, then stock's `0x080AEB45`). The tick lights them from `mx_route` and asks for the repaint passes as the Song tick does.
+  - **Presses:** `dj_fx_child` (vt `+0x30`) flips the route on the press and swallows the release; everything else goes to stock's `0x080B1EE5` (Hold A/B are ids `0x97` / `0x98`, type 2).
+  - **Knobs:** `dj_fx_event` (vt `+0x34`) takes event 0x32 unless INFO is held (debounced level `0x24009BDE`, 0 = held; INFO does nothing else on this screen). Stock uses encoder 2 for FX A and 3 for FX B (`FUN_080B0D54`).
+  - **Routing state:** `MxState.route[2]` (`+0x4E`), bits 1 Proj, 2 Loop.
 - **Ring:** 16384 blocks × 128 frames of int16 stereo (43.7 s, 8 MB) plus one anchor per block: the block's start in 1/65536 ticks.
   - **Borrowed from stock's sample cache, only while needed.** SDRAM has about 1 MB free after boot (measured on the unit), so the ring can't be a reservation of its own: an 8 MB grab at boot hung the unit. Instead, while a DJ loop is on or an audio loop is held, 131 of the cache's 615 entries are borrowed. Each entry is 8192 stereo frames as two 32 KB float buffers (`+0x04` L, `+0x08` R), 64 KB in all.
     - 128 entries hold the audio, 2 hold the anchors, and 1 is scratch for a block's loop audio.
@@ -178,7 +207,7 @@ For going from one project into the next in a live set: capture a loop of the ma
   - **Closing the deck** marks the whole Song widget tree dirty. `HIDE` alone only marks the container, so its rows and buttons stayed black until something else repainted them. The walk follows the parent links (+0x2C) without a stack: a 12-deep stack had dropped most of the tree (1140 of 1184 widgets on the bench), which is what still left normal Song mode black at times. Labels (vtable `0x080F17A4`) are passed by: their text starts at +0x31, where other widgets keep the repaint bytes, so marking them wrote over their first two letters ("Edit" read "it", "Loop" "op"). They paint with their parent anyway.
   - **Leaving the screen** (event 0xD3) closes the deck at once and keeps DJ mode asked for, so the first tick back opens it again.
   - **Stock hidden:** while the deck is shown, the scene list container (`Song+0x1067C`) and the top bar (`Song+0xFFE4`) are hidden. They are hidden again if a refresh shows them, and restored to their own state when the deck closes.
-  - **Memory:** the deck's 10 own widgets, the project peaks with their ticks and the lane buffers (`DjDeck`, ~23 KB) come from the bottom SDRAM allocator once at boot (`dj_init`); the crossfader and the deck state stay in SRAM4 (`DjXf`).
+  - **Memory:** the deck's 10 own widgets, the project peaks with their ticks, the lane buffers, the DJ FX toggles and the FX buffers (`DjDeck`, ~35 KB) come from the bottom SDRAM allocator once at boot (`dj_init`); the crossfader and the deck state stay in SRAM4 (`DjXf`).
 - **Waveform data:**
   - **Audio loop lane:** `ring_put` stores one peak byte per ring block in the scratch entry, after lp/rp. `mx_wave_loop` maps columns to blocks through the anchors (only while an audio loop is armed or held), and sets `ui_busy` so the give-back waits until the drawing is done (`mx_wave_done`).
   - **Project lane:** the audio task keeps one peak per 4 parts (~10.7 ms) of the project, before our mix, with its transport tick, in `DjDeck.proj` / `proj_t` (4096 each, ~43.7 s). `mx_wave_proj` reads the newest; `mx_wave_pass` maps a loop pass's columns to peaks by tick (binary search from `proj_v`, the first peak since the transport last went back). It needs no ring, so the project's loop shows while the ring holds the audio loop.
@@ -192,15 +221,9 @@ For going from one project into the next in a live set: capture a loop of the ma
 - **Next bar on load.** The new project's sequences and song are not yet cued to the next bar after a load. The transport keeps running, and stock's Quant Size still decides when a launched sequence starts.
 - **On the unit:** the borrowed ring hasn't been tried yet. Check that loops with many long Clips still stream cleanly while a loop is on.
 - **Pads routed to Out 2/3** aren't on bus 0, so they aren't captured or crossfaded.
-- **DJ FX routing (planned).**
-  - **Layout:** on the DJ FX screen (0x37, constructor `FUN_080B20F0`), Hold A moves to y 176 and Hold B to y 56, by changing the `movs` immediates at `0x080B231E` / `0x080B2352`. Under each Hold button go two toggles, **Proj** and **Loop**, which pick what goes into that FX slot.
-  - **Knobs:** bottom-left is the loop filter and bottom-right the project filter. Holding INFO gives the knobs back to stock, to swap FX.
-  - **Audio chain (decided):** EQ → compressor → capture → our mix → DJ FX → limiter. Stock runs the FX before the compressor (`blx` `0x08053526` is the master EQ, then the FX container `SE+0x28D90` on bus 0); they move behind it.
-    - **Compressor per track:** it acts on the project alone. A captured loop keeps the compression of the project it came from, and the new project gets its own settings.
-    - **Capture stays where it is** (`mx_comp_tap`, after the compressor), but the project there no longer has FX in it, so loops are recorded without FX and can be put through an FX live.
-    - **Our stage**, after the compressor: P = filtP(project)·gR, L = filtL(loop)·gL. The crossfader is before the FX, so echo tails ring on after a fade.
-    - **FX slots:** stock's own FX call after the EQ is skipped. We run FX A then FX B ourselves, in the compressor tap (or the bus tap when the compressor is off, where stock has no limiter either). Each slot processes the sum of what is routed to it, by pointing bus 0's L/R at our group buffer around the slot and putting them back after. Signals that went through an FX together stay mixed; signals not routed bypass it. The result is summed back into bus 0 and goes on to the limiter.
-    - **Later:** a glue compressor on the whole mix would go between the FX and the limiter.
+- **Glue compressor:** a compressor on the whole mix, between the DJ FX and the limiter, could come later.
+- **Filter display on the DJ FX screen:** the knobs work there, but nothing shows them yet.
+
 ### Bench
 
 ```bash
@@ -218,13 +241,14 @@ The cases call `mixer.c` with a fake engine clock and a saw on L:
 - LP / HP / centre;
 - BPM Global vs Project;
 - BACK, the knobs, the shared loop size and Loop on the Song screen;
-- the project's loop pass in the waveform.
+- the project's loop pass in the waveform;
+- the DJ FX (fake slots, FX A x2 and FX B +1): the EQ node runs without them, then Proj/Proj, Loop/Proj, none/none (tails), both/Loop (mixed at A), bus 0 put back, bypass, a too-long block, and a held loop through FX A on its own.
 
-**Not covered:** the taps inside a real render, and drawing.
+**Not covered:** the taps inside a real render, the real FX, and drawing.
 
 ## Memory
 
-The mixer's `MxState` follows it at `0x38007A60`–`0x38007C64` (fits below `0x38008000`). The crossfader and the deck's state (`DjXf`) are at `0x38006F00`–`0x38006FE0`, and the deck's own widgets (`DjDeck`, ~23 KB) come from the bottom SDRAM allocator at boot, between Song cues' `SgState` and RbVoice. The ring and its anchors live in 131 borrowed sample-cache entries, only while a loop is on (the entry indices are in `MxState.ent`).
+The mixer's `MxState` follows it at `0x38007A60`–`0x38007C84` (fits below `0x38008000`). The crossfader and the deck's state (`DjXf`) are at `0x38006F00`–`0x38006FE4`, and the deck's own widgets, peaks and FX buffers (`DjDeck`, ~35 KB) come from the bottom SDRAM allocator at boot, between Song cues' `SgState` and RbVoice. The ring and its anchors live in 131 borrowed sample-cache entries, only while a loop is on (the entry indices are in `MxState.ent`).
 
 `DjState` sits at SRAM4 `0x38007400`–`0x38007A58`. That is free on 3.1.T: it is past RbVoice and diag (`0x38007000`–`0x38007148`) and below Bungee's grain input (`0x38008000`). It also stays clear of Song cues' `SgState` (`0x38006400`–`0x38006BDC`, on `claude/eloquent-lichterman-6eca6a`). `dj_init`, called from `deck_init` at boot, clears it. Nothing is saved in presets, and the pads' own Clip Deck loop settings are never touched.
 
@@ -239,6 +263,7 @@ These cases call the C directly with fake players and a fake Song widget:
 - **Sequence:** jump; round the steps; a starting sequence is left alone; the loop wraps; steps longer than the jump stay put.
 - **Song:** moves inside the scene; refused jumps and the scene to blink; the song flag around a moved step; the loop cut on the scene's end and holding the scene.
 - **UI:** SONG toggles the row; buttons; knobs; labels; the row is hidden in the grids; the blink; leaving the screen.
+- **DJ FX screen:** the four toggles (rects, texts, lit), built once; presses route, releases swallowed, Hold reaches stock; the bottom knobs are the filters, the top ones rest, INFO held gives them to stock; Hold A / B moved.
 
 **Not covered:** the two Player_Tick stubs inside a real Player_Tick, and drawing on the panel.
 
@@ -252,3 +277,9 @@ These cases call the C directly with fake players and a fake Song widget:
   - the scene ends one bar early after a 1-bar jump;
   - the loop holds the scene;
   - no pad restarts when the loop wraps over a scene start.
+- DJ FX screen:
+  - Hold A / B sit at the top of their half, the four toggles read `Proj` / `Loop` in full (64 px), and pressing them lights them.
+  - With both Proj on, the FX sound as before, now behind the compressor: a loud FX is no longer compressed, only limited.
+  - Loop into an FX with Proj off: the FX on the audio loop only while the new project plays dry; switching it off lets the tail ring on.
+  - Bottom knobs move the filters; with INFO held they swap FX as stock; Hold still works.
+  - No extra CPU dropouts with both FX on.

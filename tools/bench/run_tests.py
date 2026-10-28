@@ -6058,6 +6058,18 @@ def t_mx_loop(bench, res):
             if 0.02 < e + 0.5 < 0.98:            # away from the saw's edge
                 errs.append(abs(lo[i] - e))
     res.check(errs and max(errs) < 0.004, f"plays the pass [W - 1 bar, W) by tick (max err {max(errs or [9]):.4f})")
+    if "mx_eq" in sym:                          # the loop on its own into FX A, the project into B
+        calls, _ = _mx_fx_rig(bench)
+        b.call(sym["mx_set_route"], 0, 2)
+        t0 = clk.tick
+        b.call(sym["mx_eq"], MX_FXW, MX_SE)
+        lo, ro = clk.block(sym)
+        errs = [abs(lo[i] - (2 * expect(t0 + i * clk.tpf()) + 1)) for i in (3, 64, 120)
+                if 0.02 < expect(t0 + i * clk.tpf()) + 0.5 < 0.98]
+        res.check(errs and max(errs) < 0.01 and calls[0][1] != MX_BUF,
+                  f"FX A on the held loop alone: 2 x loop + B's 1 on the silent project (max err {max(errs or [9]):.4f})")
+        b.call(sym["mx_set_route"], 0, 1)
+        lo, ro = clk.block(sym)                 # a plain block again for the checks below
     res.check(abs(ro[64] - 0.25) < 0.002, f"loop only on R {ro[64]:.4f}")
     wb, ws, wl = 0xC09C0000, 0xC09C0100, 0xC09C0108
     head = _dj_s32(b.call(sym["mx_wave_loop"], wb, 40, ws, wl))
@@ -6298,6 +6310,170 @@ def t_mx_ui(bench, res):
     res.check(off1 == 1 and b.u8(MX + 0xF6) == 1 and b.u8(MX + 0xF6 + 1) == 0,
               "Loop / Proj toggle their filter out and in")
     b.call(sym["mx_set_filter_on"], 0, 1)
+
+
+MX_FXW = 0xC0960000             # fake EQ node, vtables, DJ FX screen widget
+
+
+def _mx_fx_rig(bench):
+    """A fake EQ node whose next stage is the DJ FX container in the fake engine, with two slots.
+    FX A doubles its input, FX B adds 1.0 (so on silence it is a 'tail'). Returns (calls, eq_seen)."""
+    b = bench.b
+    cont, bus = MX_SE + 0x28D90, MX_SE + 0x150E4
+    b.mu.mem_write(MX_FXW, b"\x00" * 0x400)
+    b.mu.mem_write(cont, b"\x00" * 0x190)
+    b.w32(MX_FXW, MX_FXW + 0x100)                       # node: vt +0xC = the EQ process (stubbed)
+    b.w32(MX_FXW + 8, cont)
+    b.w32(MX_FXW + 0x10C, 0x08047601)
+    b.w32(cont, MX_FXW + 0x300)                         # container: vt +0xC = stock's process
+    b.w32(MX_FXW + 0x30C, 0x0806DD0D)
+    for k in range(2):
+        b.w32(cont + 0x20 + k * 0x2C, MX_FXW + 0x200)   # slot: vt +0xC = stock's slot process
+    b.w32(MX_FXW + 0x20C, 0x0806E191)
+    b.mu.mem_write(cont + 0x180, struct.pack("<H", 2))
+    b.mu.mem_write(bus, struct.pack("<IIIIBB", 128, 128, MX_BUF, MX_BUF + 512, 0, 1))
+    calls, eq_seen = [], []
+    b.stub(0x08047600, lambda bd_: eq_seen.append(bd_.u32(bd_.arg(0) + 8)) or 1)
+    b.stub(0x0806DD0C, lambda bd_: calls.append(("stock", 0, 0)) or 1)
+
+    def fx(bd_):
+        k = (bd_.arg(0) - cont - 0x20) // 0x2C
+        n, lp, rp = bd_.u32(bus + 4), bd_.u32(bus + 8), bd_.u32(bus + 12)
+        for p in (lp, rp):
+            xs = struct.unpack(f"<{n}f", bytes(bd_.mu.mem_read(p, 4 * n)))
+            if p == lp:
+                calls.append((k, p, round(xs[5], 4)))
+            bd_.mu.mem_write(p, struct.pack(f"<{n}f", *[x * 2 if k == 0 else x + 1.0 for x in xs]))
+        return 1
+    b.stub(0x0806E190, fx)
+    return calls, eq_seen
+
+
+def t_mx_fx(bench, res):
+    """The DJ FX behind the compressor: mx_eq runs the master EQ node without its next stage (the FX
+    container), and the tap runs FX A then FX B on what the DJ FX screen routes to each."""
+    b = bench.b
+    sym = bench.sym
+    clk = _mx_setup(bench)
+    calls, eq_seen = _mx_fx_rig(bench)
+    cont, bus = MX_SE + 0x28D90, MX_SE + 0x150E4
+    bus0 = bytes(b.mu.mem_read(bus, 0x14))
+    proj = lambda i: 0.1
+
+    def block():
+        calls.clear()
+        eq_seen.clear()
+        b.call(sym["mx_eq"], MX_FXW, MX_SE)
+        return clk.block(sym, left=proj)
+
+    res.check(b.u8(MX + 0x4E) == 1 and b.u8(MX + 0x4F) == 1, "boot: Proj into FX A and FX B (stock's sound)")
+    lo, ro = block()
+    res.check(eq_seen == [0] and b.u32(MX_FXW + 8) == cont, f"EQ ran without its next stage, put back {eq_seen}")
+    res.check([c[0] for c in calls] == [0, 1] and all(c[1] == MX_BUF for c in calls),
+              f"Proj, Proj: A then B on the project in place {calls}")
+    res.check(abs(lo[5] - 1.2) < 1e-5 and abs(ro[5] - 1.5) < 1e-5, f"... (0.1 x 2 + 1 = {lo[5]:.4f}, R {ro[5]:.4f})")
+    res.check(bytes(b.mu.mem_read(bus, 0x14)) == bus0, "bus 0 put back after the slots")
+    b.call(sym["mx_set_route"], 0, 2)
+    lo, ro = block()
+    res.check(calls[0][1] != MX_BUF and calls[0][2] == 0 and calls[1][1] == MX_BUF and abs(calls[1][2] - 0.1) < 1e-5,
+              f"A Loop, B Proj: A on the loop (silent), B on the project {calls}")
+    res.check(abs(lo[5] - 1.1) < 1e-5, f"... project skips A: 0.1 + 1 ({lo[5]:.4f})")
+    b.call(sym["mx_set_route"], 0, 0)
+    b.call(sym["mx_set_route"], 1, 0)
+    lo, ro = block()
+    res.check(all(c[1] != MX_BUF and c[2] == 0 for c in calls) and len(calls) == 2,
+              f"nothing routed: both run on silence {calls}")
+    res.check(abs(lo[5] - 1.1) < 1e-5 and abs(ro[5] - 1.25) < 1e-5,
+              f"... the project dry, B's tail added ({lo[5]:.4f}, {ro[5]:.4f})")
+    b.call(sym["mx_set_route"], 0, 3)
+    b.call(sym["mx_set_route"], 1, 2)
+    lo, ro = block()
+    res.check(all(c[1] == MX_BUF for c in calls) and abs(calls[1][2] - 0.2) < 1e-5,
+              f"A both, B Loop: mixed at A, B takes the mix {calls}")
+    res.check(abs(lo[5] - 1.2) < 1e-5, f"... ({lo[5]:.4f})")
+    calls.clear()
+    clk.block(sym, left=proj)
+    res.check(calls == [], "no mx_eq this block (stock ran the FX): none run again")
+    b.mu.mem_write(cont + 0x182, b"\x01")
+    lo, ro = block()
+    res.check(calls == [] and abs(lo[5] - 0.1) < 1e-5, f"container bypassed: no slot runs {calls}")
+    b.mu.mem_write(cont + 0x182, b"\x00")
+    calls.clear()
+    b.call(sym["mx_eq"], MX_FXW, MX_SE)
+    b.call(sym["mx_block"], 0xC09A0000, 0xC09A1000, 640)
+    res.check(calls == [("stock", 0, 0)], f"a block too long for the buffers: the FX as stock {calls}")
+    b.call(sym["mx_set_route"], 0, 1)
+    b.call(sym["mx_set_route"], 1, 1)
+
+
+def t_dj_fx(bench, res):
+    """The DJ FX screen: Proj / Loop toggles under each Hold button route into FX A / B; the bottom
+    knobs are the filters, all four stock's with INFO held; Hold A / B moved up."""
+    b = bench.b
+    sym = bench.sym
+    b.call(sym["deck_init"])
+    scr, flags = MX_FXW + 0x1000, MX_FXW + 0x3000
+    b.mu.mem_write(scr, b"\x00" * 0x1000)
+    b.mu.mem_write(flags, b"\x00" * 4)
+    stock = []
+    b.stub(0x080AEB44, lambda bd_: stock.append(("tick", 0)))
+    b.stub(0x080B1EE4, lambda bd_: stock.append(("child", bd_.u32(bd_.arg(1) + 0xC))) or 1)
+    b.stub(0x080B1E9C, lambda bd_: stock.append(("event", bd_.u16(bd_.arg(1)))))
+
+    def ev(kind, a, c=0):
+        b.mu.mem_write(DJ_EV, b"\x00" * 0x20)
+        b.mu.mem_write(DJ_EV, kind.to_bytes(2, "little"))
+        b.w32(DJ_EV + 0xC, a)
+        b.mu.mem_write(DJ_EV + 0x10, (c & 0xFFFF).to_bytes(2, "little"))
+        return DJ_EV
+
+    def toggles():
+        out, w = {}, b.u32(scr + 0x18)
+        while w:
+            out[b.u16(w + 0x14)] = (tuple(_dj_s32(b.u32(w + 4 + 4 * i)) for i in range(4)), b.u8(w + 0x96),
+                                    b.u8(w + 0x30), b.cstr(w + 0x65, 8))
+            w = b.u32(w + 0x20)
+        return out
+
+    tick, child, event = sym["dj_fx_tick"], sym["dj_fx_child"], sym["dj_fx_event"]
+    b.call(tick, scr, flags, 0, 0)
+    t = toggles()
+    want = {0x1E4: ((0, 150, 64, 24), 1, 0, "Proj"), 0x1E5: ((0, 124, 64, 24), 0, 0, "Loop"),
+            0x1E6: ((0, 30, 64, 24), 1, 0, "Proj"), 0x1E7: ((0, 4, 64, 24), 0, 0, "Loop")}
+    res.check(t == want, f"first tick: four toggles under the Hold buttons, Proj lit {t}")
+    res.check(stock == [("tick", 0)] and b.u8(flags) == 1 and b.u8(flags + 1) == 1, "stock tick runs, both passes asked")
+    b.call(tick, scr, flags, 0, 0)
+    res.check(len(toggles()) == 4, "built once")
+    stock.clear()
+    res.check(b.call(child, scr, ev(1, 0x1E5)) == 0 and b.call(sym["mx_route"], 0) == 3, "Loop A pressed: loop into FX A too")
+    res.check(b.call(child, scr, ev(2, 0x1E5)) == 0 and b.call(sym["mx_route"], 0) == 3 and stock == [], "release swallowed")
+    b.call(child, scr, ev(1, 0x1E6))
+    res.check(b.call(sym["mx_route"], 1) == 0, "Proj B pressed: nothing into FX B")
+    b.call(tick, scr, flags, 0, 0)
+    t = toggles()
+    res.check([t[i][1] for i in range(0x1E4, 0x1E8)] == [1, 1, 0, 0], f"lit as routed {[t[i][1] for i in range(0x1E4, 0x1E8)]}")
+    stock.clear()
+    b.call(child, scr, ev(2, 0x97))
+    res.check(stock == [("child", 0x97)], "Hold A reaches stock")
+    stock.clear()
+    b.mu.mem_write(0x24009BDE, b"\x01")                 # INFO up
+    f0 = b.call(sym["mx_filter"], 1)
+    b.call(event, scr, ev(0x32, 1, 80))
+    b.call(event, scr, ev(0x32, 3, -80))
+    b.call(event, scr, ev(0x32, 2, 400))
+    res.check(stock == [] and _dj_s32(b.call(sym["mx_filter"], 1)) == f0 + 10 and _dj_s32(b.call(sym["mx_filter"], 0)) == -10,
+              "knobs: bottom-left loop filter, bottom-right project filter, top ones rest")
+    b.mu.mem_write(0x24009BDE, b"\x00")                 # INFO held
+    b.call(event, scr, ev(0x32, 3, 400))
+    res.check(stock == [("event", 0x32)] and _dj_s32(b.call(sym["mx_filter"], 0)) == -10, "INFO held: the knob is stock's (FX swap)")
+    b.mu.mem_write(0x24009BDE, b"\x01")
+    stock.clear()
+    b.call(event, scr, ev(0x66, 0))
+    res.check(stock == [("event", 0x66)], "other events reach stock")
+    res.check(bytes(b.mu.mem_read(0x080B231E, 2)) == b"\xb0\x23" and bytes(b.mu.mem_read(0x080B2352, 2)) == b"\x38\x23",
+              "Hold A at y 176, Hold B at y 56")
+    b.call(sym["mx_set_route"], 0, 1)
+    b.call(sym["mx_set_route"], 1, 1)
 
 
 def t_dj_gui(bench, res):
@@ -7973,6 +8149,8 @@ def main():
             ("Song DJ: SONG toggles the row, buttons, knobs, labels, blink", t_dj_ui),
             ("Song DJ: real GUI, SONG on the Song screen", t_dj_gui),
         ]
+        if "dj_fx_tick" in sym:
+            cases += [("Song DJ: DJ FX screen toggles, knobs, Hold moved", t_dj_fx)]
     if "mx_block" in sym:
         cases += [
             ("Song DJ mixer: capture, play, grow, load, repitch, clear", t_mx_loop),
@@ -7981,6 +8159,8 @@ def main():
             ("Song DJ mixer: BPM Global keeps the tempo on load", t_mx_bpm),
             ("Song DJ mixer: BACK, knobs, Loop on the Song screen", t_mx_ui),
         ]
+        if "mx_eq" in sym:
+            cases += [("Song DJ mixer: DJ FX behind the compressor, routed", t_mx_fx)]
     if "deck_knob_turn" in sym:
         kind = kind + "+editor"
         cases += [

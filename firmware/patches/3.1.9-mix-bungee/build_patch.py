@@ -76,10 +76,10 @@ if REPITCH:
     OUT, OUT_B2, SYMS = (OUT.parent / "repitch" / OUT.name, OUT_B2.parent / "repitch" / OUT_B2.name,
                          SYMS.parent / "repitch" / SYMS.name)
     OUT.parent.mkdir(exist_ok=True)
-# --mx-safe (with --lineup): the Song DJ mixer without its audio taps (mx_comp_tap, mx_bus_tap), for
+# --mx-safe (with --lineup): the Song DJ mixer without its audio taps (mx_comp_tap, mx_bus_tap, mx_eq_thunk), for
 # finding faults on the unit. The BPM setting and the Song screen stay. Images go to lineup/mx-safe/.
 MX_SAFE = LINEUP and "--mx-safe" in sys.argv
-MX_TAPS = {"mx_comp_tap", "mx_bus_tap"}
+MX_TAPS = {"mx_comp_tap", "mx_bus_tap", "mx_eq_thunk"}
 if MX_SAFE:
     _sub = "mx-safe"
     BUILD = BUNGEE / f"build-lineup-{_sub}"

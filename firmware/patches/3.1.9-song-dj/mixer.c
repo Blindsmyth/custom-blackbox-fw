@@ -3,10 +3,14 @@
  * built: docs/song-dj.md "Mixer".
  *
  * The master is tapped after the compressor and before the limiter (mx_comp_tap, inside
- * FUN_0804EDDC), or where both render paths meet when the compressor is off (mx_bus_tap). Per block:
- *   x    = the project (bus 0)
+ * FUN_0804EDDC), or where both render paths meet when the compressor is off (mx_bus_tap). The DJ FX
+ * are moved there too: stock runs them right after the master EQ, before the compressor (mx_eq).
+ * Per block:
+ *   x    = the project (bus 0), compressed, without the DJ FX
  *   ring <- x, while recording (int16 stereo in SDRAM, one tick anchor per 128-frame block)
- *   out  = filtP(x) * gR + filtL(loop) * gL, gL^2 + gR^2 = 1 (gR = 1 without a loop)
+ *   P    = filtP(x) * gR, L = filtL(loop) * gL, gL^2 + gR^2 = 1 (gR = 1 without a loop)
+ *   out  = P and L through FX A then FX B, each slot taking what the DJ FX screen routes to it
+ *          (fx_run), then the limiter
  * The loop is a window [A, A + len) of recorded transport ticks, read at (t - B) mod len: it is
  * mapped by tick, so it stays on the global bar grid and repitches when the BPM changes.
  *
@@ -63,6 +67,15 @@
 #define FILT_Q       0.8f
 #define XF_DEAD      0.05f         /* crossfader travel at each end with the other side silent */
 #define ID_BPMG      0x1D8         /* Tools -> Clock "BPM:" Project / Global */
+#define FX_N         512           /* frames dj.c's FX buffers hold (the audio task's blocks are 256) */
+#define SE_BUS0      0x150E4       /* FUN_0805F37C(SE, 0): bus 0 {cap, n, L, R, silent, stereo} */
+#define SE_FX        0x28D90       /* DJ FX container (FUN_0806E244): the master EQ node's next stage */
+#define FXC_SLOTS    0x20          /* container: slots of 0x2C, processed in order */
+#define FXC_SLOT_SZ  0x2C
+#define FXC_COUNT    0x180         /* u16 */
+#define FXC_BYPASS   0x182         /* byte: stock then skips the slots */
+#define R_PROJ       1             /* route: the project into the slot */
+#define R_LOOP       2             /*        the audio loop */
 
 #define ST_IDLE      0             /* no audio loop: the ring records */
 #define ST_ARMED     1             /* captured: waiting for the DJ loop's end W */
@@ -91,7 +104,7 @@ typedef struct {
     unsigned char done;       /* +0x4A the compressor tap ran this block */
     unsigned char playing;    /* +0x4B transport was playing last block */
     short xf_now;             /* +0x4C 0 .. 1000, for the UI */
-    short rsv4e;
+    unsigned char route[2];   /* +0x4E UI: R_* into FX A, FX B (DJ FX screen) */
     unsigned have;            /* +0x50 H_*: written by pcmStreamer (mx_stream_poll) */
     unsigned drain_at;        /* +0x54 audio blocks seen when the drain started */
     unsigned wblk;            /* +0x58 blocks written (monotonic) */
@@ -123,6 +136,8 @@ typedef struct {
     float proj_pk;            /* the peak being gathered */
     unsigned *proj_t;         /* the transport tick of each peak (dj.c's) */
     unsigned proj_v;          /* first peak since the transport last went back: ticks rise from it */
+    float *fxb;               /* dj.c's FX buffers: loop, silence, tails (L then R, FX_N each) */
+    unsigned char fx_due;     /* mx_eq left the DJ FX out this block: the tap runs them */
 } MxState;
 
 typedef char mx_fits[(MX_BASE + sizeof(MxState) <= MX_END) ? 1 : -1];
@@ -195,6 +210,7 @@ void mx_init(void)
     M->xf_now = 1000;
     M->xf_ui = 1000;
     M->gr = 1.0f;
+    M->route[0] = M->route[1] = R_PROJ;   /* stock's sound: the project through both */
     M->magic = MX_MAGIC;
 }
 
@@ -667,8 +683,9 @@ static void gains(float *l0, float *r0, float *l1, float *r1)
 }
 
 /* 128 frames of a master block, in place. The first part of a block reads the engine's transport;
- * a later part (cont) runs on from the first. */
-static void part(float *l, float *r, int n, int cont)
+ * a later part (cont) runs on from the first. With ll / lr the loop goes there (zeroed by the caller)
+ * instead of into l / r, for the FX. */
+static void part(float *l, float *r, float *ll, float *lr, int n, int cont)
 {
     unsigned char *se = SE;
     long long t, tq;
@@ -752,20 +769,156 @@ static void part(float *l, float *r, int n, int cont)
         const float *lp = loop ? scratch(0) : 0, *rp = loop ? scratch(1) : 0;
         for (i = 0; i < n; i++) {
             float gl = l0 + dl * (i + 1), gr = r0 + dr * (i + 1);
-            l[i] = l[i] * gr + (loop ? lp[i] * gl : 0);
-            r[i] = r[i] * gr + (loop ? rp[i] * gl : 0);
+            l[i] *= gr;
+            r[i] *= gr;
+            if (!loop)
+                continue;
+            if (ll) {
+                ll[i] = lp[i] * gl;
+                lr[i] = rp[i] * gl;
+            } else {
+                l[i] += lp[i] * gl;
+                r[i] += rp[i] * gl;
+            }
         }
     }
+}
+
+/* ---- the DJ FX, behind the compressor (audio task) ---- */
+
+typedef int (*proc_fn)(void *, void *);
+
+/* A node's process (vt +0x0C): the EQ node, the FX container, an FX slot. */
+static void proc(void *obj, void *se) { ((proc_fn)(*(void *const *const *)obj)[3])(obj, se); }
+
+/* 0x08053522 (mx_eq_thunk) in the master render: the master EQ node, which ends by processing its
+ * next stage, the DJ FX container. That is left out here; our tap runs the FX after the compressor. */
+void mx_eq(void *node, unsigned char *se)
+{
+    unsigned *nd = (unsigned *)node, fx = nd[2];
+    if (!live() || !M->fxb || fx != (unsigned)(se + SE_FX)) {
+        proc(node, se);
+        return;
+    }
+    nd[2] = 0;
+    proc(node, se);
+    nd[2] = fx;
+    M->fx_due = 1;
+}
+
+static void zero(float *d, int n)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        d[i] = 0;
+}
+
+static void add(float *d, const float *s, int n)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        d[i] += s[i];
+}
+
+/* One FX slot on l / r: an FX reads and writes bus 0 in place (FUN_0805F37C(SE, fx +0x1E = 0)), so
+ * bus 0 points at l / r around it and is put back after. */
+static void slot_on(unsigned char *se, void *slot, float *l, float *r, int n)
+{
+    unsigned *bus = (unsigned *)(se + SE_BUS0), keep[5], i;
+    float *a = 0, *b = 0;
+    for (i = 0; i < 5; i++)
+        keep[i] = bus[i];
+    bus[1] = (unsigned)n;
+    bus[2] = (unsigned)l;
+    bus[3] = (unsigned)r;
+    ((unsigned char *)bus)[0x10] = 0;        /* not silent, */
+    ((unsigned char *)bus)[0x11] = 1;        /* both channels */
+    proc(slot, se);
+    BUS_LR(bus, &a, &b);                     /* silent or mono after it: zeroed / L copied to R */
+    for (i = 0; a != l && a && i < (unsigned)n; i++)
+        l[i] = a[i];
+    for (i = 0; b != r && b && i < (unsigned)n; i++)
+        r[i] = b[i];
+    for (i = 0; i < 5; i++)
+        bus[i] = keep[i];
+}
+
+/* FX A then FX B on P (l / r) and L (ll / lr). A slot takes the sum of what is routed to it; what
+ * went through an FX together stays mixed for the next one, and what isn't routed passes by it. A
+ * slot with nothing routed runs on silence, so its tails ring on into the output. Further slots
+ * (stock has 2) take the project as stock. Then the container's own next stage, as stock. */
+static void fx_run(unsigned char *se, float *l, float *r, float *ll, float *lr, int n)
+{
+    unsigned char *c = se + SE_FX;
+    float *sl = lr + FX_N, *sr = sl + FX_N, *tl = sr + FX_N, *tr = tl + FX_N;
+    unsigned k, cnt = *(unsigned short *)(c + FXC_COUNT);
+    int merged = 0, tails = 0;
+    void *next;
+    for (k = 0; !c[FXC_BYPASS] && k < cnt; k++) {
+        void *slot = c + FXC_SLOTS + k * FXC_SLOT_SZ;
+        unsigned rt = k < 2 ? M->route[k] & (R_PROJ | R_LOOP) : R_PROJ;
+        if (!rt) {
+            zero(sl, n);
+            zero(sr, n);
+            slot_on(se, slot, sl, sr, n);
+            if (!tails) {
+                zero(tl, n);
+                zero(tr, n);
+                tails = 1;
+            }
+            add(tl, sl, n);
+            add(tr, sr, n);
+        } else if (merged || rt == R_PROJ) {
+            slot_on(se, slot, l, r, n);
+        } else if (rt == R_LOOP) {
+            slot_on(se, slot, ll, lr, n);
+        } else {
+            add(l, ll, n);
+            add(r, lr, n);
+            merged = 1;
+            slot_on(se, slot, l, r, n);
+        }
+    }
+    if (!merged) {
+        add(l, ll, n);
+        add(r, lr, n);
+    }
+    if (tails) {
+        add(l, tl, n);
+        add(r, tr, n);
+    }
+    next = *(void **)(c + 8);
+    if (next)
+        proc(next, se);
 }
 
 /* One master block, in place: the audio task's blocks are 256 frames, the ring's 128. */
 void mx_block(float *l, float *r, int n)
 {
-    int k;
-    if (!live() || !SE || n <= 0 || n > 8 * BLOCK)
+    unsigned char *se = SE;
+    float *ll = 0, *lr = 0;
+    int k, fx;
+    if (!live())
         return;
+    fx = M->fx_due;
+    M->fx_due = 0;
+    if (!se || n <= 0 || n > 8 * BLOCK) {
+        if (fx && se)
+            proc(se + SE_FX, se);            /* the FX as stock, on bus 0 */
+        return;
+    }
+    if (fx && n <= FX_N) {
+        ll = M->fxb;
+        lr = ll + FX_N;
+        zero(ll, n);
+        zero(lr, n);
+    }
     for (k = 0; k < n; k += BLOCK)
-        part(l + k, r + k, n - k < BLOCK ? n - k : BLOCK, k > 0);
+        part(l + k, r + k, ll ? ll + k : 0, lr ? lr + k : 0, n - k < BLOCK ? n - k : BLOCK, k > 0);
+    if (ll)
+        fx_run(se, l, r, ll, lr, n);
+    else if (fx)
+        proc(se + SE_FX, se);
 }
 
 /* 0x0804EE9A in FUN_0804EDDC (compressor on): the compressor's gain, then ours, before the limiter. */
@@ -871,6 +1024,22 @@ void mx_set_filter(unsigned side, int v)
 {
     if (live() && side < 2)
         M->filt[side] = (short)(v < -1000 ? -1000 : v > 1000 ? 1000 : v);
+}
+
+/* DJ FX screen: what goes into FX A (slot 0) / FX B (1), R_PROJ | R_LOOP. */
+int mx_route(unsigned slot) { return live() && slot < 2 ? M->route[slot] : R_PROJ; }
+
+void mx_set_route(unsigned slot, int r)
+{
+    if (live() && slot < 2)
+        M->route[slot] = (unsigned char)(r & (R_PROJ | R_LOOP));
+}
+
+/* dj.c's FX buffers: 6 x FX_N floats, kept for good. */
+void mx_set_fx(float *buf)
+{
+    if (live())
+        M->fxb = buf;
 }
 
 /* ---- the waveform (UI task) ---- */
