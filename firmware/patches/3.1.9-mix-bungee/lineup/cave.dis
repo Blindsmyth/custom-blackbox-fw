@@ -987,7 +987,7 @@
 0x080f2888: ldr.w    ip, [pc, #0x2a0]
 0x080f288c: bx       ip
 0x080f288e: push     {r0, r1, r2, r3, r4, lr}
-0x080f2890: bl       #0x80fb4dc
+0x080f2890: bl       #0x80fbb84
 0x080f2894: cmp      r0, #0
 0x080f2896: beq      #0x80f289e
 0x080f2898: bl       #0x80f283e

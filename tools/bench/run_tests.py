@@ -5845,28 +5845,41 @@ def t_dj_ui(bench, res):
     b.mu.mem_write(DJ_SONG_W + 0x12195, b"\x5a\xa5\x01")    # the mode is a byte: its neighbours are not ours
     b.mu.mem_write(DJ_UI + 4, b"\x01")
     b.call(tick, DJ_SONG_W, 0, 0, 0)
-    res.check(b.u32(DJ_SONG_W + 0x18) == DJ_BTN + 2 * 0xA0 and b.u32(DJ_BTN + 0x2C) == DJ_SONG_W,
-              "buttons are the Song widget's oldest children (drawn last, hit first)")
-    rects = [tuple(b.u32(DJ_BTN + i * 0xA0 + o) for o in (4, 8, 0xC, 0x10)) for i in range(3)]
-    res.check(rects == [(0, 0, 99, 38), (100, 0, 99, 38), (200, 0, 120, 38)], f"row at the bottom {rects}")
+    deck = mixer = "mx_block" in bench.sym
+    if deck:                                    # 3.1.T deck view: the crossfader is placed last
+        res.check(b.u32(DJ_SONG_W + 0x18) == 0x38006F00 and b.u32(DJ_BTN + 0x2C) == DJ_SONG_W,
+                  "deck widgets are the Song widget's oldest children (drawn last, hit first)")
+        rects = [tuple(b.u32(DJ_BTN + i * 0xA0 + o) for o in (4, 8, 0xC, 0x10)) for i in range(3)]
+        res.check(rects == [(0, 182, 70, 38), (70, 182, 70, 38), (228, 182, 92, 38)],
+                  f"top bar: << and >> left, Loop at the far right {rects}")
+    else:
+        res.check(b.u32(DJ_SONG_W + 0x18) == DJ_BTN + 2 * 0xA0 and b.u32(DJ_BTN + 0x2C) == DJ_SONG_W,
+                  "buttons are the Song widget's oldest children (drawn last, hit first)")
+        rects = [tuple(b.u32(DJ_BTN + i * 0xA0 + o) for o in (4, 8, 0xC, 0x10)) for i in range(3)]
+        res.check(rects == [(0, 0, 99, 38), (100, 0, 99, 38), (200, 0, 120, 38)], f"row at the bottom {rects}")
     hid = [b.u8(DJ_BTN + i * 0xA0 + 0x30) for i in range(3)]
     texts = [b.cstr(DJ_UI + 0x20 + 16 * i) for i in range(3)]
     res.check(hid == [0, 0, 0] and texts == ["<< 16", "16 >>", "Loop 1"], f"shown and labelled {hid} {texts}")
     res.check(b.u8(DJ_BTN + 2 * 0xA0 + 0x96) == 1, "Loop lit while on")
     res.check(stock == [("tick", 0)], "stock tick runs")
-    b.call(event, DJ_SONG_W, ev(0x32, 1, -400))
-    b.call(event, DJ_SONG_W, ev(0x32, 3, 300))
-    b.call(event, DJ_SONG_W, ev(0x32, 3, 500))
+    kj, kl = (0, 2) if deck else (1, 3)        # deck view: jump top-left, loop size top-right
+    b.call(event, DJ_SONG_W, ev(0x32, kj, -400))
+    b.call(event, DJ_SONG_W, ev(0x32, kl, 300))
+    b.call(event, DJ_SONG_W, ev(0x32, kl, 500))
     res.check(b.u8(DJ_UI + 6) == 5 and b.u8(DJ_UI + 7) == 6, "knobs: jump 8 bars, loop 4 bars (400 counts a step)")
     res.check(b.u32(DJ + 0x20) == 15360 and b.u32(DJ + 0x1C) == 2, "the live loop takes the new size")
-    b.call(event, DJ_SONG_W, ev(0x32, 1, -400 * 20))
+    b.call(event, DJ_SONG_W, ev(0x32, kj, -400 * 20))
     res.check(b.u8(DJ_UI + 6) == 0, "jump size stops at 1/4 bar")
-    b.call(event, DJ_SONG_W, ev(0x32, 0, 400))
-    if "mx_block" in bench.sym:              # 3.1.T mixer: the project filter while the row is shown
-        res.check(("event", 0x32) not in stock and b.u16(0x38007A60 + 0x2C) == 50,
-                  "top-left knob: the loop filter, not BPM")
+    if deck:                                    # bottom knobs: loop filter left, project filter right
+        b.call(event, DJ_SONG_W, ev(0x32, 1, 400))
+        b.call(event, DJ_SONG_W, ev(0x32, 3, -400))
+        res.check(("event", 0x32) not in stock and b.u16(0x38007A60 + 0x2C) == 50
+                  and b.u16(0x38007A60 + 0x2A) == (-50) & 0xFFFF,
+                  "bottom knobs: loop filter (left), project filter (right), not stock's")
+        b.call(sym["mx_set_filter"], 0, 0)
         b.call(sym["mx_set_filter"], 1, 0)
     else:
+        b.call(event, DJ_SONG_W, ev(0x32, 0, 400))
         res.check(("event", 0x32) in stock, "top-left knob stays BPM")
     b.call(tick, DJ_SONG_W, 0, 0, 0)
     texts = [b.cstr(DJ_UI + 0x20 + 16 * i) for i in range(3)]
@@ -6028,6 +6041,16 @@ def t_mx_loop(bench, res):
                 errs.append(abs(lo[i] - e))
     res.check(errs and max(errs) < 0.004, f"plays the pass [W - 1 bar, W) by tick (max err {max(errs or [9]):.4f})")
     res.check(abs(ro[64] - 0.25) < 0.002, f"loop only on R {ro[64]:.4f}")
+    wb, ws, wl = 0xC09C0000, 0xC09C0100, 0xC09C0108
+    head = _dj_s32(b.call(sym["mx_wave_loop"], wb, 40, 3840, ws, wl))
+    peaks = list(b.mu.mem_read(wb, 40))
+    busy = b.u8(MX + 0x204)
+    b.call(sym["mx_wave_done"])
+    res.check(0 <= head < 40 and b.u32(wl) == 3840 and _mx_s64(b, ws) == a and max(peaks) > 60
+              and busy == 1 and b.u8(MX + 0x204) == 0,
+              f"waveform: loop lane peaks over [A, A+len), playhead {head}, busy while read {max(peaks)}")
+    b.call(sym["mx_wave_proj"], wb, 40)
+    res.check(min(b.mu.mem_read(wb, 40)) > 60, "waveform: project lane peaks (one per 4 parts)")
     b.call(sym["mx_size"], 7680)
     clk.block(sym)
     early = b.u32(MX + 0x68)
@@ -6198,17 +6221,12 @@ def t_mx_ui(bench, res):
     res.check(b.u8(DJ_UI + 8) == 0 and b.u32(DJ + 0x20) == 0 and b.u32(DJ + 0x1C) == seq + 1
               and b.u32(MX + 0x08) == seq + 1, "... and the DJ loop switched off by that request")
     b.mu.mem_write(MX + 0x48, b"\x02")
-    b.call(event, DJ_SONG_W, ev(0x32, 0, 80))
-    b.call(event, DJ_SONG_W, ev(0x32, 2, -800))
+    b.call(event, DJ_SONG_W, ev(0x32, 1, 80))
+    b.call(event, DJ_SONG_W, ev(0x32, 3, -800))
     res.check(b.u16(MX + 0x2C) == 10 and b.u16(MX + 0x2A) == (-100) & 0xFFFF,
-              "top knobs: loop filter left +10, project filter right -100")
-    b.mu.mem_write(MX + 0x28, b"\x00\x00")
-    xs = b.u32(MX + 0x24)
-    b.call(event, DJ_SONG_W, ev(0x32, 1, 800))
-    res.check(b.u16(MX + 0x28) == 100 and b.u32(MX + 0x24) == xs + 1 and b.u8(DJ_UI + 6) == 6,
-              "audio loop playing: bottom-left knob moves the crossfader, not the jump size")
+              "bottom knobs: loop filter left +10, project filter right -100")
     b.w32(MX + 0x68, 3840)
-    b.call(event, DJ_SONG_W, ev(0x32, 3, 400))
+    b.call(event, DJ_SONG_W, ev(0x32, 2, 400))
     res.check(b.u32(MX + 0x1C) == 1 and b.u32(MX + 0x20) == 7680, "loop knob: the audio loop to 2 bars")
     b.call(child, DJ_SONG_W, ev(1, ID_DJ + 2))
     res.check(b.u32(MX + 0x18) == 1 and b.u8(DJ_UI + 8) == 0, "Loop: the audio loop off, the DJ loop stays off")
@@ -6218,13 +6236,22 @@ def t_mx_ui(bench, res):
     b.stub(0x080AED14, lambda bd_: posted.append((bd_.u16(bd_.arg(1)), bd_.u32(bd_.arg(1) + 0xC))) or 0)
     b.w32(0x24020088 + 0x20, 1)
     b.mu.mem_write(DJ_SONG_W + 0x12194, b"\x00")
-    r1 = b.call(child, DJ_SONG_W, ev(1, 0x115))
-    b.call(child, DJ_SONG_W, ev(2, 0x115))
-    b.call(child, DJ_SONG_W, ev(2, 0x27))
+    r1 = b.call(child, DJ_SONG_W, ev(1, 0x1DC))
+    b.call(child, DJ_SONG_W, ev(2, 0x1DC))
+    b.call(child, DJ_SONG_W, ev(1, 0x1DB))
     b.w32(0x24020088 + 0x20, 3)
-    b.call(child, DJ_SONG_W, ev(2, 0x115))
+    b.call(child, DJ_SONG_W, ev(1, 0x1DC))
+    r2 = b.call(child, DJ_SONG_W, ev(1, 0x115))
     res.check(r1 == 0 and posted == [(0x107, 2), (0x107, 0)],
-              f"Loop1 = Scene v, Edit = Scene ^ (a row press for the next / previous scene), none past the last {posted}")
+              f"arrows: v = next, ^ = previous (a row press, on the press), none past the last {posted}")
+    res.check(r2 == 1, "stock's Loop1 is stock's again")
+    b.call(child, DJ_SONG_W, ev(1, 0x1DF))        # Loop caption: the loop filter out
+    off1 = b.u8(MX + 0xF6 + 1)
+    b.call(child, DJ_SONG_W, ev(1, 0x1E0))        # Proj caption: the project filter out
+    b.call(child, DJ_SONG_W, ev(1, 0x1DF))        # Loop again: back in
+    res.check(off1 == 1 and b.u8(MX + 0xF6) == 1 and b.u8(MX + 0xF6 + 1) == 0,
+              "Loop / Proj toggle their filter out and in")
+    b.call(sym["mx_set_filter_on"], 0, 1)
 
 
 def t_dj_gui(bench, res):
@@ -6304,9 +6331,41 @@ def t_dj_gui(bench, res):
     res.check(where() == (0x2D, 0x59008), "SONG on Song: stays on Song")
     res.check(b.u8(DJ_UI + 4) == 1 and b.u8(DJ_UI + 5) == 1, "row shown")
     res.check(all(b.u8(DJ_BTN + i * 0xA0 + 0x30) == 0 for i in range(3)), "buttons visible")
+    if "mx_block" in bench.sym:                 # 3.1.T deck view
+        deck = b.u32(0x38006F00 + 0xA4)
+        widgets = [deck + i * 0xA0 for i in range(9)] + [DJ_BTN + i * 0xA0 for i in range(3)] + [0x38006F00]
+        res.check(0xC0000000 <= deck < 0xC4000000, f"deck memory from SDRAM {deck:#x}")
+        res.check(b.u8(song + 0x1067C + 0x30) == 1 and b.u8(song + 0xFFE4 + 0x30) == 1,
+                  "stock's scene list and top bar hidden under the deck")
+        res.check(all(b.u8(w + 0x30) == 0 for w in widgets), "every deck widget shown")
+        rects = [tuple(_dj_s32(b.u32(w + o)) for o in (4, 8, 0xC, 0x10)) for w in widgets[1:]]
+        clash = [(r1, r2) for i, r1 in enumerate(rects) for r2 in rects[i + 1:]
+                 if r1[0] < r2[0] + r2[2] and r2[0] < r1[0] + r1[2] and r1[1] < r2[1] + r2[3] and r2[1] < r1[1] + r1[3]]
+        res.check(not clash and all(0 <= r[0] and r[0] + r[2] <= 320 and 0 <= r[1] and r[1] + r[3] <= 221 for r in rects),
+                  f"deck widgets don't overlap, inside 320 x 221 {clash[:2]}")
+        fills = []
+        hfill = mu.hook_add(UC_HOOK_CODE, lambda mu_, a, s_, d: fills.append(1), begin=0x0808EA22, end=0x0808EA22)
+        for w in (deck + 4 * 0xA0, deck + 7 * 0xA0, deck + 8 * 0xA0):   # waveform, both sliders
+            b.mu.mem_write(w + 0x31, b"\x01\x01")
+        b.call(bench.sym["mx_set_filter"], 1, -600)
+        pump()
+        mu.hook_del(hfill)
+        res.check(len(fills) > 10, f"waveform and sliders painted with stock's FILL_RECT ({len(fills)} fills)")
+        sl0 = deck + 7 * 0xA0                    # DjDeck: panel up dn line wave cap0 cap1 sl0 sl1
+        pt = 0x2001C700
+        b.mu.mem_write(pt, struct.pack("<ii", 48 + 8 + 104, 60))            # right end of the loop slider
+        b.call(b.u32(b.u32(sl0) + 0x10), sl0, pt)
+        far = b.u16(0x38007A60 + 0x2C)
+        b.mu.mem_write(pt, struct.pack("<ii", 48 + 8 + 49, 60))             # 1 px off its centre (track 96 px)
+        b.call(b.u32(b.u32(sl0) + 0x10), sl0, pt)
+        res.check(far == 1000 and b.u16(0x38007A60 + 0x2C) == 0,
+                  f"loop slider: right end = 1000, near the centre snaps Off ({far}, {b.u16(0x38007A60 + 0x2C)})")
     mode_button(3)
     pump()
     res.check(b.u8(DJ_UI + 5) == 0 and b.u8(DJ_BTN + 0x30) == 1, "SONG again hides it")
+    if "mx_block" in bench.sym:
+        res.check(b.u8(song + 0x1067C + 0x30) == 0 and b.u8(song + 0xFFE4 + 0x30) == 0,
+                  "stock's scene list and top bar back")
 
 
 def t_cue_voice_stub(bench, res):

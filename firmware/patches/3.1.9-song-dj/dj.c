@@ -142,6 +142,8 @@ extern void song_event2(void *song, void *ev);
 #define SONG_EVENT  ((event_fn)0x080C3861u)    /* Song vtable +0x34 */
 #endif
 #define LDIV        ((ldiv_fn)0x080C8495u)     /* stock __aeabi_ldivmod (quotient, toward zero) */
+typedef void *(*alloc_fn)(unsigned);
+#define SDRAM_ALLOC ((alloc_fn)0x0804436Du)    /* bump from the bottom of SDRAM, at boot only */
 #define UI_TICK     (*(volatile const unsigned *)0x2402EEE0u)   /* osKernelSysTick, ms */
 #define LED_SET     ((led_fn)0x080436F9u)      /* (leds, index, on): mode button LED */
 #define LEDS        ((void *)0x240021BCu)      /* as App_SetScreen passes it */
@@ -158,16 +160,19 @@ extern void song_event2(void *song, void *ev);
 #define S_SCENE     0x12180    /* Song: selected scene */
 #define S_MODE      0x12194    /* Song: byte, 0 list, 1 Edit popup, 2 / 3 grids */
 #define W_HIDDEN    0x30
-#define S_BTN_BPM   0x1049C    /* Song: top-left frame button (BPM) */
-#define S_BTN_SWING 0x1053C    /* Song: top-right frame button (Swing) */
+#define S_LIST      0x1067C    /* Song: the scene list (container of the 32 rows), 0..180 */
+#define S_BAR       0xFFE4     /* Song: the top button bar, 182..220 (its hidden byte is S_BAR_HID) */
 #define BTN_LABEL   0x34       /* button: its label widget; the text is at +0x65 */
-#define S_BTN_EDIT  0x105DC    /* Song: Edit (id 0x27): Scene ^ while the row is shown */
-#define S_BTN_LMODE 0x103FC    /* Song: Loop / Loop1 / LoopA (id 0x115): Scene v */
-#define S_LMODE     0x12190    /* Song: its mode, 0..2 */
-#define ID_EDIT     0x27
-#define ID_LMODE    0x115
-#define EDIT_TEXT   (*(const char *const *)0x080C316Cu)        /* stock's "Edit" */
-#define LMODE_TEXT  ((const char *const *)0x080F1790u)         /* stock's three loop-mode labels */
+#define SCENE_TAB   0x29C0     /* App: 32 scenes of 0x30; the name (a str) at +0x2C */
+#define SCENE_SIZE  0x30
+#define SCENE_NAME  0x2C
+#define PL_LAYER    0xC20      /* sequence player: playing layer (the song: the scene) */
+#define PL_QUEUED   0xC24      /*                  queued layer (a touched scene) */
+#define LAY_INDEX   0x40       /* layer: its index (u16) */
+#define KNOB_TL     0          /* encoder index in event 0x32 */
+#define KNOB_BL     1
+#define KNOB_TR     2
+#define KNOB_BR     3
 #define APP         0x24020088u
 #define APP_SCENE   (*(volatile unsigned *)(APP + 0x20))       /* the scene last pressed / queued */
 #define SESSION_BAG ((void *)(APP + 0x3038))
@@ -179,22 +184,45 @@ typedef void (*post_fn)(void *, void *);
 #define PARAM_GET   ((pget_fn)0x08093E9Du)
 #define UI_POST_UP  ((post_fn)0x080AED15u)
 #define EV_BACK     0x7F       /* BACK on the screen */
-#define EV_REFRESH  0x66       /* Song: read BPM / Swing again and label them */
 #define FILT_STEP   8          /* encoder counts per filter step of 1 (of -1000..1000) */
 
-/* The crossfader strip and the top labels: SRAM4 0x38006F00, free on 3.1.T between Song cues'
- * SgState (ends 0x38006C2C) and RbVoice (0x38007000). */
+/* The deck view's widgets, ids after the row's (0x1D0-0x1D2): */
+#define XF_ID       0x1D3      /* crossfader */
+#define ID_PANEL    0x1DA      /* background */
+#define ID_UP       0x1DB      /* scene prev */
+#define ID_DN       0x1DC      /* scene next */
+#define ID_LINE     0x1DD      /* scene line */
+#define ID_WAVE     0x1DE
+#define ID_CAP0     0x1DF      /* "Loop" */
+#define ID_CAP1     0x1E0      /* "Proj" */
+#define ID_SL0      0x1E1      /* loop filter */
+#define ID_SL1      0x1E2      /* project filter */
+#define N_DECK      9
+
+/* The deck's own widgets and the project's peaks: 2.3 KB from the bottom SDRAM allocator at boot
+ * (SRAM4 has no room; SDRAM has ~1 MB free after boot, measured on the unit). */
+typedef struct {
+    unsigned panel[0x28], up[0x28], dn[0x28], line[0x28], wave[0x28];
+    unsigned cap[2][0x28], sl[2][0x28];        /* stock buttons, 0xA0 each */
+    unsigned char proj[512];                   /* mixer.c's project peaks (PROJ_N) */
+    unsigned char lane[2][160];                /* columns being drawn */
+} DjDeck;
+
+/* The crossfader and the deck's state: SRAM4 0x38006F00, free on 3.1.T between Song cues' SgState
+ * (ends 0x38006C80) and RbVoice (0x38007000). */
 #define XF_BASE     0x38006F00u
 #define XF_END      0x38007000u
-#define XF_ID       0x1D3
 typedef struct {
-    unsigned btn[0x28];        /* +0x00 a stock button with our vtable (xf_vt) */
-    int drawn;                 /* +0xA0 crossfader as last drawn, -1 = redraw */
-    char bar[24];              /* +0xA4 */
-    char top[2][16];           /* +0xBC top-left / top-right labels while the row is shown */
-    int facc[2];               /* +0xDC encoder counts not yet a filter step */
-    unsigned char tops;        /* +0xE4 top labels are ours */
-    unsigned char rsv[3];
+    unsigned btn[0x28];        /* +0x00 the crossfader: a stock button with our vtable (xf_vt) */
+    int drawn;                 /* +0xA0 crossfader as last drawn */
+    DjDeck *deck;              /* +0xA4 0 = no memory: the deck is never shown */
+    unsigned wave_ms;          /* +0xA8 UI tick the waveform was last asked to repaint */
+    int sl_drawn[2];           /* +0xAC filter sliders as last drawn: loop, project */
+    int facc[2];               /* +0xB4 encoder counts not yet a filter step: project, loop */
+    unsigned char hid_list;    /* +0xBC stock's scene list was hidden before the deck */
+    unsigned char hid_bar;     /* +0xBD stock's top bar likewise */
+    unsigned char rsv[2];
+    char line[32];             /* +0xC0 scene line text */
 } DjXf;
 typedef char xf_fits[(XF_BASE + sizeof(DjXf) <= XF_END) ? 1 : -1];
 #define X ((DjXf *)XF_BASE)
@@ -206,13 +234,18 @@ int mx_xf(void);
 int mx_filter(unsigned side);
 int mx_ready(long long a, int len);
 int mx_have(void);
-int mx_xf_target(void);
 void mx_gains(int *l, int *r);
+void mx_set_proj(unsigned char *buf);
+void mx_wave_proj(unsigned char *out, int n);
+int mx_wave_loop(unsigned char *out, int n, int dj_len, long long *start, int *len);
+void mx_wave_done(void);
 void mx_capture(long long a, int len, unsigned off_seq);
 void mx_clear(void);
 void mx_size(int ticks);
 void mx_set_xf(int v);
 void mx_set_filter(unsigned side, int v);
+int mx_filter_on(unsigned side);
+void mx_set_filter_on(unsigned side, int on);
 
 static unsigned u8(const void *p, unsigned off) { return ((const unsigned char *)p)[off]; }
 static unsigned u16(const void *p, unsigned off) { return *(const unsigned short *)((const char *)p + off); }
@@ -243,11 +276,7 @@ static const char s_capture[] = "BACK: capture loop";
 static const char s_recording[] = "Recording the loop...";
 static const char s_loop_first[] = "Loop on, then BACK";
 static const char s_no_ring[] = "Loop: getting memory";
-static const char s_off_f[] = "Off";
-static const char s_scene_up[] = "Scene ^";
-static const char s_scene_dn[] = "Scene v";
-static const char s_proj[] = "Proj ";
-static const char s_loopside[] = "Loop ";
+static const char s_next[] = "  > ";
 
 static int live(void)
 {
@@ -270,6 +299,16 @@ void dj_init(void)
     for (i = 0; i < sizeof(DjXf) / 4; i++)
         ((unsigned *)XF_BASE)[i] = 0;
     mx_init();
+    {
+        DjDeck *d = (DjDeck *)SDRAM_ALLOC(sizeof(DjDeck));
+        if ((unsigned)d >= 0xC0000000u && (unsigned)d + sizeof(DjDeck) <= 0xC4000000u) {
+            unsigned char *c = (unsigned char *)d;
+            for (i = 0; i < sizeof(DjDeck); i++)
+                c[i] = 0;
+            X->deck = d;
+            mx_set_proj(d->proj);
+        }
+    }
 }
 
 /* ---- the timeline (audio task) ---- */
@@ -637,36 +676,30 @@ static void add_oldest(void *parent, void *w)
     *(void **)at(w, 0x2C) = parent;
 }
 
-/* The crossfader strip: a stock button (it draws its label) whose touches set the crossfader from
- * x instead of pressing it. Copy of the button vtable 0x080EFE48 with touchDown / touchMove / touchUp
- * ours. Rect {x, y, w, h} at +4; touch points are in the same frame. */
-static void xf_touch(void *w, const int *pt)
-{
-    int x = pt[0] - (int)u32(w, 4) - 12, span = (int)u32(w, 0xC) - 24;   /* XF_MARGIN */
-    if (mx_state() != 2 || span <= 0)
-        return;
-    mx_set_xf(x <= 0 ? 0 : x >= span ? 1000 : x * 1000 / span);
-}
-
-static void xf_up(void *w)
-{
-    (void)w;
-}
+/* ---- the deck view: widgets and drawing ---- */
 
 typedef void (*fill_fn)(const int *, unsigned, void *);
 typedef void (*draw_fn)(void *, const void *);
+typedef const char *(*cstr_fn)(const void *);
 #define FILL_RECT   ((fill_fn)0x0808EA23u)     /* (rect, palette index, canvas) */
 #define OUTLINE     ((fill_fn)0x0808E995u)
 #define BTN_DRAW    ((draw_fn)0x080A3B6Du)     /* button vt+0x04 */
+#define STR_CSTR    ((cstr_fn)0x080460BBu)     /* a str object's chars */
 #define PAL_BG      2          /* 0x141414 */
 #define PAL_WHITE   3
 #define PAL_PINK    4          /* 0xFF6AF3: the project */
 #define PAL_CYAN    5          /* 0x09D7F5: the loop */
-#define PAL_DEAD    25         /* 0x2B2B2B: the ends, one side silent */
+#define PAL_DEAD    25         /* 0x2B2B2B: crossfader ends, one side silent */
 #define PAL_TRACK   17         /* 0x707070 */
 #define PAL_EDGE    1          /* 0x56565A */
+#define PAL_TICK    16         /* 0x444444: bar ticks */
 #define XF_MARGIN   12
 #define XF_KNOB     16
+#define SL_MARGIN   8
+#define SL_KNOB     10
+#define SL_SNAP     40         /* a slider dragged this close to the centre is Off */
+#define WAVE_MS     50         /* the waveform repaints at most this often */
+#define WAVE_COLS   160        /* columns per lane (2 px each over 320) */
 
 static void rect(int *r, int x, int y, int w, int h)
 {
@@ -676,13 +709,99 @@ static void rect(int *r, int x, int y, int w, int h)
     r[3] = h;
 }
 
-/* Button vt+0x04 for the crossfader. Without an audio loop it is the stock button with the capture
- * hint. With one: a track (dark at both ends, where one side is silent), the knob, and the loop's
- * (cyan, left) and the project's (pink, right) level as bars at the edges. y runs bottom-up. */
+static void *canvas(const void *ctx) { return *(void *const *)((const char *)ctx + 4); }
+static int wx(const void *w) { return (int)u32(w, 4); }
+static int wy(const void *w) { return (int)u32(w, 8); }
+static int ww(const void *w) { return (int)u32(w, 0xC); }
+static int wh(const void *w) { return (int)u32(w, 0x10); }
+
+static void dirty(void *w)
+{
+    *(unsigned char *)at(w, 0x31) = 1;
+    *(unsigned char *)at(w, 0x32) = 1;
+}
+
+static void no_touch(void *w, const int *pt)
+{
+    (void)w;
+    (void)pt;
+}
+
+static void no_up(void *w)
+{
+    (void)w;
+}
+
+/* The crossfader: touches set it from x. */
+static void xf_touch(void *w, const int *pt)
+{
+    int x = pt[0] - wx(w) - XF_MARGIN, span = ww(w) - 2 * XF_MARGIN;
+    if (mx_state() != 2 || span <= 0)
+        return;
+    mx_set_xf(x <= 0 ? 0 : x >= span ? 1000 : x * 1000 / span);
+}
+
+/* A filter slider: -1000 (left, low-pass) .. 1000 (right, high-pass), Off near the centre. */
+static unsigned slider_side(const void *w) { return u16(w, 0x14) == ID_SL0 ? 1 : 0; }
+
+static void sl_touch(void *w, const int *pt)
+{
+    int x = pt[0] - wx(w) - SL_MARGIN, span = ww(w) - 2 * SL_MARGIN, v;
+    if (span <= 0)
+        return;
+    v = (x <= 0 ? 0 : x >= span ? span : x) * 2000 / span - 1000;
+    mx_set_filter(slider_side(w), v > -SL_SNAP && v < SL_SNAP ? 0 : v);
+}
+
+/* Panel: the deck's background over the hidden scene list and top bar; it takes stray touches. */
+static void panel_draw(void *w, const void *ctx)
+{
+    int r[4];
+    rect(r, wx(w), wy(w), ww(w), wh(w));
+    FILL_RECT(r, PAL_BG, canvas(ctx));
+}
+
+/* Scene prev / next: a stock button with a solid arrow painted on it (no font glyph needed). */
+static void arrow_draw(void *w, const void *ctx)
+{
+    void *cv = canvas(ctx);
+    int up = u16(w, 0x14) == ID_UP, cx = wx(w) + ww(w) / 2, cy = wy(w) + wh(w) / 2, k, r[4];
+    BTN_DRAW(w, ctx);
+    for (k = 0; k < 9; k++) {            /* rows of 1, 3, .. 17 px: apex up or down */
+        rect(r, cx - k, up ? cy + 4 - k : cy - 4 + k, 2 * k + 1, 1);
+        FILL_RECT(r, PAL_WHITE, cv);
+    }
+}
+
+static void slider_draw(void *w, const void *ctx)
+{
+    void *cv = canvas(ctx);
+    unsigned side = slider_side(w), on = (unsigned)mx_filter_on(side);
+    int v = mx_filter(side), x = wx(w), y = wy(w), h = wh(w), tw = ww(w) - 2 * SL_MARGIN;
+    int tx = x + SL_MARGIN, mid = tx + tw / 2, kx = tx + (v + 1000) * tw / 2000, r[4];
+    rect(r, x, y, ww(w), h);
+    FILL_RECT(r, PAL_BG, cv);
+    rect(r, tx, y + h / 2 - 2, tw, 4);
+    FILL_RECT(r, PAL_TRACK, cv);
+    if (kx != mid) {                     /* from the centre to the knob, in the side's colour */
+        rect(r, kx < mid ? kx : mid, y + h / 2 - 2, kx < mid ? mid - kx : kx - mid, 4);
+        FILL_RECT(r, !on ? PAL_EDGE : side ? PAL_CYAN : PAL_PINK, cv);   /* grey while out */
+    }
+    rect(r, mid, y + 3, 1, h - 6);
+    FILL_RECT(r, PAL_EDGE, cv);
+    rect(r, kx - SL_KNOB / 2, y + 4, SL_KNOB, h - 8);
+    FILL_RECT(r, on ? PAL_WHITE : PAL_TRACK, cv);
+    OUTLINE(r, PAL_EDGE, cv);
+    X->sl_drawn[side ? 0 : 1] = v * 2 + (int)on;
+}
+
+/* Without an audio loop: the stock button with the capture hint. With one: a track (dark at both
+ * ends, where one side is silent), the knob, and the loop's (cyan, left) and the project's (pink,
+ * right) level as bars at the edges. */
 static void xf_draw(void *w, const void *ctx)
 {
-    void *cv = *(void *const *)((const char *)ctx + 4);
-    int x = (int)u32(w, 4), y = (int)u32(w, 8), wd = (int)u32(w, 0xC), h = (int)u32(w, 0x10);
+    void *cv = canvas(ctx);
+    int x = wx(w), y = wy(w), wd = ww(w), h = wh(w);
     int r[4], tx = x + XF_MARGIN, tw = wd - 2 * XF_MARGIN, dz = tw * 15 / 100, pos, gl, gr;
     if (mx_state() != 2 || tw <= 0) {
         BTN_DRAW(w, ctx);
@@ -712,43 +831,112 @@ static void xf_draw(void *w, const void *ctx)
     X->drawn = pos;
 }
 
-static const void *const xf_vt[16] = {
-    (const void *)0x080A3D03u, (const void *)xf_draw,    (const void *)0x080AEB1Du,
-    (const void *)0x080AEBABu,
-    (const void *)xf_touch,    /* +0x10 touchDown */
-    (const void *)xf_touch,    /* +0x14 touchMove */
-    (const void *)xf_up,       /* +0x18 touchUp */
-    (const void *)0x080A3323u, (const void *)0x080A3759u, (const void *)0x080A3317u,
-    (const void *)0x080AEB5Fu, (const void *)0x080A331Bu, (const void *)0x080AEC05u,
-    (const void *)0x080A3321u, (const void *)0x080A3773u, (const void *)0x080A3979u,
-};
+/* One lane: a column of 2 px per peak, mirrored around its middle. */
+static void lane(void *cv, int x, int y, int h, const unsigned char *pk, int n, unsigned colour)
+{
+    int i, r[4];
+    for (i = 0; i < n; i++) {
+        int a = pk[i] * (h - 2) / 2 / 255;
+        if (!a)
+            continue;
+        rect(r, x + 2 * i, y + h / 2 - a, 2, 2 * a);
+        FILL_RECT(r, colour, cv);
+    }
+}
 
+/* The waveform: the loop lane on top (the audio loop, or the DJ loop being recorded, with bar ticks
+ * and the playhead), the project lane below (the last ~1.7 s, newest on the right). */
+static void wave_draw(void *w, const void *ctx)
+{
+    void *cv = canvas(ctx);
+    DjDeck *d = X->deck;
+    int x = wx(w), y = wy(w), h = wh(w), lh = h / 2, n = ww(w) / 2, head, len, r[4];
+    long long start, b;
+    if (n > WAVE_COLS)
+        n = WAVE_COLS;
+    rect(r, x, y, ww(w), h);
+    FILL_RECT(r, PAL_BG, cv);
+    rect(r, x, y + lh, ww(w), 1);
+    FILL_RECT(r, PAL_TICK, cv);
+    head = mx_wave_loop(d->lane[0], n, D->loop_len > 0 ? D->loop_len : loop_t[D->ui.loop_idx], &start, &len);
+    if (head != -2) {
+        for (b = floor_div(start, 3840) * 3840; b < start + len; b += 3840)
+            if (b >= start) {            /* a tick on every bar of the transport */
+                rect(r, x + (int)LDIV((b - start) * 2 * n, len), y + lh + 1, 1, lh - 1);
+                FILL_RECT(r, PAL_TICK, cv);
+            }
+        lane(cv, x, y + lh + 1, lh - 1, d->lane[0], n, PAL_CYAN);
+        mx_wave_done();
+        if (head >= 0) {
+            rect(r, x + 2 * head, y + lh + 1, 1, lh - 1);
+            FILL_RECT(r, PAL_WHITE, cv);
+        }
+    }
+    mx_wave_proj(d->lane[1], n);
+    lane(cv, x, y, lh, d->lane[1], n, PAL_PINK);
+}
+
+#define VT(draw, down, move, up) {                                                            \
+    (const void *)0x080A3D03u, (const void *)(draw), (const void *)0x080AEB1Du,               \
+    (const void *)0x080AEBABu, (const void *)(down), (const void *)(move), (const void *)(up), \
+    (const void *)0x080A3323u, (const void *)0x080A3759u, (const void *)0x080A3317u,          \
+    (const void *)0x080AEB5Fu, (const void *)0x080A331Bu, (const void *)0x080AEC05u,          \
+    (const void *)0x080A3321u, (const void *)0x080A3773u, (const void *)0x080A3979u }
+/* Copies of the stock button vtable 0x080EFE48: draw (+0x04) and touches (+0x10/+0x14/+0x18). */
+static const void *const xf_vt[16] = VT(xf_draw, xf_touch, xf_touch, no_up);
+static const void *const panel_vt[16] = VT(panel_draw, no_touch, no_touch, no_up);
+static const void *const slider_vt[16] = VT(slider_draw, sl_touch, sl_touch, no_up);
+static const void *const wave_vt[16] = VT(wave_draw, no_touch, no_touch, no_up);
+static const void *const arrow_vt[16] = VT(arrow_draw, 0x080A3835u, 0x080A3315u, 0x080A3899u);
+
+/* A widget of ours on the Song widget: the oldest child, so it is drawn after (over) stock's and hit
+ * before it. vt 0 = the stock button. */
+static void place(void *song, void *b, const void *const *vt, unsigned id, int x, int y, int w, int h)
+{
+    BTN_CTOR(b);
+    if (vt)
+        *(const void *const **)b = vt;
+    ((set_id_fn)(*(unsigned **)b)[9])(b, id);
+    BTN_LATCH(b, 1);
+    add_oldest(song, b);
+    set_rect(b, x, y, w, h);
+    HIDE(b, 1);
+}
+
+static const char s_cap_loop[] = "Loop";
+static const char s_cap_proj[] = "Proj";
+
+/* The deck view, y bottom-up (stock's header 222-240 stays):
+ *   182-220  << | >> | ^ | v | Loop          (Loop above the top-right knob that sizes it)
+ *   164-180  scene line
+ *    78-162  waveform: loop lane over project lane
+ *    46- 76  Loop [filter] | Proj [filter]
+ *     0- 44  crossfader */
 static void build(void *song)
 {
-    static const int x[NBTN] = {0, 100, 200}, w[NBTN] = {99, 99, 120};
+    static const int x[NBTN] = {0, 70, 228}, w[NBTN] = {70, 70, 92};
+    DjDeck *d = X->deck;
     unsigned i;
-    void *xf = X->btn;
-    BTN_CTOR(xf);
-    *(const void *const **)xf = xf_vt;
-    ((set_id_fn)xf_vt[9])(xf, XF_ID);
-    BTN_LATCH(xf, 1);
-    add_oldest(song, xf);
-    set_rect(xf, 0, 40, 320, 48);
-    HIDE(xf, 1);
-    X->bar[0] = 0;
-    X->drawn = -1;
-    X->tops = 0;
-    for (i = 0; i < NBTN; i++) {
-        void *b = D->btn[i];
-        BTN_CTOR(b);
-        ((set_id_fn)(*(unsigned **)b)[9])(b, ID_DJ + i);
-        BTN_LATCH(b, 1);
-        add_oldest(song, b);
-        set_rect(b, x[i], 0, w[i], 38);
-        HIDE(b, 1);
-    }
     D->ui.song = song;
     D->ui.lbl_jump = D->ui.lbl_loop = 0xFF;
+    X->drawn = X->sl_drawn[0] = X->sl_drawn[1] = -2000;
+    if (!d)
+        return;                          /* no deck memory: the row is never shown */
+    place(song, d->panel, panel_vt, ID_PANEL, 0, 0, 320, 221);
+    for (i = 0; i < NBTN; i++)
+        place(song, D->btn[i], 0, ID_DJ + i, x[i], 182, w[i], 38);
+    place(song, d->up, arrow_vt, ID_UP, 140, 182, 44, 38);
+    place(song, d->dn, arrow_vt, ID_DN, 184, 182, 44, 38);
+    place(song, d->line, 0, ID_LINE, 0, 163, 320, 18);
+    place(song, d->wave, wave_vt, ID_WAVE, 0, 78, 320, 84);
+    place(song, d->cap[0], 0, ID_CAP0, 0, 46, 48, 30);
+    place(song, d->sl[0], slider_vt, ID_SL0, 48, 46, 112, 30);
+    place(song, d->cap[1], 0, ID_CAP1, 160, 46, 48, 30);
+    place(song, d->sl[1], slider_vt, ID_SL1, 208, 46, 112, 30);
+    place(song, X->btn, xf_vt, XF_ID, 0, 0, 320, 44);
+    BTN_TEXT(d->cap[0], s_cap_loop);
+    BTN_TEXT(d->cap[1], s_cap_proj);
+    X->line[0] = 0;
 }
 
 static void cat(char *d, const char *a, const char *b)
@@ -769,25 +957,6 @@ static int size_idx(int ticks)
     return LOOP_SIZES - 1;
 }
 
-/* Filter knob as a label: how far from the centre, either way: "Loop 45", "Proj Off". */
-static void filt_text(char *d, const char *side, int v)
-{
-    char n[8];
-    int a = v < 0 ? -v : v, k = 0, q = (a + 5) / 10;
-    if (a <= 8) {
-        cat(d, side, s_off_f);
-        return;
-    }
-    if (q >= 100)
-        n[k++] = '1', q -= 100, n[k++] = (char)('0' + q / 10), n[k++] = (char)('0' + q % 10);
-    else if (q >= 10)
-        n[k++] = (char)('0' + q / 10), n[k++] = (char)('0' + q % 10);
-    else
-        n[k++] = (char)('0' + q);
-    n[k] = 0;
-    cat(d, side, n);
-}
-
 static int same(const char *a, const char *b)
 {
     while (*a && *a == *b)
@@ -795,8 +964,7 @@ static int same(const char *a, const char *b)
     return *a == *b;
 }
 
-/* Our text on a stock button, again only when it shows something else (stock relabels BPM / Swing
- * on tempo changes). */
+/* Our text on a stock button, again only when it shows something else. */
 static void keep_text(void *btn, const char *t)
 {
     void *lbl = (void *)u32(btn, BTN_LABEL);
@@ -806,37 +974,53 @@ static void keep_text(void *btn, const char *t)
         BTN_TEXT(btn, t);
 }
 
-static void mixer_labels(void *song)
+/* "3 Drop  > 4 Break": the scene playing (or last pressed with the song off) and the one queued or
+ * next. Names are cut to 9 characters so the line fits 320 px. */
+static char *scene_text(char *o, unsigned i)
 {
-    int st = mx_state();
-    char *b = X->bar;
-    filt_text(X->top[0], s_loopside, mx_filter(1));   /* top-left: the loop, as the crossfader */
-    filt_text(X->top[1], s_proj, mx_filter(0));
-    keep_text(at(song, S_BTN_BPM), X->top[0]);
-    keep_text(at(song, S_BTN_SWING), X->top[1]);
-    keep_text(at(song, S_BTN_EDIT), s_scene_up);
-    keep_text(at(song, S_BTN_LMODE), s_scene_dn);
-    if (u32(at(song, S_BTN_LMODE), 0) && u8(at(song, S_BTN_LMODE), 0x96))
-        BTN_STATE(at(song, S_BTN_LMODE), 0);
-    X->tops = 1;
-    if (st != 2) {                   /* the capture hint: BACK only once the pass is recorded */
-        keep_text(X->btn, st ? s_recording : !D->ui.loop_on ? s_loop_first
-                  : !mx_have() ? s_no_ring : mx_ready(D->loop_a, D->loop_len) ? s_capture : s_recording);
+    const void *str = (const void *)(APP + SCENE_TAB + i * SCENE_SIZE + SCENE_NAME);
+    const char *nm = STR_CSTR(str);
+    unsigned k = 0;
+    if (i >= 9)
+        *o++ = (char)('0' + (i + 1) / 10);
+    *o++ = (char)('0' + (i + 1) % 10);
+    *o++ = ' ';
+    while (nm && nm[k] && k < 9)
+        *o++ = nm[k++];
+    *o = 0;
+    return o;
+}
+
+static void line_text(char *t)
+{
+    int count = PARAM_GET(SESSION_BAG, ID_SCENES), cur = (int)APP_SCENE, next = -1;
+    void *p = D->song;
+    char *o = t;
+    if (song_on()) {
+        void *lay = (void *)u32(p, PL_LAYER), *q = (void *)u32(p, PL_QUEUED);
+        if (lay)
+            cur = (int)u16(lay, LAY_INDEX);
+        next = q && q != lay ? (int)u16(q, LAY_INDEX) : cur + 1 < count ? cur + 1 : -1;
+    }
+    if (cur < 0 || cur >= count) {
+        *t = 0;
         return;
     }
-    b[0] = 0;
-    keep_text(X->btn, b);            /* xf_draw paints it; no text */
-    if (X->drawn != mx_xf()) {       /* moved: paint again in both passes */
-        *(unsigned char *)at(X->btn, 0x31) = 1;
-        *(unsigned char *)at(X->btn, 0x32) = 1;
+    o = scene_text(o, (unsigned)cur);
+    if (next >= 0 && next < count) {
+        cat(o, s_next, "");
+        o += 4;
+        scene_text(o, (unsigned)next);
     }
 }
 
-static void labels(void)
+static void labels(void *song)
 {
     DjUi *ui = &D->ui;
-    int audio = mx_state() != 0;
+    DjDeck *d = X->deck;
+    int audio = mx_state() != 0, st = mx_state();
     unsigned char want = (unsigned char)(audio ? size_idx(mx_len()) | 0x80 : ui->loop_idx);
+    (void)song;
     if (ui->lbl_jump != ui->jump_idx) {
         cat(ui->text[0], s_back, jump_n[ui->jump_idx]);
         cat(ui->text[1], jump_n[ui->jump_idx], s_fwd);
@@ -852,6 +1036,25 @@ static void labels(void)
     BTN_STATE(D->btn[0], 0);   /* a press may have lit them */
     BTN_STATE(D->btn[1], 0);
     BTN_STATE(D->btn[2], ui->loop_on || audio);
+    line_text(X->line);
+    keep_text(d->line, X->line);
+    if (st != 2)                     /* the capture hint: BACK only once the pass is recorded */
+        keep_text(X->btn, st ? s_recording : !ui->loop_on ? s_loop_first
+                  : !mx_have() ? s_no_ring : mx_ready(D->loop_a, D->loop_len) ? s_capture : s_recording);
+    else
+        keep_text(X->btn, "");       /* xf_draw paints it; no text */
+    if (X->drawn != mx_xf())
+        dirty(X->btn);
+    BTN_STATE(d->cap[0], mx_filter_on(1));   /* lit while the filter is in */
+    BTN_STATE(d->cap[1], mx_filter_on(0));
+    if (X->sl_drawn[0] != mx_filter(1) * 2 + mx_filter_on(1))
+        dirty(d->sl[0]);
+    if (X->sl_drawn[1] != mx_filter(0) * 2 + mx_filter_on(0))
+        dirty(d->sl[1]);
+    if (UI_TICK - X->wave_ms >= WAVE_MS) {
+        X->wave_ms = UI_TICK;
+        dirty(d->wave);
+    }
 }
 
 static void *row_of(void *song, unsigned scene)
@@ -875,7 +1078,7 @@ static void rows_dirty(void *song)
     }
 }
 
-/* A refused jump: the scene it would have reached blinks three times. */
+/* A refused jump: the scene it would have reached blinks three times (in the list, once it is back). */
 static void blink(void *song)
 {
     DjUi *ui = &D->ui;
@@ -912,42 +1115,78 @@ static void led(unsigned show)
     D->ui.led = want;
 }
 
+static void deck_hide(unsigned hidden)
+{
+    DjDeck *d = X->deck;
+    unsigned i;
+    void *w[] = {d->panel, D->btn[0], D->btn[1], D->btn[2], d->up, d->dn, d->line, d->wave,
+                 d->cap[0], d->sl[0], d->cap[1], d->sl[1], X->btn};
+    for (i = 0; i < sizeof(w) / sizeof(w[0]); i++)
+        HIDE(w[i], hidden);
+}
+
+/* Every widget under w (and w) paints again in both passes: what HIDE alone does not do for the
+ * children of a container coming back. Children hang off +0x18 (oldest), linked on through +0x20. */
+static void dirty_tree(void *w)
+{
+    void *stack[12];
+    int sp = 0;
+    stack[sp++] = w;
+    while (sp) {
+        void *c = stack[--sp];
+        for (; c; c = (void *)u32(c, 0x20)) {
+            void *kid = (void *)u32(c, 0x18);
+            dirty(c);
+            if (kid && sp < 12)
+                stack[sp++] = kid;
+            if (c == w)
+                break;                   /* w's own siblings are not ours to touch */
+        }
+    }
+}
+
+/* Stock's scene list and top bar go while the deck is shown (they would paint over it) and come
+ * back as they were. */
+static void stock_hide(void *song, unsigned hide)
+{
+    void *list = at(song, S_LIST), *bar = at(song, S_BAR);
+    if (hide) {
+        X->hid_list = (unsigned char)u8(list, W_HIDDEN);
+        X->hid_bar = (unsigned char)u8(bar, W_HIDDEN);
+        HIDE(list, 1);
+        HIDE(bar, 1);
+    } else {
+        HIDE(list, X->hid_list);
+        HIDE(bar, X->hid_bar);
+        rows_dirty(song);
+        dirty_tree(song);                /* the whole screen paints again, not only the containers */
+    }
+}
+
 static void ui_update(void *song)
 {
     DjUi *ui = &D->ui;
-    unsigned show, i;
+    unsigned show;
     if (ui->song != song)
         build(song);
-    show = ui->want && u8(song, S_MODE) <= 1 && !u8(song, S_BAR_HID);
+    show = ui->want && X->deck && !u8(song, S_MODE);
     if (show != ui->shown) {
-        for (i = 0; i < NBTN; i++)
-            HIDE(D->btn[i], !show);
-        HIDE(X->btn, !show);
-        if (!show)
-            rows_dirty(song);    /* the list under the row paints again */
+        stock_hide(song, show);
+        deck_hide(!show);
         ui->shown = (unsigned char)show;
     }
     if (show) {
-        labels();
-        mixer_labels(song);
-    } else if (X->tops) {
-        unsigned ev[6], j;
-        for (j = 0; j < 6; j++)
-            ev[j] = 0;
-        ev[0] = EV_REFRESH;
-        X->tops = 0;
-        SONG_EVENT(song, ev);    /* BPM and Swing labelled again by stock */
-        j = u32(song, S_LMODE);
-        keep_text(at(song, S_BTN_EDIT), EDIT_TEXT);
-        keep_text(at(song, S_BTN_LMODE), LMODE_TEXT[j < 3 ? j : 0]);
-        if (u32(at(song, S_BTN_LMODE), 0))
-            BTN_STATE(at(song, S_BTN_LMODE), j != 0);
+        if (!u8(at(song, S_LIST), W_HIDDEN))
+            HIDE(at(song, S_LIST), 1);   /* stock showed it again (a refresh) */
+        if (!u8(at(song, S_BAR), W_HIDDEN))
+            HIDE(at(song, S_BAR), 1);
+        labels(song);
     }
     led(show);
     blink(song);
 }
 
-/* App_HandleInput, SONG (0x080A329E): on the Song screen it shows / hides the row instead. */
+/* App_HandleInput, SONG (0x080A329E): on the Song screen it shows / hides the deck instead. */
 void dj_song_key(void *app, unsigned screen, unsigned a, unsigned b)
 {
     if (live() && u8(app, APP_SCREEN) == SCR_SONG) {
@@ -982,7 +1221,6 @@ static void request_loop(void)
     D->loop_seq++;
 }
 
-/* Song vtable +0x30: our buttons act on the press (as a DJ deck), the release is swallowed. */
 /* Scene ^ / v: the scene before / after the one last pressed (or queued), as a row press would. */
 static void scene_step(void *song, int dir)
 {
@@ -998,27 +1236,30 @@ static void scene_step(void *song, int dir)
     UI_POST_UP(song, ev);
 }
 
+/* Song vtable +0x30: our buttons act on the press (as a DJ deck), the release is swallowed; the
+ * deck's other widgets take nothing further. */
 unsigned dj_song_child(void *song, const void *ev)
 {
     unsigned type = u16(ev, 0), id = u32(ev, 0xC);
-    if (live() && D->ui.shown && !u8(song, S_MODE) && (type == 1 || type == 2) &&
-        (id == ID_EDIT || id == ID_LMODE)) {
-        if (type == 2)                   /* on the release, as stock's Edit */
-            scene_step(song, id == ID_EDIT ? -1 : 1);
-        return 0;
-    }
-    if (!live() || (type != 1 && type != 2) || id - ID_DJ >= NBTN)
+    if (!live() || (type != 1 && type != 2) || (id - ID_DJ >= NBTN && id != XF_ID && id - ID_PANEL >= N_DECK))
         return SONG_CHILD(song, ev);
     if (type == 1) {
         if (id == ID_DJ)
             request_jump(-1);
         else if (id == ID_DJ + 1)
             request_jump(1);
-        else if (mx_state()) {
-            mx_clear();          /* Loop off ends the audio loop */
-        } else {
-            D->ui.loop_on ^= 1;
-            request_loop();
+        else if (id == ID_DJ + 2) {
+            if (mx_state()) {
+                mx_clear();          /* Loop off ends the audio loop */
+            } else {
+                D->ui.loop_on ^= 1;
+                request_loop();
+            }
+        } else if (id == ID_UP || id == ID_DN) {
+            scene_step(song, id == ID_UP ? -1 : 1);
+        } else if (id == ID_CAP0 || id == ID_CAP1) {
+            unsigned side = id == ID_CAP0;   /* Loop / Proj: its filter in or out, the slider kept */
+            mx_set_filter_on(side, !mx_filter_on(side));
         }
     }
     return 0;
@@ -1039,7 +1280,7 @@ static unsigned char step_idx(unsigned char i, int n, unsigned count)
     return (unsigned char)(v < 0 ? 0 : v >= (int)count ? (int)count - 1 : v);
 }
 
-/* BACK with the row shown and the DJ loop on, once the ring has recorded the pass playing now:
+/* BACK with the deck shown and the DJ loop on, once the ring has recorded the pass playing now:
  * capture it as the audio loop. The DJ loop is switched off by the same request. 1 = taken. */
 static int try_capture(void)
 {
@@ -1053,8 +1294,10 @@ static int try_capture(void)
     D->ui.loop_on = 0;
     request_loop();
     mx_capture(a, len, D->loop_seq);
-    mx_set_filter(0, 0);                 /* a new loop starts with both filters off */
+    mx_set_filter(0, 0);                 /* a new loop starts with both filters centred and in */
     mx_set_filter(1, 0);
+    mx_set_filter_on(0, 1);
+    mx_set_filter_on(1, 1);
     X->facc[0] = X->facc[1] = 0;
     return 1;
 }
@@ -1068,8 +1311,18 @@ unsigned dj_back_key(void *app)
     return 1;
 }
 
-/* Song vtable +0x34: with the row shown, the bottom knobs set the sizes (x2 / /2 per step). Leaving
- * the screen (0xD3) hides the row. */
+static void filter_knob(unsigned side, int delta)
+{
+    int *acc = &X->facc[side], n;
+    *acc += delta;
+    n = *acc / FILT_STEP;
+    *acc -= n * FILT_STEP;
+    mx_set_filter(side, mx_filter(side) + n);
+}
+
+/* Song vtable +0x34: with the deck shown the knobs follow the screen: top-left the jump size, top-right
+ * the loop size (x2 / /2 per step), bottom-left the loop filter, bottom-right the project filter.
+ * Leaving the screen (0xD3) hides the deck. */
 void dj_song_event(void *song, const void *ev)
 {
     unsigned type = u16(ev, 0);
@@ -1079,38 +1332,26 @@ void dj_song_event(void *song, const void *ev)
         return;
     if (live() && type == 0x32 && D->ui.shown) {
         unsigned k = u16(ev, 0xC);
-        int n;
-        if (k == 0 || k == 2) {          /* top knobs: loop filter left, project filter right */
-            unsigned side = k == 0;      /* mixer side: 0 project, 1 loop */
-            int *acc = &X->facc[side];
-            *acc += (short)u16(ev, 0x10);
-            n = *acc / FILT_STEP;
-            *acc -= n * FILT_STEP;
-            mx_set_filter(side, mx_filter(side) + n);
+        int delta = (short)u16(ev, 0x10), n;
+        if (k == KNOB_BL || k == KNOB_BR) {
+            filter_knob(k == KNOB_BL, delta);   /* mixer side: 1 loop, 0 project */
             return;
         }
-        if (k == 1 && mx_state() == 2) {  /* audio loop playing: bottom-left is the crossfader */
-            int *acc = &D->ui.acc[0];
-            *acc += (short)u16(ev, 0x10);
-            n = *acc / FILT_STEP;
-            *acc -= n * FILT_STEP;
-            mx_set_xf(mx_xf_target() + n);
+        if (k == KNOB_TL) {
+            n = steps_of(0, delta);
+            D->ui.jump_idx = step_idx(D->ui.jump_idx, n, JUMP_SIZES);
             return;
         }
-        if (k == 1 || k == 3) {
-            n = steps_of(k == 3, (short)u16(ev, 0x10));
-            if (k == 1) {
-                D->ui.jump_idx = step_idx(D->ui.jump_idx, n, JUMP_SIZES);
-            } else {
-                unsigned char was = D->ui.loop_idx;
-                if (mx_state())
-                    was = (unsigned char)size_idx(mx_len());
-                D->ui.loop_idx = step_idx(was, n, LOOP_SIZES);
-                if (mx_state() && D->ui.loop_idx != was)
-                    mx_size(loop_t[D->ui.loop_idx]);   /* the audio loop takes it */
-                else if (D->ui.loop_on && D->ui.loop_idx != was)
-                    request_loop();      /* the live loop takes the new size */
-            }
+        if (k == KNOB_TR) {
+            unsigned char was = D->ui.loop_idx;
+            n = steps_of(1, delta);
+            if (mx_state())
+                was = (unsigned char)size_idx(mx_len());
+            D->ui.loop_idx = step_idx(was, n, LOOP_SIZES);
+            if (mx_state() && D->ui.loop_idx != was)
+                mx_size(loop_t[D->ui.loop_idx]);   /* the audio loop takes it */
+            else if (D->ui.loop_on && D->ui.loop_idx != was)
+                request_loop();      /* the live loop takes the new size */
             return;
         }
     }

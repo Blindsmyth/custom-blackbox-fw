@@ -36,6 +36,9 @@
 #define E_ANC        128u          /* entries 128, 129: the anchors */
 #define E_SCRATCH    130u          /* entry 130: this block's loop audio (lp / rp) */
 #define NENT         131u
+#define PEAKS_OFF    (2 * BLOCK * 4)   /* scratch half 0: lp / rp, then one peak byte per ring block */
+#define PROJ_N       512u      /* project peaks kept (dj.c's buffer) */
+#define PROJ_PARTS   4         /* 128-frame parts per project peak: ~10.7 ms */
 #define CACHE        0x2400A9C0u   /* sample manager (pcmStreamer's object): 615 entries of 0x1C */
 #define CACHE_N      0x267u
 #define C_LBUF       0x04          /* entry: float L[8192] */
@@ -107,11 +110,16 @@ typedef struct {
     float co[2][5];           /* +0xAC b0 b1 b2 a1 a2, per side */
     float z[2][2][2];         /* +0xD4 state per side, channel */
     unsigned char fon[2];     /* +0xF4 filter on, per side */
-    unsigned char rsvf6[2];
+    unsigned char filt_off[2];/* +0xF6 UI: the filter taken out (its knob kept), per side */
     unsigned blocks;          /* +0xF8 audio blocks seen */
     unsigned short ent[NENT]; /* +0xFC the borrowed cache entries */
     unsigned char want;       /* the audio task wants the ring: a DJ loop or an audio loop */
     unsigned char nent;       /* entries borrowed so far */
+    unsigned char ui_busy;    /* the Song screen is reading the ring (waveform): no give-back now */
+    unsigned char proj_n;     /* parts in proj_pk so far */
+    unsigned char *proj;      /* PROJ_N peaks of the project, one per PROJ_PARTS parts (dj.c's) */
+    unsigned proj_head;       /* peaks written (monotonic) */
+    float proj_pk;            /* the peak being gathered */
 } MxState;
 
 typedef char mx_fits[(MX_BASE + sizeof(MxState) <= MX_END) ? 1 : -1];
@@ -259,8 +267,8 @@ void mx_stream_poll(void)
             M->have = H_READY;
             return;
         }
-        if (M->blocks - M->drain_at < 2)
-            return;                          /* the audio task may still be in a block */
+        if (M->blocks - M->drain_at < 2 || M->ui_busy)
+            return;                          /* the audio task or the waveform may still read it */
         while (M->nent)
             give_back(--M->nent);
         dmb();
@@ -345,6 +353,16 @@ static unsigned *word(unsigned fr)
 
 static float *scratch(unsigned h) { return (float *)half(E_SCRATCH, 0) + h * BLOCK; }
 
+static unsigned char *peak_at(unsigned blk)
+{
+    return (unsigned char *)half(E_SCRATCH, 0) + PEAKS_OFF + (blk & RING_MASK);
+}
+
+static unsigned char peak_byte(float p)
+{
+    return (unsigned char)(p >= 1.0f ? 255 : (int)(p * 255.0f));
+}
+
 /* The ring block whose anchor is at or before rq, in [lo, hi] (hi = last written). */
 static unsigned blk_of(long long rq, unsigned lo, unsigned hi)
 {
@@ -378,9 +396,13 @@ static void pos_of(long long rq, unsigned *blk, float *off)
 static void ring_put(const float *l, const float *r, int n)
 {
     unsigned *o = word((M->wblk & RING_MASK) * BLOCK);   /* a block never spans two halves */
+    float pk = 0;
     int i;
     for (i = 0; i < n && i < BLOCK; i++) {
         float a = l[i] * 32767.0f, c = r[i] * 32767.0f;
+        float al = l[i] < 0 ? -l[i] : l[i], ar = r[i] < 0 ? -r[i] : r[i];
+        pk = al > pk ? al : pk;
+        pk = ar > pk ? ar : pk;
         int x = (int)(a > 32767.0f ? 32767.0f : a < -32768.0f ? -32768.0f : a);
         int y = (int)(c > 32767.0f ? 32767.0f : c < -32768.0f ? -32768.0f : c);
         o[i] = (unsigned)(x & 0xFFFF) | ((unsigned)y << 16);
@@ -388,6 +410,7 @@ static void ring_put(const float *l, const float *r, int n)
     for (; i < BLOCK; i++)
         o[i] = 0;
     *anc_at(M->wblk) = M->tq;
+    *peak_at(M->wblk) = peak_byte(pk);
     dmb();
     M->wblk++;
 }
@@ -521,7 +544,7 @@ static void filters_update(void)
 {
     unsigned s;
     for (s = 0; s < 2; s++) {
-        float t = M->filt[s], v = M->fv[s] + (t - M->fv[s]) * 0.3f;
+        float t = M->filt_off[s] ? 0 : M->filt[s], v = M->fv[s] + (t - M->fv[s]) * 0.3f;
         if (fabs_(t - v) < 1.0f)
             v = t;
         if (v != M->fv[s] || (fabs_(v) > DEAD) != M->fon[s]) {
@@ -676,6 +699,22 @@ static void part(float *l, float *r, int n, int cont)
     }
     if (M->rec)
         ring_put(l, r, n);
+    if (M->proj) {                           /* the project's level for the waveform, before our mix */
+        float pk = M->proj_pk;
+        for (i = 0; i < n; i++) {
+            float al = l[i] < 0 ? -l[i] : l[i], ar = r[i] < 0 ? -r[i] : r[i];
+            pk = al > pk ? al : pk;
+            pk = ar > pk ? ar : pk;
+        }
+        if (++M->proj_n >= PROJ_PARTS) {
+            M->proj[M->proj_head % PROJ_N] = peak_byte(pk);
+            dmb();
+            M->proj_head++;
+            M->proj_n = 0;
+            pk = 0;
+        }
+        M->proj_pk = pk;
+    }
     if (M->state == ST_IDLE && M->wblk - M->vblk > RING_BLOCKS)
         M->vblk = M->wblk - RING_BLOCKS;
 
@@ -806,8 +845,94 @@ void mx_set_xf(int v)
     M->xf_seq++;
 }
 
+int mx_filter_on(unsigned side) { return live() && side < 2 ? !M->filt_off[side] : 1; }
+
+/* Loop / Proj on the deck: the filter in or out; out glides to off, the knob's place is kept. */
+void mx_set_filter_on(unsigned side, int on)
+{
+    if (live() && side < 2)
+        M->filt_off[side] = (unsigned char)!on;
+}
+
 void mx_set_filter(unsigned side, int v)
 {
     if (live() && side < 2)
         M->filt[side] = (short)(v < -1000 ? -1000 : v > 1000 ? 1000 : v);
+}
+
+/* ---- the waveform (UI task) ---- */
+
+/* dj.c's buffer for the project's peaks (PROJ_N bytes, kept for good). */
+void mx_set_proj(unsigned char *buf)
+{
+    if (live())
+        M->proj = buf;
+}
+
+/* The project's last n peaks (n <= PROJ_N), oldest first, into out. */
+void mx_wave_proj(unsigned char *out, int n)
+{
+    unsigned head;
+    int i;
+    if (!live() || !M->proj) {
+        for (i = 0; i < n; i++)
+            out[i] = 0;
+        return;
+    }
+    head = M->proj_head;
+    for (i = 0; i < n; i++) {
+        unsigned k = head - (unsigned)n + (unsigned)i;
+        out[i] = (int)(head - k) <= (int)PROJ_N && k < head ? M->proj[k % PROJ_N] : 0;
+    }
+}
+
+/* The loop lane: n peaks over the audio loop's window [A, A + len) once captured, else over the last
+ * dj_len ticks recorded. Returns the playhead's column (-1 = none) and the window in *start / *len.
+ * Only while the ring is borrowed; the give-back waits for mx_wave_done. 0 columns = nothing. */
+int mx_wave_loop(unsigned char *out, int n, int dj_len, long long *start, int *len)
+{
+    long long t, s0, rq;
+    unsigned lo, hi, b;
+    int i, l, head = -1;
+    if (!live() || n <= 0)
+        return -2;
+    M->ui_busy = 1;
+    dmb();
+    if (!ready() || M->wblk - M->vblk < 2) {
+        M->ui_busy = 0;
+        return -2;
+    }
+    t = M->tq >> TQ_SHIFT;
+    if (M->state == ST_HELD) {
+        l = M->len;
+        s0 = M->a;
+        head = (int)LDIV((long long)(((t - M->b) - floor_div(t - M->b, l) * l)) * n, l);
+    } else {
+        l = dj_len > 0 ? dj_len : 3840;
+        s0 = t - l;
+    }
+    lo = M->state == ST_HELD ? M->blk_a : M->vblk;
+    hi = M->wblk - 1;
+    rq = s0 << TQ_SHIFT;
+    b = rq > anc_of(lo) ? blk_of(rq, lo, hi) : lo;   /* then walk on: the columns only go forward */
+    for (i = 0; i < n; i++) {
+        rq = (s0 + LDIV((long long)l * i, n)) << TQ_SHIFT;
+        if (rq < anc_of(lo) || rq > anc_of(hi)) {
+            out[i] = 0;
+            continue;
+        }
+        while (b < hi && anc_of(b + 1) <= rq)
+            b++;
+        out[i] = *peak_at(b);
+    }
+    *start = s0;
+    *len = l;
+    return head;
+}
+
+void mx_wave_done(void)
+{
+    dmb();
+    if (live())
+        M->ui_busy = 0;
 }
