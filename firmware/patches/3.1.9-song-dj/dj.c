@@ -979,7 +979,8 @@ static void keep_text(void *btn, const char *t)
         return;
     if (!same((const char *)at(btn, BTN_TEXT_AT), t)) {
         BTN_TEXT(btn, t);
-        X->ask |= 3;                 /* a label: both passes, as the Mix screen does */
+        dirty(btn);                  /* the button's face first: a label alone paints its new text */
+        X->ask |= 3;                 /* over the old one. Both passes, as the Mix screen does */
     }
 }
 
@@ -994,6 +995,7 @@ static void set_lit(void *btn, unsigned on)
 static void set_text(void *btn, const char *t)
 {
     BTN_TEXT(btn, t);
+    dirty(btn);
     X->ask |= 3;
 }
 
