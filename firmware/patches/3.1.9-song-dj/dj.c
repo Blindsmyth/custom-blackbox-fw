@@ -1190,15 +1190,18 @@ static void relabel(void)
 /* Every widget under w (and w) paints again in both passes: what HIDE alone does not do for the
  * children of a container coming back. Children hang off +0x18 (oldest), linked on through +0x20, each
  * with its parent at +0x2C. Walked without a stack: the 12-deep one this had dropped whole subtrees
- * (each of our buttons pushed its label first), and the scene list stayed black. */
+ * (each of our buttons pushed its label first), and the scene list stayed black. Labels are passed
+ * by: marking them wrote over their text ("Edit" read "it", "Loop" "op"). */
 #define TREE_MAX    4096
+#define VT_LABEL    0x080F17A4u   /* stock label: its text starts at +0x31, and it paints with its parent */
 
 static void dirty_tree(void *w)
 {
     void *c = w;
     unsigned n;
     for (n = 0; n < TREE_MAX; n++) {
-        dirty(c);
+        if (u32(c, 0) != VT_LABEL)      /* +0x31 / +0x32 there are the first two letters */
+            dirty(c);
         if (u32(c, 0x18)) {
             c = (void *)u32(c, 0x18);
             continue;

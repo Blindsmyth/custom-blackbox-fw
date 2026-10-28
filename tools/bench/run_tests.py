@@ -6420,6 +6420,18 @@ def t_dj_gui(bench, res):
     def on_write(mu_, acc, addr, size, value, data):
         if size == 1 and value == 1:
             marked.add(addr)
+    snap = {}
+    def walk_snap(c):
+        stack = [c]
+        while stack:
+            c = stack.pop()
+            while c:
+                if song <= c < song + 0x13000:
+                    snap[c] = bytes(b.mu.mem_read(c + 0x31, 6))
+                if b.u32(c + 0x18):
+                    stack.append(b.u32(c + 0x18))
+                c = b.u32(c + 0x20)
+    walk_snap(b.u32(song + 0x18))
     hw = mu.hook_add(UC_HOOK_MEM_WRITE, on_write, begin=song, end=song + 0x13000)
     mode_button(3)
     pump()
@@ -6435,6 +6447,11 @@ def t_dj_gui(bench, res):
                 if b.u32(c + 0x18):
                     todo.append(b.u32(c + 0x18))
                 c = b.u32(c + 0x20)
+        labels = [w for w in tree if b.u32(w) == 0x080F17A4]
+        spoilt = [w for w in labels if bytes(b.mu.mem_read(w + 0x31, 6)) != snap.get(w)]
+        res.check(len(labels) > 5 and not spoilt,
+                  f"closing the deck leaves every stock label's text alone ({len(labels)}, spoilt {len(spoilt)})")
+        tree = [w for w in tree if b.u32(w) != 0x080F17A4]
         missed = [w for w in tree if w + 0x31 not in marked]
         res.check(len(tree) > 100 and not missed,
                   f"closing the deck marks every widget of the Song tree to repaint ({len(tree)}, missed {len(missed)})")
