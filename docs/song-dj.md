@@ -6,7 +6,7 @@ Inspired by Mixxx and rekordbox: beatjump and autoloop for the whole set at once
 
 ## How to use it
 
-- **Open the row:** on the Song screen, press **SONG** again. A row of three buttons appears at the bottom: **<< 16 | 16 >> | Loop 1**. SONG again hides it, and leaving the screen hides it too. SONG from any other screen opens Song as stock does.
+- **Open the deck:** on the Song screen, press **SONG** again (the deck view below). SONG again closes it. Song remembers which one it was in until power off.
   - The row is shown in the scene list and with the Edit popup open. It is hidden while a scene's sequence or pad grid is open.
   - The row covers the lowest ~38 px of the scene list. Scroll to reach a scene under it.
 - **Beatjump:** **<<** / **>>** move everything back or forward by the jump size. The move happens on the next beat and keeps the phase.
@@ -106,27 +106,29 @@ For going from one project into the next in a live set: capture a loop of the ma
 - **Capture:** open the DJ row (SONG on the Song screen), turn **Loop** on, then press **BACK**.
   - The DJ loop is switched off at once, so the project plays the current pass to its end and carries on past it.
   - At that end, the **audio loop** starts. It is the pass that just played, so the switch is seamless, and the crossfader goes **fully left** (loop only).
-  - The Loop button reads `Audio 1` and stays lit.
+  - The audio loop appears in the waveform's top lane.
 - **While the audio loop plays:**
-  - The **bottom-right knob** sizes the audio loop. A new size keeps the start, as Mixxx does.
+  - The **top-right knob** sizes the audio loop, and the project's loop with it: there is one loop size. A new size keeps the start, as Mixxx does.
     - Bigger sizes play what the project really played after the loop. It was recorded while the loop played: up to 16 bars past the loop's start, until a preset load starts.
     - A size that hasn't been recorded yet waits until it has.
   - **Load the next project.** The transport keeps running and the loop plays through the load. Then slide the crossfader right to bring the new project in.
-  - **Loop** turns the audio loop off. The crossfader goes back fully right and the ring records again.
+  - **Loop** loops the new project as usual (shown in the bottom lane), while the audio loop keeps playing.
+  - **BACK** erases the audio loop. The crossfader goes back fully right and the ring records again. To grab a loop of the new project, press BACK again once the crossfader reads `BACK: capture loop`.
+- **DJ mode is remembered** until power off: leaving the Song screen with the deck open and coming back (or SONG from another screen) opens the deck again. SONG on the Song screen still switches between normal and DJ mode.
 - **The deck view** (SONG pressed again on the Song screen) replaces the scene list and the top bar while it is open, and gives them back when it closes:
   ```
-  182-220  [ << 16 ][ 16 >> ][ ▲ ][ ▼ ][  Loop 1  ]   (64 | 64 | 36 | 36 | 120 px)
+  182-220  [ << ][ 16 ][ >> ][ ▲ ][ ▼ ][  Loop 1  ]   (44 | 40 | 44 | 36 | 36 | 120 px, 1 px lines between)
   164-180  3 Drop  > 4 Break           (scene playing, then queued / next)
-   78-162  loop lane (cyan) over project lane (pink)
-   46- 76  [Loop][---O---] | [Proj][---O---]   (72 + 88 px each side)
+   78-162  audio loop lane (cyan) over project lane (pink)
+   46- 76  [---O---][Loop] | [Proj][---O---]   (88 + 72 px each side: the toggles meet in the middle)
     0- 44  L [====[#]====] P           (crossfader)
   ```
-  - **Top bar:** beatjump `<<` / `>>`, scene **▲** / **▼**, and **Loop** at the far right.
+  - **Top bar:** beatjump `<<` / `>>` with the jump size between them, scene **▲** / **▼**, and **Loop** at the far right. Each button is 1 px narrower than its slot, and the panel draws a short line in each gap.
     - The arrows do what a scene row press does (event `0x107`): with the song playing, that scene starts on the next bar. They count from the scene last pressed or queued and stop at the first and last.
   - **Scene line:** the scene playing and the one queued (or the next).
   - **Waveform:**
-    - **Loop lane (top):** the audio loop once captured, with a tick on every bar and a white playhead. Before a capture it shows the DJ loop's size of recent audio.
-    - **Project lane (bottom):** the project's level over the last ~1.7 s, newest on the right.
+    - **Audio loop lane (top):** only once BACK has grabbed a loop: the audio loop, with a tick on every bar and a white playhead. Empty otherwise.
+    - **Project lane (bottom):** with the Loop button's loop on, one whole pass of it (bar ticks, playhead; ahead of the playhead the pass before). Otherwise the project's level over the last ~1.7 s, newest on the right.
   - **Filters:** two horizontal sliders, loop on the left and project on the right, as on the crossfader.
     - Bipolar like the pad Filter: left of centre is low-pass, right is high-pass; dragging near the centre snaps Off.
     - **Loop / Proj** (the captions) take their filter out and back in. The slider keeps its place, drawn grey while out. They are lit while the filter is in.
@@ -139,7 +141,7 @@ For going from one project into the next in a live set: capture a loop of the ma
     | Knob | Controls |
     | --- | --- |
     | Top-left | jump size |
-    | Top-right | loop size (the audio loop's while it plays) |
+    | Top-right | loop size (the project's loop and the audio loop together) |
     | Bottom-left | loop filter |
     | Bottom-right | project filter |
 
@@ -170,15 +172,16 @@ For going from one project into the next in a live set: capture a loop of the ma
 - **Deck view widgets:** stock frame buttons (`BTN_CTOR`, 0xA0 bytes) on the Song widget, each added as its oldest child, so it is drawn after stock's and hit before it.
   - **Own vtables:** the panel, waveform, sliders, crossfader and arrows use copies of the button vtable `0x080EFE48` with their own draw (vt+0x04); the panel, sliders and crossfader also have their own touches.
   - **Drawing:** stock's `FILL_RECT` `0x0808EA23` / `OUTLINE` `0x0808E995`, with palette 2 background, 17 track, 25 dead ends, 16 ticks, 3 knobs, 5 loop, 4 project. The arrows are rows of `FILL_RECT` over the stock button draw, with no font glyph. Widgets are marked dirty (+0x31/+0x32) when their value moves; the waveform repaints at most every 50 ms.
-  - **Widths:** a stock button label shows the tail of a text that is too wide for it (`Loop` in 48 px read `op`), so the captions are 72 px and Loop is 120 px, enough for `Audio 1/16`.
+  - **Widths:** a stock button label shows the tail of a text that is too wide for it (`Loop` in 48 px read `op`), so the captions are 72 px and Loop is 120 px, enough for `Loop 1/16`. A label also keeps its scroll offset while hidden, so every label is set again when the deck opens (`relabel`).
   - **Repaints are asked for by our tick.** The GUI only runs a repaint pass when a screen tick raises its byte (the tick's flags: `[0]` full, `[1]` partial), and stock's Song tick knows nothing of our widgets. So `dj_song_tick` raises the partial pass when one of ours is dirty, and both passes when a label changes or the deck opens or closes (as the Mix screen does). Without it, our changes waited for an unrelated stock repaint: labels came out half-drawn, and closing the deck sometimes left the screen black.
   - **Labels are set only when their text changes** (`keep_text` compares the button's text at `+0x65`: the label is embedded at `+0x34`, its text at label `+0x31`). Setting the same text every tick also re-lays the label out and repaints it, and that jammed the labels.
-  - **Closing the deck** marks the whole Song widget tree dirty. `HIDE` alone only marks the container, so its rows and buttons stayed black until something else repainted them.
+  - **Closing the deck** marks the whole Song widget tree dirty. `HIDE` alone only marks the container, so its rows and buttons stayed black until something else repainted them. The walk follows the parent links (+0x2C) without a stack: a 12-deep stack had dropped most of the tree (1140 of 1184 widgets on the bench), which is what still left normal Song mode black at times.
+  - **Leaving the screen** (event 0xD3) closes the deck at once and keeps DJ mode asked for, so the first tick back opens it again.
   - **Stock hidden:** while the deck is shown, the scene list container (`Song+0x1067C`) and the top bar (`Song+0xFFE4`) are hidden. They are hidden again if a refresh shows them, and restored to their own state when the deck closes.
-  - **Memory:** the deck's 9 own widgets, the project peaks and the lane buffers (`DjDeck`, ~2.3 KB) come from the bottom SDRAM allocator once at boot (`dj_init`); the crossfader and the deck state stay in SRAM4 (`DjXf`).
+  - **Memory:** the deck's 10 own widgets, the project peaks with their ticks and the lane buffers (`DjDeck`, ~23 KB) come from the bottom SDRAM allocator once at boot (`dj_init`); the crossfader and the deck state stay in SRAM4 (`DjXf`).
 - **Waveform data:**
-  - **Loop lane:** `ring_put` stores one peak byte per ring block in the scratch entry, after lp/rp. `mx_wave_loop` maps columns to blocks through the anchors, and sets `ui_busy` so the give-back waits until the drawing is done (`mx_wave_done`).
-  - **Project lane:** the audio task keeps one peak per 4 parts (~10.7 ms) of the project, before our mix, in `DjDeck.proj` (512 bytes); `mx_wave_proj` reads it.
+  - **Audio loop lane:** `ring_put` stores one peak byte per ring block in the scratch entry, after lp/rp. `mx_wave_loop` maps columns to blocks through the anchors (only while an audio loop is armed or held), and sets `ui_busy` so the give-back waits until the drawing is done (`mx_wave_done`).
+  - **Project lane:** the audio task keeps one peak per 4 parts (~10.7 ms) of the project, before our mix, with its transport tick, in `DjDeck.proj` / `proj_t` (4096 each, ~43.7 s). `mx_wave_proj` reads the newest; `mx_wave_pass` maps a loop pass's columns to peaks by tick (binary search from `proj_v`, the first peak since the transport last went back). It needs no ring, so the project's loop shows while the ring holds the audio loop.
 - **Scene buttons:** `dj_song_child` posts `0x107` with the scene (`ui_post_event_up` `0x080AED14`). The app's `FUN_0809B7B0` queues it (`0xB2` to key `0x400`) when the song plays.
 - **Scene line:** the song player's playing layer (`+0xC20`, index `+0x40`) and queued one (`+0xC24`), or `App+0x20` with the song off. Names are the str at `App+0x29C0 + i·0x30 + 0x2C` (`str_cstr` `0x080460BA`).
 - **BACK:** hardware BACK reaches the app as `App_HandleInput` type 7; `hook_type7` (preset folders) now asks `dj_back_key` first.
@@ -189,6 +192,11 @@ For going from one project into the next in a live set: capture a loop of the ma
 - **Next bar on load.** The new project's sequences and song are not yet cued to the next bar after a load. The transport keeps running, and stock's Quant Size still decides when a launched sequence starts.
 - **On the unit:** the borrowed ring hasn't been tried yet. Check that loops with many long Clips still stream cleanly while a loop is on.
 - **Pads routed to Out 2/3** aren't on bus 0, so they aren't captured or crossfaded.
+- **DJ FX routing (planned).**
+  - **Layout:** on the DJ FX screen (0x37, constructor `FUN_080B20F0`), Hold A moves to y 176 and Hold B to y 56, by changing the `movs` immediates at `0x080B231E` / `0x080B2352`. Under each Hold button go two toggles, **Proj** and **Loop**, which pick what goes into that FX slot.
+  - **Knobs:** bottom-left is the loop filter and bottom-right the project filter. Holding INFO gives the knobs back to stock, to swap FX.
+  - **Audio:** the mixer stage moves to just after the master EQ (`blx` `0x08053526`), before the FX container `SE+0x28D90`. Each slot then processes the sum of what is routed to it, by swapping bus 0's L/R pointers around the slot.
+  - **Open question:** should the capture point move to before the FX, so loops are captured dry?
 
 ### Bench
 
@@ -203,16 +211,17 @@ The cases call `mixer.c` with a fake engine clock and a saw on L:
 - 140 BPM repitches and stays on the grid;
 - half a bar applies at once;
 - the crossfader centre is constant power;
-- Loop off;
+- BACK erases the audio loop;
 - LP / HP / centre;
 - BPM Global vs Project;
-- BACK, the top knobs, the loop knob and Loop on the Song screen.
+- BACK, the knobs, the shared loop size and Loop on the Song screen;
+- the project's loop pass in the waveform.
 
 **Not covered:** the taps inside a real render, and drawing.
 
 ## Memory
 
-The mixer's `MxState` follows it at `0x38007A60`–`0x38007C64` (fits below `0x38008000`). The crossfader and the deck's state (`DjXf`) are at `0x38006F00`–`0x38006FE0`, and the deck's own widgets (`DjDeck`, ~2.3 KB) come from the bottom SDRAM allocator at boot, between Song cues' `SgState` and RbVoice. The ring and its anchors live in 131 borrowed sample-cache entries, only while a loop is on (the entry indices are in `MxState.ent`).
+The mixer's `MxState` follows it at `0x38007A60`–`0x38007C64` (fits below `0x38008000`). The crossfader and the deck's state (`DjXf`) are at `0x38006F00`–`0x38006FE0`, and the deck's own widgets (`DjDeck`, ~23 KB) come from the bottom SDRAM allocator at boot, between Song cues' `SgState` and RbVoice. The ring and its anchors live in 131 borrowed sample-cache entries, only while a loop is on (the entry indices are in `MxState.ent`).
 
 `DjState` sits at SRAM4 `0x38007400`–`0x38007A58`. That is free on 3.1.T: it is past RbVoice and diag (`0x38007000`–`0x38007148`) and below Bungee's grain input (`0x38008000`). It also stays clear of Song cues' `SgState` (`0x38006400`–`0x38006BDC`, on `claude/eloquent-lichterman-6eca6a`). `dj_init`, called from `deck_init` at boot, clears it. Nothing is saved in presets, and the pads' own Clip Deck loop settings are never touched.
 

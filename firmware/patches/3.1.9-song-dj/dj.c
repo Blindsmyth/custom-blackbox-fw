@@ -197,14 +197,17 @@ typedef void (*post_fn)(void *, void *);
 #define ID_CAP1     0x1E0      /* "Proj" */
 #define ID_SL0      0x1E1      /* loop filter */
 #define ID_SL1      0x1E2      /* project filter */
-#define N_DECK      9
+#define ID_JNUM     0x1E3      /* the jump size, between << and >> */
+#define N_DECK      10
 
-/* The deck's own widgets and the project's peaks: 2.3 KB from the bottom SDRAM allocator at boot
+/* The deck's own widgets and the project's peaks: 23 KB from the bottom SDRAM allocator at boot
  * (SRAM4 has no room; SDRAM has ~1 MB free after boot, measured on the unit). */
 typedef struct {
     unsigned panel[0x28], up[0x28], dn[0x28], line[0x28], wave[0x28];
     unsigned cap[2][0x28], sl[2][0x28];        /* stock buttons, 0xA0 each */
-    unsigned char proj[512];                   /* mixer.c's project peaks (PROJ_N) */
+    unsigned jnum[0x28];
+    unsigned char proj[4096];                  /* mixer.c's project peaks (PROJ_N) */
+    unsigned proj_t[4096];                     /* and the transport tick of each */
     unsigned char lane[2][160];                /* columns being drawn */
 } DjDeck;
 
@@ -236,9 +239,11 @@ int mx_filter(unsigned side);
 int mx_ready(long long a, int len);
 int mx_have(void);
 void mx_gains(int *l, int *r);
-void mx_set_proj(unsigned char *buf);
+void mx_set_proj(unsigned char *buf, unsigned *ticks);
+int mx_wave_pass(unsigned char *out, int n, long long a, int len);
 void mx_wave_proj(unsigned char *out, int n);
-int mx_wave_loop(unsigned char *out, int n, int dj_len, long long *start, int *len);
+int mx_wave_loop(unsigned char *out, int n, long long *start, int *len);
+long long mx_now(void);
 void mx_wave_done(void);
 void mx_capture(long long a, int len, unsigned off_seq);
 void mx_clear(void);
@@ -269,10 +274,7 @@ static const char n_32b[] = "32";
 static const char n_64b[] = "64";
 static const char *const jump_n[JUMP_SIZES] = {n_4, n_2, n_1, n_2b, n_4b, n_8b, n_16b, n_32b, n_64b};
 static const char *const loop_n[LOOP_SIZES] = {n_16, n_8, n_4, n_2, n_1, n_2b, n_4b, n_8b, n_16b};
-static const char s_back[] = "<< ";
-static const char s_fwd[] = " >>";
 static const char s_loop[] = "Loop ";
-static const char s_audio[] = "Audio ";
 static const char s_capture[] = "BACK: capture loop";
 static const char s_recording[] = "Recording the loop...";
 static const char s_loop_first[] = "Loop on, then BACK";
@@ -307,7 +309,7 @@ void dj_init(void)
             for (i = 0; i < sizeof(DjDeck); i++)
                 c[i] = 0;
             X->deck = d;
-            mx_set_proj(d->proj);
+            mx_set_proj(d->proj, d->proj_t);
         }
     }
 }
@@ -760,11 +762,18 @@ static void sl_touch(void *w, const int *pt)
 }
 
 /* Panel: the deck's background over the hidden scene list and top bar; it takes stray touches. */
+static const short bar_gap[] = {43, 83, 127, 163, 199};   /* 1 px between the top bar's buttons */
+
 static void panel_draw(void *w, const void *ctx)
 {
     int r[4];
+    unsigned i;
     rect(r, wx(w), wy(w), ww(w), wh(w));
     FILL_RECT(r, PAL_BG, canvas(ctx));
+    for (i = 0; i < sizeof(bar_gap) / sizeof(bar_gap[0]); i++) {
+        rect(r, bar_gap[i], 188, 1, 26);
+        FILL_RECT(r, PAL_EDGE, canvas(ctx));
+    }
 }
 
 /* Scene prev / next: a stock button with a solid arrow painted on it (no font glyph needed). */
@@ -850,36 +859,54 @@ static void lane(void *cv, int x, int y, int h, const unsigned char *pk, int n, 
     }
 }
 
-/* The waveform: the loop lane on top (the audio loop, or the DJ loop being recorded, with bar ticks
- * and the playhead), the project lane below (the last ~1.7 s, newest on the right). */
+/* A loop's lane: a tick on every bar of the transport over [start, start + len), the peaks, the
+ * playhead at column head (-1 = none). */
+static void loop_lane(void *cv, int x, int y, int h, const unsigned char *pk, int n, long long start,
+                      int len, int head, unsigned colour)
+{
+    long long b;
+    int r[4];
+    for (b = floor_div(start, 3840) * 3840; b < start + len; b += 3840)
+        if (b >= start) {
+            rect(r, x + (int)LDIV((b - start) * 2 * n, len), y, 1, h);
+            FILL_RECT(r, PAL_TICK, cv);
+        }
+    lane(cv, x, y, h, pk, n, colour);
+    if (head >= 0 && head < n) {
+        rect(r, x + 2 * head, y, 1, h);
+        FILL_RECT(r, PAL_WHITE, cv);
+    }
+}
+
+/* The waveform: on top the audio loop only, once BACK has grabbed it; below the project: its loop
+ * (the Loop button's) over a whole pass while it is on, else the last ~1.7 s, newest on the right. */
 static void wave_draw(void *w, const void *ctx)
 {
     void *cv = canvas(ctx);
     DjDeck *d = X->deck;
     int x = wx(w), y = wy(w), h = wh(w), lh = h / 2, n = ww(w) / 2, head, len, r[4];
-    long long start, b;
+    long long start;
     if (n > WAVE_COLS)
         n = WAVE_COLS;
     rect(r, x, y, ww(w), h);
     FILL_RECT(r, PAL_BG, cv);
     rect(r, x, y + lh, ww(w), 1);
     FILL_RECT(r, PAL_TICK, cv);
-    head = mx_wave_loop(d->lane[0], n, D->loop_len > 0 ? D->loop_len : loop_t[D->ui.loop_idx], &start, &len);
+    head = mx_wave_loop(d->lane[0], n, &start, &len);
     if (head != -2) {
-        for (b = floor_div(start, 3840) * 3840; b < start + len; b += 3840)
-            if (b >= start) {            /* a tick on every bar of the transport */
-                rect(r, x + (int)LDIV((b - start) * 2 * n, len), y + lh + 1, 1, lh - 1);
-                FILL_RECT(r, PAL_TICK, cv);
-            }
-        lane(cv, x, y + lh + 1, lh - 1, d->lane[0], n, PAL_CYAN);
+        loop_lane(cv, x, y + lh + 1, lh - 1, d->lane[0], n, start, len, head, PAL_CYAN);
         mx_wave_done();
-        if (head >= 0) {
-            rect(r, x + 2 * head, y + lh + 1, 1, lh - 1);
-            FILL_RECT(r, PAL_WHITE, cv);
-        }
     }
-    mx_wave_proj(d->lane[1], n);
-    lane(cv, x, y, lh, d->lane[1], n, PAL_PINK);
+    if (D->loop_len > 0 && D->armed_loop == D->loop_seq) {
+        start = D->loop_a;
+        len = D->loop_len;
+        head = mx_wave_pass(d->lane[1], n, start, len);
+        start += floor_div(mx_now() - start, len) * len;   /* the pass playing: its bar ticks */
+        loop_lane(cv, x, y, lh, d->lane[1], n, start, len, head, PAL_PINK);
+    } else {
+        mx_wave_proj(d->lane[1], n);
+        lane(cv, x, y, lh, d->lane[1], n, PAL_PINK);
+    }
 }
 
 #define VT(draw, down, move, up) {                                                            \
@@ -911,16 +938,19 @@ static void place(void *song, void *b, const void *const *vt, unsigned id, int x
 
 static const char s_cap_loop[] = "Loop";
 static const char s_cap_proj[] = "Proj";
+static const char s_jback[] = "<<";
+static const char s_jfwd[] = ">>";
 
 /* The deck view, y bottom-up (stock's header 222-240 stays):
- *   182-220  << | >> | ^ | v | Loop          (64 | 64 | 36 | 36 | 120; Loop above the top-right knob)
+ *   182-220  << | 16 | >> | ^ | v | Loop  (44 | 40 | 44 | 36 | 36 | 120; Loop above the top-right knob),
+ *            each 1 px narrower: panel_draw's lines show in the gaps
  *   164-180  scene line
- *    78-162  waveform: loop lane over project lane
- *    46- 76  Loop [filter] | Proj [filter]
+ *    78-162  waveform: audio loop lane over project lane
+ *    46- 76  [loop filter] Loop | Proj [project filter]   (the toggles meet in the middle)
  *     0- 44  crossfader */
 static void build(void *song)
 {
-    static const int x[NBTN] = {0, 64, 200}, w[NBTN] = {64, 64, 120};   /* Loop: "Audio 1/16" fits */
+    static const int x[NBTN] = {0, 84, 200}, w[NBTN] = {43, 43, 120};   /* Loop: "Loop 1/16" fits */
     DjDeck *d = X->deck;
     unsigned i;
     D->ui.song = song;
@@ -931,17 +961,21 @@ static void build(void *song)
     place(song, d->panel, panel_vt, ID_PANEL, 0, 0, 320, 221);
     for (i = 0; i < NBTN; i++)
         place(song, D->btn[i], 0, ID_DJ + i, x[i], 182, w[i], 38);
-    place(song, d->up, arrow_vt, ID_UP, 128, 182, 36, 38);
-    place(song, d->dn, arrow_vt, ID_DN, 164, 182, 36, 38);
+    place(song, d->jnum, 0, ID_JNUM, 44, 182, 39, 38);
+    place(song, d->up, arrow_vt, ID_UP, 128, 182, 35, 38);
+    place(song, d->dn, arrow_vt, ID_DN, 164, 182, 35, 38);
     place(song, d->line, 0, ID_LINE, 0, 163, 320, 18);
     place(song, d->wave, wave_vt, ID_WAVE, 0, 78, 320, 84);
-    place(song, d->cap[0], 0, ID_CAP0, 0, 46, 72, 30);    /* a stock label shows the tail of a */
-    place(song, d->sl[0], slider_vt, ID_SL0, 72, 46, 88, 30);    /* text too wide: "Loop" needs ~72 */
+    place(song, d->sl[0], slider_vt, ID_SL0, 0, 46, 88, 30);
+    place(song, d->cap[0], 0, ID_CAP0, 88, 46, 72, 30);   /* a stock label shows the tail of a */
+                                                          /* text too wide: "Loop" needs ~72 */
     place(song, d->cap[1], 0, ID_CAP1, 160, 46, 72, 30);
     place(song, d->sl[1], slider_vt, ID_SL1, 232, 46, 88, 30);
     place(song, X->btn, xf_vt, XF_ID, 0, 0, 320, 44);
     BTN_TEXT(d->cap[0], s_cap_loop);
     BTN_TEXT(d->cap[1], s_cap_proj);
+    BTN_TEXT(D->btn[0], s_jback);
+    BTN_TEXT(D->btn[1], s_jfwd);
     X->line[0] = 0;
 }
 
@@ -952,15 +986,6 @@ static void cat(char *d, const char *a, const char *b)
     while (*b)
         *d++ = *b++;
     *d = 0;
-}
-
-static int size_idx(int ticks)
-{
-    unsigned i;
-    for (i = 0; i < LOOP_SIZES; i++)
-        if (loop_t[i] >= ticks)
-            return (int)i;
-    return LOOP_SIZES - 1;
 }
 
 static int same(const char *a, const char *b)
@@ -1043,24 +1068,21 @@ static void labels(void *song)
 {
     DjUi *ui = &D->ui;
     DjDeck *d = X->deck;
-    int audio = mx_state() != 0, st = mx_state();
-    unsigned char want = (unsigned char)(audio ? size_idx(mx_len()) | 0x80 : ui->loop_idx);
+    int st = mx_state();
     (void)song;
     if (ui->lbl_jump != ui->jump_idx) {
-        cat(ui->text[0], s_back, jump_n[ui->jump_idx]);
-        cat(ui->text[1], jump_n[ui->jump_idx], s_fwd);
-        set_text(D->btn[0], ui->text[0]);
-        set_text(D->btn[1], ui->text[1]);
+        cat(ui->text[0], jump_n[ui->jump_idx], "");
+        set_text(d->jnum, ui->text[0]);
         ui->lbl_jump = ui->jump_idx;
     }
-    if (ui->lbl_loop != want) {
-        cat(ui->text[2], audio ? s_audio : s_loop, loop_n[want & 0x7F]);
+    if (ui->lbl_loop != ui->loop_idx) {      /* one size for the project's loop and the audio loop */
+        cat(ui->text[2], s_loop, loop_n[ui->loop_idx]);
         set_text(D->btn[2], ui->text[2]);
-        ui->lbl_loop = want;
+        ui->lbl_loop = ui->loop_idx;
     }
     set_lit(D->btn[0], 0);     /* a press may have lit them */
     set_lit(D->btn[1], 0);
-    set_lit(D->btn[2], ui->loop_on || audio);
+    set_lit(D->btn[2], ui->loop_on);
     line_text(X->line);
     keep_text(d->line, X->line);
     if (st != 2)                     /* the capture hint: BACK only once the pass is recorded */
@@ -1144,7 +1166,7 @@ static void deck_hide(unsigned hidden)
 {
     DjDeck *d = X->deck;
     unsigned i;
-    void *w[] = {d->panel, D->btn[0], D->btn[1], D->btn[2], d->up, d->dn, d->line, d->wave,
+    void *w[] = {d->panel, D->btn[0], d->jnum, D->btn[1], D->btn[2], d->up, d->dn, d->line, d->wave,
                  d->cap[0], d->sl[0], d->cap[1], d->sl[1], X->btn};
     for (i = 0; i < sizeof(w) / sizeof(w[0]); i++)
         HIDE(w[i], hidden);
@@ -1159,27 +1181,33 @@ static void relabel(void)
     D->ui.lbl_jump = D->ui.lbl_loop = 0xFF;   /* labels() sets the top bar again */
     set_text(d->cap[0], s_cap_loop);
     set_text(d->cap[1], s_cap_proj);
+    set_text(D->btn[0], s_jback);
+    set_text(D->btn[1], s_jfwd);
     set_text(d->line, X->line);
     set_text(X->btn, "");                     /* labels() puts the hint back */
 }
 
 /* Every widget under w (and w) paints again in both passes: what HIDE alone does not do for the
- * children of a container coming back. Children hang off +0x18 (oldest), linked on through +0x20. */
+ * children of a container coming back. Children hang off +0x18 (oldest), linked on through +0x20, each
+ * with its parent at +0x2C. Walked without a stack: the 12-deep one this had dropped whole subtrees
+ * (each of our buttons pushed its label first), and the scene list stayed black. */
+#define TREE_MAX    4096
+
 static void dirty_tree(void *w)
 {
-    void *stack[12];
-    int sp = 0;
-    stack[sp++] = w;
-    while (sp) {
-        void *c = stack[--sp];
-        for (; c; c = (void *)u32(c, 0x20)) {
-            void *kid = (void *)u32(c, 0x18);
-            dirty(c);
-            if (kid && sp < 12)
-                stack[sp++] = kid;
-            if (c == w)
-                break;                   /* w's own siblings are not ours to touch */
+    void *c = w;
+    unsigned n;
+    for (n = 0; n < TREE_MAX; n++) {
+        dirty(c);
+        if (u32(c, 0x18)) {
+            c = (void *)u32(c, 0x18);
+            continue;
         }
+        while (c != w && !u32(c, 0x20))
+            c = (void *)u32(c, 0x2C);
+        if (c == w || !c)
+            return;                      /* w's own siblings are not ours to touch */
+        c = (void *)u32(c, 0x20);
     }
 }
 
@@ -1199,6 +1227,16 @@ static void stock_hide(void *song, unsigned hide)
         rows_dirty(song);
         dirty_tree(song);                /* the whole screen paints again, not only the containers */
     }
+}
+
+/* Leaving the Song screen: stock's widgets back and ours hidden at once (want is kept, so the deck
+ * opens again, relabelled, on the first tick back). */
+static void close_deck(void *song)
+{
+    stock_hide(song, 0);
+    deck_hide(1);
+    D->ui.shown = 0;
+    X->ask |= 3;
 }
 
 static void ui_update(void *song)
@@ -1234,9 +1272,7 @@ void dj_song_key(void *app, unsigned screen, unsigned a, unsigned b)
         D->ui.want ^= 1;
         return;
     }
-    if (live())
-        D->ui.want = 0;
-    SET_SCREEN(app, screen, a, b);
+    SET_SCREEN(app, screen, a, b);       /* Song comes back as it was left: DJ mode or not */
 }
 
 /* Song vtable +0x00. */
@@ -1296,12 +1332,8 @@ unsigned dj_song_child(void *song, const void *ev)
         else if (id == ID_DJ + 1)
             request_jump(1);
         else if (id == ID_DJ + 2) {
-            if (mx_state()) {
-                mx_clear();          /* Loop off ends the audio loop */
-            } else {
-                D->ui.loop_on ^= 1;
-                request_loop();
-            }
+            D->ui.loop_on ^= 1;      /* the project's loop, also while an audio loop plays */
+            request_loop();
         } else if (id == ID_UP || id == ID_DN) {
             scene_step(song, id == ID_UP ? -1 : 1);
         } else if (id == ID_CAP0 || id == ID_CAP1) {
@@ -1349,11 +1381,24 @@ static int try_capture(void)
     return 1;
 }
 
+/* BACK on the deck: an audio loop is erased (the crossfader back to Proj, the ring records again);
+ * without one, the project's loop is captured. 1 = taken. */
+static int back_press(void)
+{
+    if (!D->ui.shown)
+        return 0;
+    if (mx_state()) {
+        mx_clear();
+        return 1;
+    }
+    return try_capture();
+}
+
 /* App_HandleInput type 7 (hardware BACK, any screen; hook_type7 in ../3.1.9-folders-repitch/cave.S):
  * on the Song screen BACK captures. 0 = taken, anything else = stock's BACK. */
 unsigned dj_back_key(void *app)
 {
-    if (live() && u8(app, APP_SCREEN) == SCR_SONG && try_capture())
+    if (live() && u8(app, APP_SCREEN) == SCR_SONG && back_press())
         return 0;
     return 1;
 }
@@ -1373,9 +1418,9 @@ static void filter_knob(unsigned side, int delta)
 void dj_song_event(void *song, const void *ev)
 {
     unsigned type = u16(ev, 0);
-    if (live() && type == 0xD3)
-        D->ui.want = 0;
-    if (live() && type == EV_BACK && try_capture())
+    if (live() && type == 0xD3 && D->ui.shown)
+        close_deck(song);
+    if (live() && type == EV_BACK && back_press())
         return;
     if (live() && type == 0x32 && D->ui.shown) {
         unsigned k = u16(ev, 0xC);
@@ -1392,13 +1437,13 @@ void dj_song_event(void *song, const void *ev)
         if (k == KNOB_TR) {
             unsigned char was = D->ui.loop_idx;
             n = steps_of(1, delta);
-            if (mx_state())
-                was = (unsigned char)size_idx(mx_len());
             D->ui.loop_idx = step_idx(was, n, LOOP_SIZES);
-            if (mx_state() && D->ui.loop_idx != was)
-                mx_size(loop_t[D->ui.loop_idx]);   /* the audio loop takes it */
-            else if (D->ui.loop_on && D->ui.loop_idx != was)
-                request_loop();      /* the live loop takes the new size */
+            if (D->ui.loop_idx == was)
+                return;
+            if (mx_state())
+                mx_size(loop_t[D->ui.loop_idx]);   /* both loops take the one size */
+            if (D->ui.loop_on)
+                request_loop();
             return;
         }
     }

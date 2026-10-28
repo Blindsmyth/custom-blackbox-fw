@@ -20,7 +20,8 @@
  * plays its pass to the end W and on past it. The audio loop is the last pass [W - L, W), already in
  * the ring; from W it plays and the crossfader is fully left. The ring keeps recording the project's
  * continuation (until 16 bars past A or a preset load), so a bigger size plays the bars that really
- * followed. Loop off clears it: the crossfader goes back right and the ring records again.
+ * followed. BACK again erases it: the crossfader goes back right and the ring records again. The
+ * Loop button meanwhile loops the project as ever (dj.c), and the loop knob sizes both loops.
  */
 
 #define MX_BASE      0x38007A60u   /* SRAM4: after DjState (0x38007400-0x38007A58), below */
@@ -37,7 +38,7 @@
 #define E_SCRATCH    130u          /* entry 130: this block's loop audio (lp / rp) */
 #define NENT         131u
 #define PEAKS_OFF    (2 * BLOCK * 4)   /* scratch half 0: lp / rp, then one peak byte per ring block */
-#define PROJ_N       512u      /* project peaks kept (dj.c's buffer) */
+#define PROJ_N       4096u     /* project peaks kept (dj.c's buffer): ~43.7 s, the ring's span */
 #define PROJ_PARTS   4         /* 128-frame parts per project peak: ~10.7 ms */
 #define CACHE        0x2400A9C0u   /* sample manager (pcmStreamer's object): 615 entries of 0x1C */
 #define CACHE_N      0x267u
@@ -74,7 +75,7 @@ typedef struct {
     unsigned cap_off;         /* +0x08 the DJ loop_seq that switched the DJ loop off for it */
     int cap_len;              /* +0x0C the DJ loop at the press: length, ticks */
     long long cap_a;          /* +0x10 its start, transport ticks */
-    unsigned clr_seq;         /* +0x18 one per Loop off */
+    unsigned clr_seq;         /* +0x18 one per erase (BACK with an audio loop) */
     unsigned size_seq;        /* +0x1C one per size change */
     int size_req;             /* +0x20 ticks */
     unsigned xf_seq;          /* +0x24 one per crossfader move */
@@ -120,6 +121,8 @@ typedef struct {
     unsigned char *proj;      /* PROJ_N peaks of the project, one per PROJ_PARTS parts (dj.c's) */
     unsigned proj_head;       /* peaks written (monotonic) */
     float proj_pk;            /* the peak being gathered */
+    unsigned *proj_t;         /* the transport tick of each peak (dj.c's) */
+    unsigned proj_v;          /* first peak since the transport last went back: ticks rise from it */
 } MxState;
 
 typedef char mx_fits[(MX_BASE + sizeof(MxState) <= MX_END) ? 1 : -1];
@@ -713,7 +716,11 @@ static void part(float *l, float *r, int n, int cont)
             pk = ar > pk ? ar : pk;
         }
         if (++M->proj_n >= PROJ_PARTS) {
-            M->proj[M->proj_head % PROJ_N] = peak_byte(pk);
+            unsigned tk = (unsigned)(M->tq >> TQ_SHIFT), k = M->proj_head % PROJ_N;
+            if (M->proj_head && tk < M->proj_t[(M->proj_head - 1) % PROJ_N])
+                M->proj_v = M->proj_head;    /* the transport went back: a new timeline */
+            M->proj[k] = peak_byte(pk);
+            M->proj_t[k] = tk;
             dmb();
             M->proj_head++;
             M->proj_n = 0;
@@ -868,11 +875,60 @@ void mx_set_filter(unsigned side, int v)
 
 /* ---- the waveform (UI task) ---- */
 
-/* dj.c's buffer for the project's peaks (PROJ_N bytes, kept for good). */
-void mx_set_proj(unsigned char *buf)
+/* dj.c's buffers for the project's peaks and their ticks (PROJ_N each, kept for good). */
+void mx_set_proj(unsigned char *buf, unsigned *ticks)
 {
-    if (live())
+    if (live()) {
+        M->proj_t = ticks;
         M->proj = buf;
+    }
+}
+
+/* The transport tick the audio task is at. */
+long long mx_now(void) { return live() ? M->tq >> TQ_SHIFT : 0; }
+
+/* The newest project peak at or before tick tk, of those in [lo, hi); -1 = none. */
+static int proj_at(unsigned lo, unsigned hi, long long tk)
+{
+    if (lo >= hi || tk < (long long)M->proj_t[lo % PROJ_N])
+        return -1;
+    while (hi - lo > 1) {
+        unsigned mid = lo + (hi - lo) / 2;
+        if ((long long)M->proj_t[mid % PROJ_N] <= tk)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return M->proj[lo % PROJ_N];
+}
+
+/* The project's loop (the Loop button's) in the bottom lane, from the project's peaks: n columns over
+ * one pass [a + k * len, + len); a column past the playhead shows the pass before. Returns the
+ * playhead's column. Works without the ring (which may be holding the audio loop). */
+int mx_wave_pass(unsigned char *out, int n, long long a, int len)
+{
+    long long now, s0, tk;
+    unsigned head, lo;
+    int i, v;
+    for (i = 0; i < n; i++)
+        out[i] = 0;
+    if (!live() || !M->proj || !M->proj_t || len <= 0 || n <= 0)
+        return -1;
+    now = M->tq >> TQ_SHIFT;
+    s0 = a + floor_div(now - a, len) * len;
+    head = M->proj_head;
+    lo = head - M->proj_v > PROJ_N - 1 ? head - (PROJ_N - 1) : M->proj_v;   /* one slot spare: */
+    for (i = 0; i < n; i++) {                                               /* it is being written */
+        tk = s0 + LDIV((long long)len * i, n);
+        if (tk > now)
+            tk -= len;
+        if (tk < a)
+            continue;                    /* before the loop started */
+        v = proj_at(lo, head, tk);
+        if (v > 0)
+            out[i] = (unsigned char)v;
+    }
+    return (int)LDIV((now - s0) * n, len);
 }
 
 /* The project's last n peaks (n <= PROJ_N), oldest first, into out. */
@@ -892,10 +948,10 @@ void mx_wave_proj(unsigned char *out, int n)
     }
 }
 
-/* The loop lane: n peaks over the audio loop's window [A, A + len) once captured, else over the last
- * dj_len ticks recorded. Returns the playhead's column (-1 = none) and the window in *start / *len.
- * Only while the ring is borrowed; the give-back waits for mx_wave_done. 0 columns = nothing. */
-int mx_wave_loop(unsigned char *out, int n, int dj_len, long long *start, int *len)
+/* The audio loop's lane: n peaks over its window [A, A + len), once BACK has grabbed it. Returns the
+ * playhead's column (-1 = none yet, -2 = no audio loop: then mx_wave_done is not needed) and the
+ * window in *start / *len. The ring's give-back waits for mx_wave_done. */
+int mx_wave_loop(unsigned char *out, int n, long long *start, int *len)
 {
     long long t, s0, rq;
     unsigned lo, hi, b;
@@ -904,19 +960,15 @@ int mx_wave_loop(unsigned char *out, int n, int dj_len, long long *start, int *l
         return -2;
     M->ui_busy = 1;
     dmb();
-    if (!ready() || M->wblk - M->vblk < 2) {
+    if (!ready() || M->state == ST_IDLE || M->wblk - M->vblk < 2 || M->len <= 0) {
         M->ui_busy = 0;
         return -2;
     }
     t = M->tq >> TQ_SHIFT;
-    if (M->state == ST_HELD) {
-        l = M->len;
-        s0 = M->a;
+    l = M->len;
+    s0 = M->a;
+    if (M->state == ST_HELD)
         head = (int)LDIV((long long)(((t - M->b) - floor_div(t - M->b, l) * l)) * n, l);
-    } else {
-        l = dj_len > 0 ? dj_len : 3840;
-        s0 = t - l;
-    }
     lo = M->state == ST_HELD ? M->blk_a : M->vblk;
     hi = M->wblk - 1;
     rq = s0 << TQ_SHIFT;
