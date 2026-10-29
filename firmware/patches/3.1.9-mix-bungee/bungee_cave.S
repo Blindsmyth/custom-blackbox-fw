@@ -16,12 +16,18 @@
 #ifdef WITH_SONG_DJ
 .set WARP_SONG_DJ, 1                    @ 3.1.T: Song DJ mixer (mixer.c): BPM setting
 #endif
+#ifdef WITH_MPE
+.set WARP_MPE, 1                        @ 3.1.U: Seq MIDI out (../3.1.9-mpe-out): its ids in layer 0 (seqrec.S)
+#endif
 #ifdef WITH_SONG
 .set WARP_SONG, 1                       @ 3.1.T: Song cues (deck.c song_*, deck.S hook_song_step, hook_pad_start)
 #endif
 .include "mix_cave.S"
 #ifdef WITH_SONG_DJ
 .include "dj.S"                         @ 3.1.T: Song DJ row (../3.1.9-song-dj dj.S, dj.c)
+#endif
+#ifdef WITH_MPE
+.include "mpe.S"                        @ 3.1.U: Seq MIDI out, MPE and Port (../3.1.9-mpe-out mpe.S, mpe.c)
 #endif
 
 .align 2

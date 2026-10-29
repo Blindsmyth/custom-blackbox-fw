@@ -56,6 +56,8 @@ DECK_ID_BASE = 0x1B0
 # And the Song DJ row (../3.1.9-song-dj: beatjump and autoloop on the Song screen), which steers Clip
 # Deck's units.
 DJ_DIR = HERE.parent / "3.1.9-song-dj"
+# And Seq MIDI out (../3.1.9-mpe-out: MPE channel spread and Port per sequence layer, docs/mpe-out.md).
+MPE_DIR = HERE.parent / "3.1.9-mpe-out"
 T = Path(os.environ.get("ARM_GNU", Path.home() / ".local" / "arm-gnu-15.3" / "bin"))
 GCC, GXX = T / "arm-none-eabi-gcc", T / "arm-none-eabi-g++"
 
@@ -87,7 +89,7 @@ if MX_SAFE:
     OUT, OUT_B2, SYMS = (OUT.parent / _sub / OUT.name, OUT_B2.parent / _sub / OUT_B2.name,
                          SYMS.parent / _sub / SYMS.name)
     OUT.parent.mkdir(exist_ok=True)
-LETTER = "T" if LINEUP else "B"
+LETTER = "U" if LINEUP else "B"                # 3.1.U: 3.1.T + Seq MIDI out
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
 CPU = ["-mthumb", "-mcpu=cortex-m7", "-mfloat-abi=hard"]
@@ -137,11 +139,12 @@ def compile_all(rb_id):
     cave_o = BUILD / "bungee_cave.o"
     run(["clang", "-target", "armv7em-none-eabi", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16",
          *(["-DWITH_REPITCH"] if REPITCH else []),
-         *(["-DWITH_LINEUP", "-DWITH_DECK", "-DWITH_SONG", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-DWITH_SONG_DJ"] if LINEUP else []),
-         "-I", MIX_DIR, "-I", mix.BASE_DIR, "-I", DECK_DIR, "-I", DJ_DIR, "-c", "-o", cave_o, HERE / "bungee_cave.S"])
+         *(["-DWITH_LINEUP", "-DWITH_DECK", "-DWITH_SONG", f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-DWITH_SONG_DJ", "-DWITH_MPE"] if LINEUP else []),
+         "-I", MIX_DIR, "-I", mix.BASE_DIR, "-I", DECK_DIR, "-I", DJ_DIR, "-I", MPE_DIR, "-c", "-o", cave_o,
+         HERE / "bungee_cave.S"])
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \
-        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c"] if LINEUP else [])
+        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c", MPE_DIR / "mpe.c"] if LINEUP else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
         run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DSONG_CUES", "-DWITH_SONG_DJ"] if LINEUP else []),
@@ -171,7 +174,7 @@ def compile_all(rb_id):
 
 def bank1_has_no_ram(objs):
     """Cave code has nowhere to keep .data/.bss: they would land in bank 2's SRAM1 block."""
-    for o in objs[:6 if LINEUP else 4]:
+    for o in objs[:8 if LINEUP else 4]:          # the cave asm, then the bank-1 C (compile_all)
         out = subprocess.check_output([str(T / "arm-none-eabi-size"), "-A", str(o)], text=True)
         for line in out.splitlines():
             parts = line.split()
@@ -301,6 +304,11 @@ def add_rubber_sites(stock):
         mix.WORDS[:] = [w for w in mix.WORDS if w[0] != 0x080EEE90]
         mix.SITES.extend(SONG_SITES)
         mix.VTABLE.extend(SONG_VTABLE)
+        spec = importlib.util.spec_from_file_location("mpe_sites", MPE_DIR / "sites.py")
+        mpe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mpe)
+        mix.SITES.extend(mpe.parts(stock, stock_bl))
+        mix.BYTES.extend(mpe.BYTES)
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves
         mix.SITES.append((0x080667B8, "hook_lane", False, "2de9f04f"))   # per-lane render: the leaf renders
     mix.SITES.extend([

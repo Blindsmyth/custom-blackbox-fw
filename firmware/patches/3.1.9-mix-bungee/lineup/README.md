@@ -1,4 +1,4 @@
-# 3.1.T: Warp lineup + Clip Deck
+# 3.1.U: Warp lineup + Clip Deck + Seq MIDI out
 
 One image with everything on this line:
 - **The base:** 3.1.Q: folders, the Mix screen, Seq Rec, the looper, Tools → Master.
@@ -7,12 +7,13 @@ One image with everything on this line:
 - **Song DJ row** (`../../3.1.9-song-dj`, `docs/song-dj.md`): SONG again on the Song screen gives Beatjump << / >> and Autoloop for every playing Clip, pad sequence and the song.
 - **Song cues:** a Song scene sends Clip pads to one of their hot cues when it starts (see below).
 - **Warp Stutter / Fill / Repitch / Chop / Grain / Bungee.**
+- **Seq MIDI out** (`../../3.1.9-mpe-out`, `docs/mpe-out.md`): each sequence has Port (Both / DIN / USB) and MPE (Off / Lower / Upper / Multi, Last Ch, PB Rng; MIDI Out is the first note channel) on its own page, under Rec Len. 3.1.U = 3.1.T plus this; not yet tried on the unit.
 - **The preset-folder fixes** (`docs/preset-folders.md`):
   - no dropout when entering big folders;
   - Save / Save As safe in deep folders;
   - a failed save is shown, not lost.
 
-The menu version reads `3.1.T`. Built with `build_patch.py --lineup`.
+The menu version reads `3.1.U` (3.1.T before Seq MIDI out). Built with `build_patch.py --lineup`.
 
 ## Install
 

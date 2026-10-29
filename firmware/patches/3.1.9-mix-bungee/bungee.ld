@@ -28,6 +28,7 @@ SECTIONS {
     KEEP(*deck.o(.text .text.* .rodata .rodata.*))   /* 3.1.T: Clip Deck */
     KEEP(*dj.o(.text .text.* .rodata .rodata.*))     /* 3.1.T: Song DJ row */
     KEEP(*mixer.o(.text .text.* .rodata .rodata.*))  /* 3.1.T: Song DJ mixer */
+    KEEP(*mpe.o(.text .text.* .rodata .rodata.*))    /* 3.1.U: Seq MIDI out, MPE and Port */
   } > CAVE
 
   .b2head : { KEEP(*(.b2head)) } > BANK2
