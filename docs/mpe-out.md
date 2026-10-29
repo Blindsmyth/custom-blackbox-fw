@@ -1,8 +1,8 @@
-# Seq MIDI out: MPE and Port per sequence (3.1.U)
+# Seq MIDI out: MPE, Port and program change (3.1.U)
 
 Status: built and bench-tested on the lineup image, **not yet tried on the unit**. The menu reads `3.1.U` (3.1.T plus this). Code: `firmware/patches/3.1.9-mpe-out` (`mpe.c`, `mpe.S`, `sites.py`), chained into `../3.1.9-mix-bungee/build_patch.py --lineup`.
 
-A sequence whose **MIDI Out** is on (any channel) can send its notes Ableton-style for an MPE synth, one note per channel. Each sequence can also choose its output port.
+A sequence whose **MIDI Out** is on (any channel) can send its notes Ableton-style for an MPE synth, one note per channel. Each sequence can also choose its output port, and each layer can send a program change when it starts, like an Ableton MIDI clip.
 
 ## How to use it
 
@@ -32,6 +32,14 @@ Note channels are MIDI Out … Last Ch, either way round, without the zone's mas
 Each RPN is CC 101 0, CC 100 n, CC 6 value, CC 38 0, then the null RPN (CC 101 127, CC 100 127). Lower with 15 channels is 102 messages (about 100 ms on DIN at the first note); Multi is 96.
 
 **Changing Port or MPE while notes hold** ends them first, as stock does when the MIDI Out channel changes.
+
+### Program change per layer
+
+Seq screen → layer pages A–D: under Step Len and Step Count are **Bank:**, **Sub:** and **Pgm:**, each `---` (not sent) or 1–128, as Bank / Sub-Bank / Program on an Ableton MIDI clip. They are saved as `pcbank`, `pcsub`, `pcpgm`.
+
+- **When:** when the sequence starts, and when a layer takes over from another (at its boundary, as stock switches layers), right before that layer's first note. The next passes of the same layer send nothing; after a stop, the next start sends again. Changing the values while a layer plays takes effect at its next start.
+- **What:** CC 0 = Bank − 1, CC 32 = Sub − 1, then Program change = Pgm − 1; each only when it isn't `---`.
+- **Where:** the MIDI Out channel (MPE Off and Multi), or the MPE master (Lower 1, Upper 16); on the sequence's Port, as its notes. Nothing goes out with MIDI Out off.
 
 ## The stock code it uses
 
@@ -114,22 +122,26 @@ The design changed from the plan: there are no hooks in `Player_NoteOn` / `Off` 
 | `0x0804D004` | bl | `bl FUN_08044A0E` | `mpe_out_thunk` → `mpe_out(mgr, packet, din, usb, msg)`: masks DIN or USB by the tag's Port; in MPE picks the channel (and sends the setup and a stolen note's off first). A note-off in the table goes to its channel; one that isn't, in MPE, is dropped, because its note was stolen. |
 | `0x080EEF32`, `0x080EEEEA` | bytes | `0000…` | page 0 rows `74 1F0 1F1 1F2`, after Rec Len. |
 | `0x080A00CC`, `0x080996AC` | word | `0x20008001` | `0x20008201`: `0x74` in layer 0. |
+| `0x0809443C` | bl | `bl Param_Add` (case `0x48`, `0x86`) | `mpe_tpl_layer`: stock's add, then Bank / Sub / Pgm (`mpe_tpl` adds them to `0x47` too, for layer A). |
+| `0x0804D018` | b.w | `ldrb.w r3, [sp, #0x48]` | `mpe_msg_thunk` → `mpe_msg(msg, r7)`: in `Pcm_PollMidi`'s loop, every message popped from the MIDI queue. The player posts its pass start `0x4E` (`+8` key, `+0xC` layer = `c20+0x40`) and layer takeover `0x69` (same) from `Player_Tick` (`0x0805E004`, `0x0805DBA6`), and stopped `0x4F`, all to `router + 0x15238`, in order with its notes; stock's switch skips them (type < `0x50`, or the default case). `mpe_msg` sends the layer's Bank / Sub / Pgm when the layer differs from the one last sent (none after `0x4F`). `r7` = `pcm + 0xA000` from the function's entry: `+0x68B` DIN, `+0x68D` USB Dev Out, as for notes. |
+| `0x080EEE9C` | bytes | `0000…` | layer page rows `1EC 1ED 1EE`. |
 
 **Tasks:**
-- `cfg` and `gen` are written only by the audio task (the param switch).
-- The channel table and `sent` are written only by pcmStreamer (the send).
+- `cfg`, `pc`, `outch` (MIDI Out, mirrored from stock's `0x6B` case) and `gen` are written only by the audio task (the param switch).
+- The channel table and `sent` (setup `gen` and the program change's layer) are written only by pcmStreamer.
 - `gen` / `sent` replace a dirty flag: a change during a send is not lost.
 
-**Memory:** `MpState` at SRAM4 **`0x38007150`–`0x380073E0`** (656 bytes), between RbVoice + diag (to `0x38007148`) and the Song DJ row's `DjState` (`0x38007400`). It holds a magic word, then per player 40 bytes:
+**Memory:** `MpState` at SRAM4 **`0x38007148`–`0x380073FC`** (692 bytes), between RbVoice + diag (to `0x38007148`) and the Song DJ row's `DjState` (`0x38007400`). It holds a magic word, then per player 43 bytes (packed: odd players' halfwords are unaligned, which LDRH / STRH take on the M7):
 - the note on each of 16 channels;
 - the LRU order of the 16 channels (nibbles);
 - the busy mask;
 - `cfg` (Port 2 bits, mode 2, Last Ch − 1 4, bend 7);
-- `gen`, `sent`.
+- `pc[4][3]`: Bank / Sub / Pgm per layer;
+- `gen`, `outch`, `sent` (setup gen 4 bits, program change layer 3 bits).
 
 The plan's `0x38004930`–`0x38005000` is not free on this line: it is Clip Deck's `DkState`. `mpe.c` asserts the range at build time.
 
-**Flash:** about 1.7 KB in bank 1. Bank 1 has 5.2 KB left after the lineup cave.
+**Flash:** about 3.2 KB in bank 1, 0.9 KB of it the `---` / 1–128 labels. Bank 1 has 3.6 KB left after the lineup cave.
 
 ## Bench
 
@@ -158,11 +170,13 @@ The plan's `0x38004930`–`0x38005000` is not free on this line: it is Clip Deck
 - **stock senders:**
   - the real `FUN_0805CEF4` / `FUN_0805D070` / `FUN_0805D56C` post the tag;
   - through the send, four notes on channels 2–4 steal correctly, and all-off ends each on its own channel.
-- **preset attributes:** stock's XML parser and `<params>` reader (`FUN_08095910`) load `midiport` / `mpemode` / `mpelast` / `mpebend`; a preset without them gets Both / Off / 16 / 48.
+- **preset attributes:** stock's XML parser and `<params>` reader (`FUN_08095910`) load `midiport` / `mpemode` / `mpelast` / `mpebend` / `pcbank` / `pcsub` / `pcpgm`; a preset without them gets Both / Off / 16 / 48 / ---.
+- **program change:** `mpe_msg` on 0x4E / 0x69 / 0x4F: sent at the start, not on the next pass, again for another layer and back, again after a stop; Bank / Sub without Pgm; MIDI Out off; Lower on DIN (ch 1), Upper on USB (ch 16), USB Dev Out off; another player, a layer past D, a note: nothing. The param switch keeps Bank / Sub / Pgm per layer (clamped) and MIDI Out. Bank / Sub / Pgm labels, templates (`0x47` and `0x48`) and layer rows.
 
 Not on the bench:
 - **The save side.** It writes every bag param by its registry xml name, the same names the load test reads.
-- **The full `Pcm_PollMidi`**, which also renders audio.
+- **The full `Pcm_PollMidi`**, which also renders audio: `mpe_msg_thunk` is checked by its branch, `mpe_msg` by calls.
+- **`Player_Tick`'s own 0x4E / 0x69 / 0x4F posts** (their layout is from the code: `+8` key, `+0xC` layer).
 
 ## To try on the unit
 
@@ -180,3 +194,7 @@ Not on the bench:
 6. **Multi** 1 to 16: 16 notes on 16 channels.
 7. **Change while playing:** switch MPE or Port with notes held (they end), change Last Ch / PB Rng / MIDI Out (the next note re-sends the setup).
 8. **Save and reload** a preset with these set. Load a 3.1.T preset (all defaults).
+9. **Program change:** layer A Pgm 5 and layer B Pgm 9 (Bank 2 on one), MIDI Monitor on.
+   - Start: Bank then Pgm before the first note; nothing on the next passes.
+   - Switch to B: its Pgm at the boundary, before B's first note; back to A: A's again.
+   - Stop and start: sent again. In MPE Lower it goes to channel 1.

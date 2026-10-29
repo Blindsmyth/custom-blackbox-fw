@@ -8130,7 +8130,9 @@ def t_cue_late_stock(bench, res):
 
 # ---- Seq MIDI out (3.1.U): MPE channel spread and Port per sequence layer, docs/mpe-out.md --------
 
-MP_BASE = 0x38007150            # MpState (mpe.c): magic, then 16 players of 40 bytes from +0x10
+MP_BASE = 0x38007148            # MpState (mpe.c): magic, then 16 players of 43 bytes from +4
+MP_STRIDE = 43
+ID_PCBANK = 0x1EC               # Bank, Sub, Pgm (per layer)
 MP_MAGIC = 0x3145504D
 ID_PORT, ID_MPE, ID_MPECH, ID_MPEBEND = 0x74, 0x1F0, 0x1F1, 0x1F2
 MIDI_SEND = 0x08044A0E          # (mgr, packet, DIN, USB)
@@ -8157,14 +8159,17 @@ def _mp_tag(idx, port, mode):
     return 64 + idx * 12 + port * 4 + mode
 
 
+def _mp_at(idx):
+    return MP_BASE + 4 + MP_STRIDE * idx
+
+
 def _mp_pl(b, idx):
-    """MpPlayer idx: note[16], order nibbles, busy, cfg[4], layer, gen, sent."""
-    at = MP_BASE + 16 + 40 * idx
-    raw = bytes(b.mu.mem_read(at, 40))
+    """MpPlayer idx: note[16], order nibbles, busy, cfg, pc[4][3], gen, outch, sent."""
+    raw = bytes(b.mu.mem_read(_mp_at(idx), MP_STRIDE))
     order = [(raw[16 + i // 2] >> (4 * (i & 1))) & 15 for i in range(16)]
-    busy, = struct.unpack_from("<H", raw, 24)
-    cfg = struct.unpack_from("<4H", raw, 26)
-    return dict(note=raw[:16], order=order, busy=busy, cfg=cfg, layer=raw[34], gen=raw[35], sent=raw[36])
+    busy, cfg = struct.unpack_from("<HH", raw, 24)
+    pc = [list(raw[28 + 3 * k:31 + 3 * k]) for k in range(4)]
+    return dict(note=raw[:16], order=order, busy=busy, cfg=cfg, pc=pc, gen=raw[40], outch=raw[41], sent=raw[42])
 
 
 def _mp_init(bench):
@@ -8246,13 +8251,15 @@ def _rpn(ch, num, val):
 def t_mpe_sites(bench, res):
     b, sym = bench.b, bench.sym
     img = b.image
-    for va, name in ((0x0808CDA2, "mpe_register"), (0x0809441C, "mpe_tpl"), (0x0804D004, "mpe_out_thunk")):
+    for va, name in ((0x0808CDA2, "mpe_register"), (0x0809441C, "mpe_tpl"), (0x0809443C, "mpe_tpl_layer"),
+                     (0x0804D004, "mpe_out_thunk")):
         got = _bl_target(img, va)
         res.check(got == sym[name], f"{va:#x} -> {got and hex(got)} ({name})")
-    got = _bw_target(img, 0x0805EBCE)
-    res.check(got == sym["mpe_param_thunk"], f"player param switch -> {got and hex(got)} (b.w mpe_param_thunk)")
-    ids = _u16s(img, 0x080EEE98, 4)
-    res.check(ids == [0x85, 0x86, 0, 0], f"layer pages untouched {ids}")
+    for va, name in ((0x0805EBCE, "mpe_param_thunk"), (0x0804D018, "mpe_msg_thunk")):
+        got = _bw_target(img, va)
+        res.check(got == sym[name], f"{va:#x} -> {got and hex(got)} (b.w {name})")
+    ids = _u16s(img, 0x080EEE98, 6)
+    res.check(ids == [0x85, 0x86, ID_PCBANK, ID_PCBANK + 1, ID_PCBANK + 2, 0], f"layer pages A-D {ids}")
     for at, midi in ((0x080EEF28, 0x6B), (0x080EEEE0, 0x7A)):
         ids = _u16s(img, at, 10)
         res.check(ids == [0x49, 0x46, 0x88, midi, 0x19D, ID_PORT, ID_MPE, ID_MPECH, ID_MPEBEND, 0],
@@ -8280,39 +8287,52 @@ def t_mpe_registry(bench, res):
         mn, mx = b.call(0x0808E2D0, pid), b.call(0x0808E304, pid)
         res.check(n and b.cstr(n) == xml and t and b.cstr(t) == title and (mn, mx) == (lo, hi),
                   f"{pid:#x}: {n and b.cstr(n)!r} {t and b.cstr(t)!r} {mn}..{mx}")
-    for pid in (0x73, 0x75, 0x1E6, 0x1EF, 0x1F3):
+    for pid in (0x73, 0x75, 0x1E6, 0x1EB, 0x1EF, 0x1F3):
         t = b.call(PARAM_TITLE, pid)
         res.check(pid in (0x73, 0x75) and t != 0 or pid not in (0x73, 0x75) and t == 0,
                   f"{pid:#x} left as it was ({t and b.cstr(t)!r})")
     res.check(b.u32(MP_BASE) == MP_MAGIC, "registration starts the state")
     p = _mp_pl(b, 5)
-    res.check(p["order"] == list(range(16)) and p["busy"] == 0 and p["cfg"][0] == 15 << 4 | 48 << 8,
-              f"defaults, channels in order {p}")
+    res.check(p["order"] == list(range(16)) and p["busy"] == 0 and p["cfg"] == 15 << 4 | 48 << 8 and
+              p["pc"] == [[0] * 3] * 4 and p["sent"] == 0x70 and p["outch"] == 0,
+              f"defaults, channels in order, no program change sent {p}")
+    lab, cnt = b.call(0x0808E278, ID_PCBANK + 1), b.call(0x0808E2A4, ID_PCBANK + 1)
+    got = [b.cstr(b.u32(lab + 4 * i)) for i in range(cnt)] if lab else []
+    res.check(got == ["---"] + [str(i) for i in range(1, 129)], f"Sub labels --- 1..128 ({cnt})")
+    for i, (xml, title) in enumerate((("pcbank", "Bank:"), ("pcsub", "Sub:"), ("pcpgm", "Pgm:"))):
+        n, t = b.call(PARAM_XML_NAME, ID_PCBANK + i), b.call(PARAM_TITLE, ID_PCBANK + i)
+        res.check(n and b.cstr(n) == xml and t and b.cstr(t) == title and b.call(0x0808E2A4, ID_PCBANK + i) == 129,
+                  f"{ID_PCBANK + i:#x}: {n and b.cstr(n)!r} {t and b.cstr(t)!r}")
 
 
 def t_mpe_templates(bench, res):
-    """The sequence bag (0x47) has them, the layer bag (0x48) has not."""
+    """The sequence bag (0x47): ours, then layer A's Bank / Sub / Pgm. The layer bag (0x48): Bank / Sub / Pgm."""
     b = bench.b
     adds = []
     b.stub(BAG_ADD, lambda board: adds.append((board.arg(1), board.arg(2))))
     ours = [(ID_PORT, 0), (ID_MPE, 0), (ID_MPECH, 16), (ID_MPEBEND, 48)]
-    for typ, after in ((0x47, (0x88, 1)),):
+    pc = [(ID_PCBANK + k, 0) for k in range(3)]
+    tpl = 0x2001CF00
+
+    def run(typ):
         adds.clear()
         b.mu.mem_write(BAG_SCRATCH, b"\x00" * 0x40)
         b.w32(BAG_SCRATCH + 4, BAG_PAIRS)
         b.mu.mem_write(BAG_PAIRS, b"\x00" * 0x100)
         b.mu.mem_write(BAG_SCRATCH + 10, b"\x00\x00\x20\x00")
-        tpl = 0x2001CF00
         b.mu.mem_write(tpl, bytes([typ]) + b"\x00" * 7)
         b.call(0x08093F20, BAG_SCRATCH, tpl)
-        i = adds.index(after) if after in adds else -1
-        res.check(i >= 0 and adds[i + 1:i + 5] == ours and sum(a in ours for a in adds) == 4,
-                  f"case {typ:#x}: ours after {after} once {adds}")
-    for typ in (0x48, 0x4C):
-        adds.clear()
-        b.mu.mem_write(tpl, bytes([typ]) + b"\x00" * 7)
-        b.call(0x08093F20, BAG_SCRATCH, tpl)
-        res.check(not any(a[0] in (ID_MPE, ID_MPECH, ID_MPEBEND, ID_PORT) for a in adds), f"case {typ:#x} has none")
+        return list(adds)
+    got = run(0x47)
+    i = got.index((0x88, 1)) if (0x88, 1) in got else -1
+    res.check(i >= 4 and got[i - 4:i] == ours and got[i + 1:i + 4] == pc and
+              sum(a in ours + pc for a in got) == 7, f"case 0x47: ours, 0x88, Bank / Sub / Pgm once {got}")
+    got = run(0x48)
+    i = got.index((0x86, 0x10)) if (0x86, 0x10) in got else -1
+    res.check(i >= 0 and got[i + 1:i + 4] == pc and not any(a in ours for a in got),
+              f"case 0x48: Bank / Sub / Pgm after 0x86, nothing else of ours {got}")
+    got = run(0x4C)
+    res.check(not any(a[0] in (ID_MPE, ID_MPECH, ID_MPEBEND, ID_PORT, ID_PCBANK) for a in got), "pad template has none")
     b.unstub(BAG_ADD)
 
 
@@ -8338,7 +8358,7 @@ def t_mpe_param(bench, res):
               f"MPE Lower on layer A: tag {b.u8(MP_PLAYER + 0x68)}, all-off {b.calls[real_off]}, gen {p['gen']}")
     _mp_post(b, key, (ID_MPECH, 4, 0), (ID_MPEBEND, 24, 0))
     p = _mp_pl(b, 6)
-    res.check(p["cfg"][0] == (0 | 1 << 2 | 3 << 4 | 24 << 8) and p["gen"] == g0 + 3 and b.calls[real_off] == 1,
+    res.check(p["cfg"] == (0 | 1 << 2 | 3 << 4 | 24 << 8) and p["gen"] == g0 + 3 and b.calls[real_off] == 1,
               f"Last Ch / PB Rng: setup again, no all-off {p}")
     _mp_post(b, key, (ID_PORT, 1, 0))
     res.check(b.u8(MP_PLAYER + 0x68) == _mp_tag(6, 1, 1) and b.calls[real_off] == 2,
@@ -8346,18 +8366,23 @@ def t_mpe_param(bench, res):
     _mp_post(b, key, (ID_MPE, 2, 1), (ID_PORT, 2, 2), (ID_MPECH, 9, 3))
     p = _mp_pl(b, 6)
     res.check(b.u8(MP_PLAYER + 0x68) == _mp_tag(6, 1, 1) and b.calls[real_off] == 2 and
-              p["cfg"][0] == (1 | 1 << 2 | 3 << 4 | 24 << 8) and p["gen"] == g0 + 4,
+              p["cfg"] == (1 | 1 << 2 | 3 << 4 | 24 << 8) and p["gen"] == g0 + 4,
               f"posts for layers 1-3 (a layer push) are dropped {p['cfg']}")
     _mp_post(b, key, (ID_MPECH, 4, 0))
     res.check(_mp_pl(b, 6)["gen"] == g0 + 5 and b.calls[real_off] == 2,
               "the same value again (a preset load): setup again, no all-off")
     _mp_post(b, key, (ID_MPECH, 99, 0))
-    res.check(_mp_pl(b, 6)["cfg"][0] >> 4 & 15 == 15, "Last Ch clamped to 16")
+    res.check(_mp_pl(b, 6)["cfg"] >> 4 & 15 == 15, "Last Ch clamped to 16")
     _mp_post(b, key, (0xC0, 1, 0))
     res.check(b.u8(MP_PLAYER + 0x68) == _mp_tag(6, 1, 1) and b.calls[real_off] == 2 and layers == [1],
               f"a layer switch changes nothing of ours; stock's layer switch runs {layers}")
     _mp_post(b, key, (0x6B, 3, 0))
-    res.check(b.u8(MP_PLAYER + 0x69) == 2 and b.u8(MP_PLAYER + 0x44) == 1, "stock MIDI Out still sets +0x69 / +0x44")
+    res.check(b.u8(MP_PLAYER + 0x69) == 2 and b.u8(MP_PLAYER + 0x44) == 1 and _mp_pl(b, 6)["outch"] == 3,
+              "stock MIDI Out still sets +0x69 / +0x44, and ours")
+    _mp_post(b, key, (ID_PCBANK + 2, 5, 0), (ID_PCBANK, 2, 2), (ID_PCBANK + 1, 200, 1), (ID_PCBANK, 9, 7))
+    p = _mp_pl(b, 6)
+    res.check(p["pc"] == [[0, 0, 5], [0, 128, 0], [2, 0, 0], [0, 0, 0]] and b.u8(MP_PLAYER + 0x68) == _mp_tag(6, 1, 1),
+              f"Bank / Sub / Pgm per layer, clamped, layer 7 dropped, the tag untouched {p['pc']}")
     other = 0x303
     _mp_player(b, other)
     _mp_post(b, other, (ID_MPE, 1, 0), (ID_PORT, 2, 0))
@@ -8390,8 +8415,8 @@ def t_mpe_out(bench, res):
     res.check(sent == [("943c64", 1, 0), ("943c64", 0, 1), ("943c64", 1, 0)],
               f"Port DIN / USB / USB with USB Dev Out off (nothing) / DIN {sent}")
     # Lower, 4 channels, bend 48: set the player's layer A as the param switch would.
-    b.mu.mem_write(MP_BASE + 16 + 40 * P + 26, struct.pack("<H", 0 | 1 << 2 | 4 << 4 | 48 << 8))
-    b.mu.mem_write(MP_BASE + 16 + 40 * P + 35, b"\x01")      # gen
+    b.mu.mem_write(_mp_at(P) + 26, struct.pack("<H", 0 | 1 << 2 | 4 << 4 | 48 << 8))
+    b.mu.mem_write(_mp_at(P) + 40, b"\x01")      # gen
     low = _mp_tag(P, 0, 1)
     sent.clear()
     _mp_out(bench, 0x50, low, 0, 60)
@@ -8430,8 +8455,8 @@ def t_mpe_out(bench, res):
               f"the same note twice: two channels, the off ends the older one {sent}")
     _mp_out(bench, 0x51, low, 0, 60)
     # Upper, MIDI Out 15 to Last Ch 13, on DIN.
-    b.mu.mem_write(MP_BASE + 16 + 40 * P + 26, struct.pack("<H", 1 | 2 << 2 | 12 << 4 | 12 << 8))
-    b.mu.mem_write(MP_BASE + 16 + 40 * P + 35, b"\x02")
+    b.mu.mem_write(_mp_at(P) + 26, struct.pack("<H", 1 | 2 << 2 | 12 << 4 | 12 << 8))
+    b.mu.mem_write(_mp_at(P) + 40, b"\x02")
     up = _mp_tag(P, 1, 2)
     sent.clear()
     _mp_out(bench, 0x50, up, 14, 50)
@@ -8442,8 +8467,8 @@ def t_mpe_out(bench, res):
               f"Upper 15..13 on DIN: MCM N=3 on ch 16, members 13-15 {sent[-1]}")
     _mp_out(bench, 0x51, up, 14, 50)
     # Multi, MIDI Out 9 to Last Ch 4 (either way round): channels 4-9.
-    b.mu.mem_write(MP_BASE + 16 + 40 * P + 26, struct.pack("<H", 0 | 3 << 2 | 3 << 4 | 48 << 8))
-    b.mu.mem_write(MP_BASE + 16 + 40 * P + 35, b"\x04")
+    b.mu.mem_write(_mp_at(P) + 26, struct.pack("<H", 0 | 3 << 2 | 3 << 4 | 48 << 8))
+    b.mu.mem_write(_mp_at(P) + 40, b"\x04")
     sent.clear()
     for n in range(30, 36):
         _mp_out(bench, 0x50, _mp_tag(P, 0, 3), 8, n)
@@ -8452,14 +8477,14 @@ def t_mpe_out(bench, res):
     for n in range(30, 36):
         _mp_out(bench, 0x51, _mp_tag(P, 0, 3), 8, n)
     # Lower with MIDI Out and Last Ch both 1: only the master, so stock's channel.
-    b.mu.mem_write(MP_BASE + 16 + 40 * P + 26, struct.pack("<H", 0 | 1 << 2 | 0 << 4 | 48 << 8))
+    b.mu.mem_write(_mp_at(P) + 26, struct.pack("<H", 0 | 1 << 2 | 0 << 4 | 48 << 8))
     sent.clear()
     _mp_out(bench, 0x50, low, 0, 61)
     _mp_out(bench, 0x51, low, 0, 61)
     res.check(sent == [("903d64", 1, 1), ("803d64", 1, 1)], f"Lower on ch 1 to 1: stock note and off {sent}")
     # Multi, 1 to 16: all 16 channels, no master.
-    b.mu.mem_write(MP_BASE + 16 + 40 * P + 26, struct.pack("<H", 0 | 3 << 2 | 15 << 4 | 48 << 8))
-    b.mu.mem_write(MP_BASE + 16 + 40 * P + 35, b"\x03")
+    b.mu.mem_write(_mp_at(P) + 26, struct.pack("<H", 0 | 3 << 2 | 15 << 4 | 48 << 8))
+    b.mu.mem_write(_mp_at(P) + 40, b"\x03")
     multi = _mp_tag(P, 0, 3)
     sent.clear()
     _mp_out(bench, 0x50, multi, 0, 40)
@@ -8544,21 +8569,68 @@ def _mp_xml_bag(bench, xml):
     el = b.call(XML_CHILD, doc, name)
     if ok == 0 and el:
         b.call(LOAD_PARAMS, el, bag)
-    return ok == 0 and el != 0, [b.call(PARAM_GET, bag, i) for i in (ID_PORT, ID_MPE, ID_MPECH, ID_MPEBEND)]
+    ids = (ID_PORT, ID_MPE, ID_MPECH, ID_MPEBEND, ID_PCBANK, ID_PCBANK + 1, ID_PCBANK + 2)
+    return ok == 0 and el != 0, [b.call(PARAM_GET, bag, i) for i in ids]
 
 
 def t_mpe_xml(bench, res):
     """Stock's preset reader: the four attributes load by name; a preset without them keeps the defaults."""
     _mp_init(bench)
-    ok, got = _mp_xml_bag(bench, '<sequence><params midiport="2" mpemode="1" mpelast="5" mpebend="24"/></sequence>')
-    res.check(ok and got == [2, 1, 5, 24], f"saved values load: {got}")
+    ok, got = _mp_xml_bag(bench, '<sequence><params midiport="2" mpemode="1" mpelast="5" mpebend="24" '
+                                 'pcbank="3" pcpgm="10"/></sequence>')
+    res.check(ok and got == [2, 1, 5, 24, 3, 0, 10], f"saved values load: {got}")
     ok, got = _mp_xml_bag(bench, '<sequence><params midioutchan="3"/></sequence>')
-    res.check(ok and got == [0, 0, 16, 48], f"an older preset: Both, Off, 16, 48 {got}")
+    res.check(ok and got == [0, 0, 16, 48, 0, 0, 0], f"an older preset: Both, Off, 16, 48, --- {got}")
 
+
+MP_PCM = 0xC0A50000                 # Pcm_PollMidi's r7 (pcm + 0xA000): +0x68B DIN, +0x68D USB Dev Out
+
+
+def t_mpe_pc(bench, res):
+    """mpe_msg in pcmStreamer: a layer's Bank / Sub / Pgm on the sequence's start (0x4E) and a layer's
+    takeover (0x69), once until a stop (0x4F); MIDI Out's channel or the MPE master; Port."""
+    b, sym = bench.b, bench.sym
+    _mp_init(bench)
+    sent = _mp_send_rig(b)
+    P, key = 9, _mp_key(2, 1)
+    at = _mp_at(P)
+    b.mu.mem_write(MP_PCM, b"\x00" * 0x800)
+    b.mu.mem_write(MP_PCM + 0x68B, b"\x01\x00\x01")
+
+    def msg(typ, layer, k=key):
+        b.mu.mem_write(MP_MSG, b"\x00" * 0x18)
+        b.mu.mem_write(MP_MSG, bytes([typ]))
+        b.w32(MP_MSG + 8, k)
+        b.w32(MP_MSG + 0xC, layer)
+        sent.clear()
+        b.call(sym["mpe_msg"], MP_MSG, MP_PCM)
+        return list(sent)
+    b.mu.mem_write(at + 28, bytes([2, 0, 5, 0, 0, 0, 1, 3, 0, 0, 0, 0]))   # A: bank 2, pgm 5; C: bank 1, sub 3
+    res.check(msg(0x4E, 0) == [], "MIDI Out off: nothing")
+    b.mu.mem_write(at + 41, b"\x03")                    # MIDI Out channel 3
+    res.check(msg(0x4E, 0) == [], "... and layer A counts as sent")
+    msg(0x4F, 0)
+    res.check(msg(0x4E, 0) == [("b20001", 1, 1), ("c204", 1, 1)], f"start: Bank 2 then Pgm 5 on ch 3 {sent}")
+    res.check(msg(0x4E, 0) == [], "the next pass: nothing")
+    res.check(msg(0x69, 1) == [], "layer B (all ---): nothing")
+    res.check(msg(0x69, 2) == [("b20000", 1, 1), ("b22002", 1, 1)], f"layer C: Bank 1, Sub 3, no Pgm {sent}")
+    res.check(msg(0x69, 0) == [("b20001", 1, 1), ("c204", 1, 1)], "back to A: sent again")
+    msg(0x4F, 0)
+    b.mu.mem_write(at + 26, struct.pack("<H", 1 | 1 << 2 | 15 << 4 | 48 << 8))   # DIN, Lower
+    res.check(msg(0x4E, 0) == [("b00001", 1, 0), ("c004", 1, 0)], f"Lower on DIN: the master, ch 1 {sent}")
+    msg(0x4F, 0)
+    b.mu.mem_write(at + 26, struct.pack("<H", 2 | 2 << 2 | 15 << 4 | 48 << 8))   # USB, Upper
+    res.check(msg(0x4E, 0) == [("bf0001", 0, 1), ("cf04", 0, 1)], f"Upper on USB: ch 16 {sent}")
+    msg(0x4F, 0)
+    b.mu.mem_write(MP_PCM + 0x68D, b"\x00")
+    res.check(msg(0x4E, 0) == [], "USB with USB Dev Out off: nothing")
+    res.check(msg(0x4E, 0, k=0x303) == [] and msg(0x4E, 5) == [] and msg(0x50, 0) == [],
+              "another player, a layer past D, a note: nothing")
+    b.unstub(MIDI_SEND)
 
 def t_mpe_memory(bench, res):
     sym = bench.sym
-    res.check(0x38007148 <= MP_BASE and MP_BASE + 16 + 16 * 40 <= 0x38007400,
+    res.check(0x38007148 <= MP_BASE and MP_BASE + 4 + 16 * MP_STRIDE <= 0x38007400,
               "MpState between diag (0x38007148) and DjState (0x38007400)")
     res.check(all(not (sym[s] & 0xFFFF0000 == 0x38000000) for s in ("mpe_out", "mpe_param")), "code is in flash")
 
@@ -8750,6 +8822,7 @@ def main():
             ("Seq MIDI out: the send: channels, LRU, stealing, setup, Port", t_mpe_out),
             ("Seq MIDI out: stock's senders carry the tag", t_mpe_senders),
             ("Seq MIDI out: preset attributes load, older presets get the defaults", t_mpe_xml),
+            ("Seq MIDI out: program change on start / layer, once, channel, Port", t_mpe_pc),
             ("Seq MIDI out: state memory range", t_mpe_memory),
         ]
     cases += [("MIDI note path facts", t_midi_path_facts),

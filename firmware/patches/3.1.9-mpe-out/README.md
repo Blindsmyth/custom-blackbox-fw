@@ -1,4 +1,4 @@
-# 3.1.U: Seq MIDI out, MPE and Port
+# 3.1.U: Seq MIDI out, MPE, Port and program change
 
 Part of the lineup image (`../3.1.9-mix-bungee/build_patch.py --lineup`, `lineup/BLACKBOX.BIN`). The menu reads `3.1.U`: 3.1.T plus this. Design, stock code and tests: [docs/mpe-out.md](../../../docs/mpe-out.md).
 
@@ -23,9 +23,11 @@ How it behaves:
 
 Files:
 - `mpe.c`: registration, templates, the per-sequence state and tag (audio task), and the channel choice at the send (pcmStreamer).
-- `mpe.S`: the two stubs.
+- `mpe.S`: the three stubs.
 - `sites.py`: the hook sites with their stock bytes, the page rows and the layer-0 id mask.
 
-State: SRAM4 `0x38007150`–`0x380073E0`.
+Layer pages A–D have **Bank:**, **Sub:** and **Pgm:** (`---` or 1–128), as on an Ableton MIDI clip. A layer's set goes out when the sequence starts and when the layer takes over, before its first note, once until a stop or another layer: CC 0, CC 32, Program change, on MIDI Out's channel (the MPE master in Lower / Upper). Saved as `pcbank`, `pcsub`, `pcpgm`.
+
+State: SRAM4 `0x38007148`–`0x380073FC`.
 
 Not yet tried on the unit. The checklist is at the end of docs/mpe-out.md.

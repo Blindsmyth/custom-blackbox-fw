@@ -22,10 +22,18 @@
  * As Ableton's MPE / Multi-channel settings, the first note channel is the sequence's own MIDI Out
  * channel (0x6B, the message's +0xC). Note channels are those from first to last, either way round,
  * without the zone's master (Lower 1, Upper 16).
+ * Program change per layer (layer pages A-D), as an Ableton MIDI clip's Bank / Sub / Pgm:
+ *   0x1EC "Bank:"    --- / 1..128   CC 0
+ *   0x1ED "Sub:"     --- / 1..128   CC 32
+ *   0x1EE "Pgm:"     --- / 1..128   program change
+ * They go out when the sequence starts and when a layer takes over, right before its first note:
+ * pcmStreamer sees the player's own start (0x4E, every pass), stop (0x4F) and layer (0x69) messages
+ * in the same queue as its notes (mpe_msg), and sends a layer's set once until a stop or another
+ * layer. Channel: MIDI Out, or the MPE master (Lower 1, Upper 16).
  * Ids 0x1E5 (stock App_SetParam's own) and the Song DJ row's widgets (to 0x1E4) are taken.
  */
 
-#define MP_BASE      0x38007150u   /* SRAM4: after RbVoice + diag (0x38007000-0x38007148) */
+#define MP_BASE      0x38007148u   /* SRAM4: after RbVoice + diag (0x38007000-0x38007148) */
 #define MP_END       0x38007400u   /* Song DJ row's DjState */
 #define MP_MAGIC     0x3145504Du   /* 'MPE1' */
 #define N_PL         16            /* sequence players: key 0x1RRCC, rows and columns 0..3 */
@@ -35,6 +43,10 @@
 #define ID_LAST      0x1F1
 #define ID_OUTCH     0x6B          /* MIDI Out: the first note channel */
 #define ID_BEND      0x1F2
+#define ID_BANK      0x1EC         /* Bank, Sub, Pgm: per layer */
+#define ID_PGM       0x1EE
+#define PC_NONE      7             /* sent: no layer's program change out since a stop */
+#define MIDI_MGR     ((void *)0x24002E88u)   /* Pcm_PollMidi's FUN_08044A0E object (0x0804D174) */
 
 enum { PORT_BOTH, PORT_DIN, PORT_USB, PORTS };
 enum { MODE_OFF, MODE_LOWER, MODE_UPPER, MODE_MULTI, MODES };
@@ -54,25 +66,26 @@ enum { MODE_OFF, MODE_LOWER, MODE_UPPER, MODE_MULTI, MODES };
 #define TAG0         64
 #define TAG(i, p, m) (TAG0 + (i) * 12 + (p) * 4 + (m))
 
-typedef struct {
+/* Packed to fit between diag and DjState: the halfwords of odd players are unaligned, which plain
+ * LDRH / STRH take on the M7 (never LDM / LDRD here). */
+typedef struct __attribute__((packed)) {
     unsigned char note[16];        /* the note held on each channel, where `busy` has its bit */
     unsigned char order[8];        /* the 16 channels as nibbles, least recently used first */
     unsigned short busy;           /* channels with a note on */
     unsigned short cfg;            /* port | mode | last | bend (audio task) */
-    unsigned short spare[3];
-    unsigned char spare2;
+    unsigned char pc[4][3];        /* per layer: bank, sub, program; 0 = ---, else 1..128 (audio task) */
     unsigned char gen;             /* bumped when the settings are posted (audio task) */
-    unsigned char sent;            /* gen whose MPE setup went out (pcmStreamer) */
-    unsigned char pad[3];
+    unsigned char outch;           /* MIDI Out (0x6B): 0 off, else channel 1..16 (audio task) */
+    unsigned char sent;            /* gen & 15 whose MPE setup went out | the layer whose program
+                                      change went out << 4, PC_NONE after a stop (pcmStreamer) */
 } MpPlayer;
 
 typedef struct {
     unsigned magic;
-    unsigned pad[3];
     MpPlayer pl[N_PL];
 } MpState;
 
-typedef char mp_player_size[(sizeof(MpPlayer) == 40) ? 1 : -1];
+typedef char mp_player_size[(sizeof(MpPlayer) == 43) ? 1 : -1];
 typedef char mp_fits[(MP_BASE + sizeof(MpState) <= MP_END) ? 1 : -1];
 typedef char mp_after_diag[(MP_BASE >= 0x38007148u) ? 1 : -1];
 
@@ -111,6 +124,39 @@ static const char t_last[] = "Last Ch:";
 static const char x_last[] = "mpelast";
 static const char t_bend[] = "PB Rng:";
 static const char x_bend[] = "mpebend";
+static const char t_pc[3][6] = {"Bank:", "Sub:", "Pgm:"};
+static const char x_pc[3][7] = {"pcbank", "pcsub", "pcpgm"};
+/* "---", "1" .. "128" */
+#define PC_LABELS    129
+static const char pc_s[] =   /* \000 so a digit after it is not part of the escape */
+    "---\0001\0002\0003\0004\0005\0006\0007\0008\0009\00010\00011\00012\00013\00014\00015\000"
+    "16\00017\00018\00019\00020\00021\00022\00023\00024\00025\00026\00027\00028\00029\00030\00031\000"
+    "32\00033\00034\00035\00036\00037\00038\00039\00040\00041\00042\00043\00044\00045\00046\00047\000"
+    "48\00049\00050\00051\00052\00053\00054\00055\00056\00057\00058\00059\00060\00061\00062\00063\000"
+    "64\00065\00066\00067\00068\00069\00070\00071\00072\00073\00074\00075\00076\00077\00078\00079\000"
+    "80\00081\00082\00083\00084\00085\00086\00087\00088\00089\00090\00091\00092\00093\00094\00095\000"
+    "96\00097\00098\00099\000100\000101\000102\000103\000104\000105\000106\000107\000108\000109\000110\000111\000"
+    "112\000113\000114\000115\000116\000117\000118\000119\000120\000121\000122\000123\000124\000125\000126\000127\000"
+    "128\000";
+static const char *const pc_names[PC_LABELS] = {
+    pc_s + 0, pc_s + 4, pc_s + 6, pc_s + 8, pc_s + 10, pc_s + 12, pc_s + 14, pc_s + 16,
+    pc_s + 18, pc_s + 20, pc_s + 22, pc_s + 25, pc_s + 28, pc_s + 31, pc_s + 34, pc_s + 37,
+    pc_s + 40, pc_s + 43, pc_s + 46, pc_s + 49, pc_s + 52, pc_s + 55, pc_s + 58, pc_s + 61,
+    pc_s + 64, pc_s + 67, pc_s + 70, pc_s + 73, pc_s + 76, pc_s + 79, pc_s + 82, pc_s + 85,
+    pc_s + 88, pc_s + 91, pc_s + 94, pc_s + 97, pc_s + 100, pc_s + 103, pc_s + 106, pc_s + 109,
+    pc_s + 112, pc_s + 115, pc_s + 118, pc_s + 121, pc_s + 124, pc_s + 127, pc_s + 130, pc_s + 133,
+    pc_s + 136, pc_s + 139, pc_s + 142, pc_s + 145, pc_s + 148, pc_s + 151, pc_s + 154, pc_s + 157,
+    pc_s + 160, pc_s + 163, pc_s + 166, pc_s + 169, pc_s + 172, pc_s + 175, pc_s + 178, pc_s + 181,
+    pc_s + 184, pc_s + 187, pc_s + 190, pc_s + 193, pc_s + 196, pc_s + 199, pc_s + 202, pc_s + 205,
+    pc_s + 208, pc_s + 211, pc_s + 214, pc_s + 217, pc_s + 220, pc_s + 223, pc_s + 226, pc_s + 229,
+    pc_s + 232, pc_s + 235, pc_s + 238, pc_s + 241, pc_s + 244, pc_s + 247, pc_s + 250, pc_s + 253,
+    pc_s + 256, pc_s + 259, pc_s + 262, pc_s + 265, pc_s + 268, pc_s + 271, pc_s + 274, pc_s + 277,
+    pc_s + 280, pc_s + 283, pc_s + 286, pc_s + 289, pc_s + 292, pc_s + 296, pc_s + 300, pc_s + 304,
+    pc_s + 308, pc_s + 312, pc_s + 316, pc_s + 320, pc_s + 324, pc_s + 328, pc_s + 332, pc_s + 336,
+    pc_s + 340, pc_s + 344, pc_s + 348, pc_s + 352, pc_s + 356, pc_s + 360, pc_s + 364, pc_s + 368,
+    pc_s + 372, pc_s + 376, pc_s + 380, pc_s + 384, pc_s + 388, pc_s + 392, pc_s + 396, pc_s + 400,
+    pc_s + 404,
+};
 
 static int live(void) { return S->magic == MP_MAGIC; }
 
@@ -127,22 +173,36 @@ void mpe_register(void *reg)
         for (k = 0; k < 8; k++)
             p->order[k] = (unsigned char)(2 * k | (2 * k + 1) << 4);
         p->cfg = CFG(PORT_BOTH, MODE_OFF, LAST_DEF - 1, BEND_DEF);
+        p->sent = PC_NONE << 4;
     }
     S->magic = MP_MAGIC;
     PARAM_ENUM(reg, ID_PORT, t_port, port_names, PORTS, x_port);
     PARAM_ENUM(reg, ID_MODE, t_mode, mode_names, MODES, x_mode);
     PARAM_NUMBER(reg, ID_LAST, 1, t_last, 1, 16, x_last);
     PARAM_NUMBER(reg, ID_BEND, 1, t_bend, 0, BEND_MAX, x_bend);
+    for (i = 0; i < 3; i++)
+        PARAM_ENUM(reg, ID_BANK + i, t_pc[i], pc_names, PC_LABELS, x_pc[i]);
 }
 
-/* Param_GroupTemplate: the sequence bag (case 0x47), at its add of 0x88 (bl 0x0809441C). */
+/* Param_GroupTemplate, the layer bag (case 0x48, layers B-D), at its add of 0x86 (bl 0x0809443C):
+ * Bank / Sub / Pgm, all ---. */
+void mpe_tpl_layer(void *bag, unsigned id, int def)
+{
+    unsigned i;
+    PARAM_ADD(bag, id, def);
+    for (i = 0; i < 3; i++)
+        PARAM_ADD(bag, ID_BANK + i, 0);
+}
+
+/* Param_GroupTemplate, the sequence bag (case 0x47: layer A, and the layer push's id list), at its
+ * add of 0x88 (bl 0x0809441C): the sequence's MIDI out settings, then layer A's program change. */
 void mpe_tpl(void *bag, unsigned id, int def)
 {
-    PARAM_ADD(bag, id, def);
     PARAM_ADD(bag, ID_PORT, PORT_BOTH);
     PARAM_ADD(bag, ID_MODE, MODE_OFF);
     PARAM_ADD(bag, ID_LAST, LAST_DEF);
     PARAM_ADD(bag, ID_BEND, BEND_DEF);
+    mpe_tpl_layer(bag, id, def);
 }
 
 static int key_idx(unsigned key)
@@ -175,6 +235,13 @@ int mpe_param(unsigned char *pl, void *router, const unsigned *msg)
     id = msg[3] & 0xFFFF;
     value = (int)msg[4];
     old = now = p->cfg;
+    if (id >= ID_BANK && id <= ID_PGM) {               /* per layer, that layer's (a push sends all four) */
+        if ((msg[5] & 0xFFFF) < 4)
+            p->pc[msg[5] & 3][id - ID_BANK] = (unsigned char)clamp(value, 0, 128);
+        return 1;
+    }
+    if (id == ID_OUTCH)                                /* as stock's case: +0x44 = on, +0x69 = channel */
+        p->outch = (unsigned char)clamp(value, 0, 16);
     if ((msg[5] & 0xFFFF) != 0 && (id == ID_PORT || (id >= ID_MODE && id <= ID_BEND)))
         return 1;
     switch (id) {
@@ -333,8 +400,8 @@ void mpe_out(void *mgr, unsigned char *pk, int din, int usb, const unsigned char
             MIDI_SEND(mgr, pk, din, usb);
             return;
         }
-        if (p->sent != p->gen) {
-            p->sent = p->gen;
+        if ((p->sent & 15) != (p->gen & 15)) {
+            p->sent = (unsigned char)((p->sent & 0xF0) | (p->gen & 15));
             setup(mgr, mode, m, C_BEND(cfg), din, usb);
         }
         for (i = 0; i < 16; i++) {                     /* free longest */
@@ -357,4 +424,46 @@ void mpe_out(void *mgr, unsigned char *pk, int din, int usb, const unsigned char
     }
     if (din || usb)
         MIDI_SEND(mgr, pk, din, usb);
+}
+
+/* Pcm_PollMidi's dispatch (0x0804D018, pcmStreamer), for every message in the MIDI queue, in order
+ * with the notes: msg +0 type, +8 key, +0xC layer (0x4E a pass starts, 0x69 a layer takes over, 0x4F
+ * stopped). pcm = Pcm_PollMidi's r7 (pcm + 0xA000): +0x68B DIN, +0x68D USB Dev Out, as for notes. */
+void mpe_msg(const unsigned char *msg, const unsigned char *pcm)
+{
+    int idx;
+    unsigned type = msg[0], layer, cfg, ch, mode, port, i;
+    int din, usb;
+    const unsigned char *pc;
+    MpPlayer *p;
+    if (!live() || (type != 0x4E && type != 0x4F && type != 0x69) ||
+        (idx = key_idx(*(const unsigned *)(msg + 8))) < 0)
+        return;
+    p = &S->pl[idx];
+    if (type == 0x4F) {
+        p->sent = (unsigned char)((p->sent & 15) | PC_NONE << 4);
+        return;
+    }
+    layer = msg[0xC];
+    if (layer > 3 || (unsigned)(p->sent >> 4) == layer)
+        return;
+    p->sent = (unsigned char)((p->sent & 15) | layer << 4);
+    pc = p->pc[layer];
+    if (!p->outch || !(pc[0] | pc[1] | pc[2]))
+        return;
+    cfg = p->cfg;
+    mode = C_MODE(cfg);
+    port = C_PORT(cfg);
+    ch = mode == MODE_LOWER ? 0 : mode == MODE_UPPER ? 15 : p->outch - 1u;
+    din = pcm[0x68B] && port != PORT_USB;
+    usb = pcm[0x68D] && port != PORT_DIN;
+    if (!din && !usb)
+        return;
+    for (i = 0; i < 2; i++)
+        if (pc[i])
+            send3(MIDI_MGR, 0xB0 | ch, i ? 32 : 0, pc[i] - 1u, din, usb);
+    if (pc[2]) {
+        unsigned char pk[8] = {(unsigned char)(0xC0 | ch), (unsigned char)(pc[2] - 1u), 0, 0, 2};
+        MIDI_SEND(MIDI_MGR, pk, din, usb);
+    }
 }
