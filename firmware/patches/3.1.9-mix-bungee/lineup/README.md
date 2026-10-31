@@ -20,6 +20,8 @@ The menu version reads `3.1.U` (3.1.T before Seq MIDI out). Built with `build_pa
 1. Put `BLACKBOX.BIN` and `BBWARP.BIN` from this folder in the card root. `BBWARP.BIN` takes the place of `BBBUNGEE.BIN`.
 2. Flash `BLACKBOX.BIN` the usual way (BACK + INFO at power-on).
 3. On first boot the loader programs bank 2 from `BBWARP.BIN` and restarts the unit.
+   - From the first screen of that boot until the restart, the screen shows **Installing Warp code / Do not power off / Restarts by itself** (3.1.U, `tools/bank2/b2msg.c`). Leave the power on until the unit is back up. If there is nothing to write (no `BBWARP.BIN` on the card, another build's, two failed tries), it goes away after a second or two and the Warp list says why (`Bungee! -`, `?`, `t` …).
+   - It does this once after every new build: each build has its own `BBWARP.BIN`.
    - A unit that has run 3.1.R or 3.1.B needs no `RBTAKE.TXT`.
    - Going back to 3.1.B later programs bank 2 again from `BBBUNGEE.BIN`.
 4. Presets saved on 3.1.B load with their old Warp numbers, which mean different modes here:

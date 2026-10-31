@@ -3166,13 +3166,16 @@ def t_rubber_loader(bench, res):
         return
     b = bench.b
     rb_bkp(bench)
+    b.mu.mem_write(RB_VOICE + 60, b"\x01\x01")          # a write cut off by the restart, last boot
     rb_loader_boot(bench)
+    res.check(b.u8(RB_VOICE + 60) == 0 and b.u8(RB_VOICE + 61) == 0, "boot clears the writing / message flags")
     FakeFile(b, rb_file(bench), pay)
     fm = FlashModel(b)
     rb_poll(bench)
     fm.close()
     got = bytes(b.mu.mem_read(RB_B2, len(pay)))
     res.check(got == bytes(pay), "bank 2 holds the payload")
+    res.check(b.u8(RB_VOICE + 60) == 1, "writing flag up through the write, until the restart (the screen shows it)")
     res.check(b.u32(RB_B2 + 0xC0000) == 0x43424252, "claim word written at sector 6")
     res.check(fm.erased == list(range((len(pay) + 0x1FFFF) // 0x20000)), f"erased sectors {fm.erased}")
     res.check(not getattr(fm, "sectors6", 0), "claim sector 6 not erased on a blank bank")
@@ -3232,6 +3235,7 @@ def t_rubber_loader_refuses(bench, res):
         fm.close()
         attempts.append(len(fm.erased))
     res.check(attempts[0] > 0 and attempts[1] > 0 and attempts[2] == 0, f"tries per boot {attempts}")
+    res.check(b.u8(RB_VOICE + 60) == 0, "a failed write takes the writing flag down again")
     res.check(rb_label(bench) == rb_name(bench) + "! t", f"tries used up: {rb_label(bench)!r}")
 
 
@@ -8952,6 +8956,63 @@ def t_usbdev_midi(bench, res):
     res.check(len(ours) == 64 and ours[0] == f"0880{(300 - 256 + 64) & 0x7F:02x}00",
               f"300 at once: lapped, the last 256 kept (from #44 on) {ours[:1]}")
 
+def t_b2msg(bench, res):
+    """The "installing" message: from the first screen tick of a boot that will write bank 2, through the write; down
+    again (the app's screen back) when the loader writes nothing."""
+    b, sym = bench.b, bench.sym
+    app = 0x24020088
+    card = 0x240021A4 + 0x15
+    res.check(_bl_target(b.image, 0x0808B664) == sym["b2msg_update"], "0x0808B664 (screen tick's App_Update) -> b2msg_update")
+    res.check(b.img_u32(0x080F19D8) == sym["b2msg_event"] | 1, "message screen onEvent -> b2msg_event")
+    calls = []
+    b.stub(0x080A2258, lambda board: calls.append(("update", board.arg(0))))
+    b.stub(0x0809EAEC, lambda board: calls.append(("screen", board.arg(1))))
+    posted = []
+    b.stub(0x080B5758, lambda board: posted.append((board.arg(0), board.u16(board.arg(1)))))
+
+    def tick(screen=None):
+        if screen is not None:
+            b.mu.mem_write(app + 0x8CA4, bytes([screen]))
+        calls.clear()
+        posted.clear()
+        b.call(sym["b2msg_update"], app)
+        return list(calls), list(posted)
+    b.call(sym["rb_pair"])
+    b.w32(RB_VOICE + 8, 1)                          # READY: bank 2 holds this image's code
+    b.mu.mem_write(card, b"\x01")
+    res.check(tick(2) == ([("update", app)], []), "bank 2 in place: stock's update only")
+    b.w32(RB_VOICE + 8, 2)                          # ABSENT: the loader will write
+    b.mu.mem_write(card, b"\x00")
+    res.check(tick(0) == ([("update", app)], []), "no card (stock's own Please insert): not ours")
+    b.mu.mem_write(card, b"\x01")
+    res.check(tick(0) == ([("update", app), ("screen", 1)], [(app + 0x30, 0x7E1)]) and b.u8(RB_VOICE + 61) == 1,
+              "an install due, card in: from this tick, screen 1 and our event (before the loader has looked)")
+    res.check(tick(1) == ([("update", app)], []), "up: not asked again")
+    got = tick(2)
+    res.check(got[0][-1] == ("screen", 1) and len(got[1]) == 1 and b.u8(RB_VOICE + 62) == 2,
+              "boot asks for the pads meanwhile: kept for later, the message put back")
+    b.w32(RB_VOICE + 8, 2 | 0x100)                  # the loader looked ...
+    b.mu.mem_write(RB_VOICE + 60, b"\x01")          # ... and writes
+    res.check(tick(1) == ([("update", app)], []), "writing: stays up")
+    b.mu.mem_write(RB_VOICE + 60, b"\x00")          # it wrote nothing (no file, ...): writing down, no restart
+    res.check(tick(1) == ([("update", app), ("screen", 2)], []) and b.u8(RB_VOICE + 61) == 0,
+              "nothing written: the message comes down, the pads (the app's last screen) come back")
+    res.check(tick(2) == ([("update", app)], []), "and stays down")
+    drawn = []
+    b.stub(0x080C3B98, lambda board: drawn.append((board.arg(0) - 0x2001C000, board.cstr(board.arg(1)))))
+    stock = []
+    b.stub(0x080C7024, lambda board: stock.append(board.u16(board.arg(1))))
+    ev = 0x2001C800
+    b.mu.mem_write(ev, struct.pack("<H", 0x7E1) + b"\x00" * 22)
+    b.call(sym["b2msg_event"], 0x2001C000, ev)
+    res.check(drawn == [(0xE4, "Installing Warp code"), (0x13C, "Do not power off"), (0x194, "Restarts by itself")] and not stock,
+              f"our event: three lines on the message screen {drawn}")
+    b.mu.mem_write(ev, struct.pack("<H", 0xA6))
+    b.call(sym["b2msg_event"], 0x2001C000, ev)
+    res.check(stock == [0xA6] and len(drawn) == 3, "stock's events (Please insert ...) go to stock")
+    for a in (0x080A2258, 0x0809EAEC, 0x080B5758, 0x080C3B98, 0x080C7024):
+        b.unstub(a)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -9143,6 +9204,8 @@ def main():
             ("Seq MIDI out: program change on start / layer, once, channel, Port", t_mpe_pc),
             ("Seq MIDI out: state memory range", t_mpe_memory),
         ]
+    if "b2msg_update" in sym:
+        cases += [("Install message while bank 2 is written", t_b2msg)]
     if "usbdev_poll" in sym:
         kind = kind + "+usbdev"
         cases += [

@@ -58,7 +58,10 @@ typedef struct RbVoice {
     uint32_t cyc_avg;     /* 48 rb_mix's cycles per block, smoothed over ~16 blocks (b2pair.c) */
     uint32_t over_n;      /* 52 blocks in a row with cyc_avg over RB_GUARD_CYC or the audio task over RB_GUARD_LOAD */
     uint32_t cyc_peak;    /* 56 worst rb_mix block since the Tools bar last showed it (diag.c) */
-    uint32_t pad60;       /* 60 */
+    uint8_t writing;      /* 60 the card loader is writing bank 2 (b2load.c; disk task) */
+    uint8_t shown;        /* 61 the "installing" message is up (b2msg.c; screen task) */
+    uint8_t back;         /* 62 the screen the app wanted under the message (b2msg.c) */
+    uint8_t pad63;        /* 63 */
     void *bg_sem;         /* 64 the leaf's task waits on this; rb_mix gives it every block */
     void *bg_task;        /* 68 its FreeRTOS handle */
     uint32_t prev_owner;  /* 72 the Clip a launch took the voice from (repitch.S SM_PREV); the

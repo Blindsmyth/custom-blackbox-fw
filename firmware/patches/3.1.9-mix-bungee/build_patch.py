@@ -156,7 +156,7 @@ def compile_all(rb_id):
          HERE / "bungee_cave.S"])
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \
-        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c", MPE_DIR / "mpe.c"] if LINEUP else []) + \
+        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c", MPE_DIR / "mpe.c", BANK2 / "b2msg.c"] if LINEUP else []) + \
         ([USBDEV_DIR / "usbdev.c"] if USBDEV else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
@@ -188,7 +188,7 @@ def compile_all(rb_id):
 
 def bank1_has_no_ram(objs):
     """Cave code has nowhere to keep .data/.bss: they would land in bank 2's SRAM1 block."""
-    for o in objs[:(9 if USBDEV else 8) if LINEUP else 4]:   # the cave asm, then the bank-1 C (compile_all)
+    for o in objs[:(10 if USBDEV else 9) if LINEUP else 4]:   # the cave asm, then the bank-1 C (compile_all)
         out = subprocess.check_output([str(T / "arm-none-eabi-size"), "-A", str(o)], text=True)
         for line in out.splitlines():
             parts = line.split()
@@ -323,6 +323,9 @@ def add_rubber_sites(stock):
         spec.loader.exec_module(mpe)
         mix.SITES.extend(mpe.parts(stock, stock_bl))
         mix.BYTES.extend(mpe.BYTES)
+    if LINEUP:      # "Installing" on screen while the card loader writes bank 2 (tools/bank2/b2msg.c)
+        mix.SITES.append((0x0808B664, "b2msg_update", True, stock_bl(stock, 0x0808B664, 0x080A2258)))
+        mix.VTABLE.append((0x080F19D8, "b2msg_event", 0x080C7025))   # message screen (screen 1) onEvent
     if USBDEV:      # the MIDI manager's once-per-block pump: the "to USB" queue to the computer first (usbdev.c)
         mix.SITES.append((0x08044B08, "usbdev_midi_out", True, stock_bl(stock, 0x08044B08, 0x08044896)))
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves

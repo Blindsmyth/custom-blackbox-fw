@@ -121,6 +121,7 @@ void rb_pair(void)
     v->block_done = 0;
     v->prev_active = 0;
     v->prev_owner = 0;
+    v->writing = v->shown = v->back = 0;
     v->avg_cyc = v->peak_cyc = 0;
     v->cyc_avg = v->over_n = v->cyc_peak = 0;
     rb_bkp_enable();
