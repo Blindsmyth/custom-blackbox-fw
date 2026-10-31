@@ -12,13 +12,13 @@ LAYER_LIST = 0x080EEE98       # layer pages A-D: 85 86 (Step Len, Step Count)
 
 # (address, new bytes, stock bytes)
 BYTES = [
-    # Seq page 0: ... MIDI Out, Rec Len, then Port, MPE, Last Ch, PB Rng.
-    (SEQ_LIST + 10, "7400f001f101f2010000", "00000000000000000000"),
-    (SEQ_LIST_B7 + 10, "7400f001f101f2010000", "00000000000000000000"),
+    # Seq page 0: ... MIDI Out, Rec Len, then Loop, Port, MPE, Last Ch, PB Rng.
+    (SEQ_LIST + 10, "ef017400f001f101f2010000", "000000000000000000000000"),
+    (SEQ_LIST_B7 + 10, "ef017400f001f101f2010000", "000000000000000000000000"),
     # Layer pages A-D: ... Step Count, then Bank, Sub, Pgm.
     (LAYER_LIST + 4, "ec01ed01ee010000", "0000000000000000"),
     # App_SetParam / App_GetParam layer-0 ids 0x6B..0x8A (bit = id - 0x6B): + 0x74 (Port).
-    # 0x1F0-0x1F2 go to layer 0 through the Mix line's seqrec_set_layer / seqrec_get_layer.
+    # 0x1EF-0x1F2 go to layer 0 through the Mix line's seqrec_set_layer / seqrec_get_layer.
     (0x080A00CC, "01820020", "01800020"),
     (0x080996AC, "01820020", "01800020"),
 ]
@@ -33,4 +33,7 @@ def parts(stock, stock_bl):
         (0x0805EBCE, "mpe_param_thunk", False, "bdf82420"),   # player param switch: ldrh.w r2,[sp,#0x24]
         (0x0804D004, "mpe_out_thunk", True, stock_bl(stock, 0x0804D004, 0x08044A0E)),  # MIDI out send, 0x50-0x53
         (0x0804D018, "mpe_msg_thunk", False, "9df84830"),     # MIDI queue dispatch: ldrb.w r3,[sp,#0x48]
+        (0x0805E004, "mpe_pass_thunk", True, stock_bl(stock, 0x0805E004, 0x0804F504)),  # Player_Tick: a pass's 0x4E
+        *[(va, "mpe_player_start", True, stock_bl(stock, va, 0x0805CB64))               # event loop: Player_Start
+          for va in (0x0805E9D2, 0x0805EA1A, 0x0805ED04, 0x0805EEDC)],
     ]

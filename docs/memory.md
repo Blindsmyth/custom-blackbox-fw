@@ -46,7 +46,7 @@ Bank 2 is a different flash bank. Stay in bank 1 (`0x080F1E80`–`0x080FFFFF`) u
 | --- | --- | --- | --- | --- |
 | **SRAM4** `0x38000000` | 64 KB | unused | folders 18.3 KB (`S_SIZE` `0x4930`); Warp flags at `0x38005000` (to `0x38005113`); Clip region, hot cues, grid and Clip editor state at `0x38004930`–`0x38005000` (`0x688` used incl. three row buttons, 3.1.E; magic `DEC4`); slice pool header at `0x38006000`; Smooth/Capi/Vari voice at `0x38007000` (~30 KB, one owner; Capi 28.4 KB); Vari epoch map at `0x3800E800` (~6 KB) | **Patch state.** Magic word; re-init on boot. |
 | **SRAM1–3** `0x30000000` | 288 KB | clocked, no static use | 3.1.Y: SRAM1+2 grown slice tables (8 KB each); SRAM3 XML `ext` scratch | First use of this region. |
-| **Backup** `0x38800000` | 4 KB | clocks never enabled | none | Skip. Needs `BKPRAMEN` + `DBP`. |
+| **Backup** `0x38800000` | 4 KB | clocks never enabled | bank-2 loader and crash records `0x38800000`–`0x388000E0` (`tools/bank2/b2.h`); 3.1.U's start counters `0x38800600`–`0x38800624`; 3.1.UD's USB device state `0x38800650`, queue `0x38800908` | Needs `BKPRAMEN` + `DBP` (`rb_bkp_enable`). |
 | **ITCM** `0x00000000` | 64 KB | no `.text` copy | none | Only if we start executing from RAM. |
 | **DTCM** `0x20000000` | 128 KB | MSP 2 KB + 126 KB bump allocator | none | **Do not use.** 3.1.M collided here. |
 | **AXI SRAM** `0x24000000` | 512 KB | `.data` 248 B, `.bss` ~188 KB, heap/stacks ~195 KB, DMA 128 KB | none | **Full.** |

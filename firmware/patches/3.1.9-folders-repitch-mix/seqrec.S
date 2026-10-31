@@ -197,8 +197,8 @@ seqrec_set_layer:
     cmp     r5, r0
     beq     2f
 .ifdef WARP_MPE
-    sub.w   r0, r5, #0x1F0          @ 3.1.U: MPE, Last Ch, PB Rng (../3.1.9-mpe-out)
-    cmp     r0, #2
+    subw    r0, r5, #0x1EF          @ 3.1.U: Loop, MPE, Last Ch, PB Rng (../3.1.9-mpe-out)
+    cmp     r0, #3
     bls     2f
 .endif
     pop     {r0}
@@ -222,8 +222,8 @@ seqrec_get_layer:
     cmp     r8, r0
     beq     2f
 .ifdef WARP_MPE
-    sub.w   r0, r8, #0x1F0          @ 3.1.U: MPE, Last Ch, PB Rng (../3.1.9-mpe-out)
-    cmp     r0, #2
+    subw    r0, r8, #0x1EF          @ 3.1.U: Loop, MPE, Last Ch, PB Rng (../3.1.9-mpe-out)
+    cmp     r0, #3
     bls     2f
 .endif
     pop     {r0}

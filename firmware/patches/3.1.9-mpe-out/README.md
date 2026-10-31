@@ -26,8 +26,10 @@ Files:
 - `mpe.S`: the three stubs.
 - `sites.py`: the hook sites with their stock bytes, the page rows and the layer-0 id mask.
 
-Layer pages A–D have **Bank:**, **Sub:** and **Pgm:** (`---` or 1–128), as on an Ableton MIDI clip. A layer's set goes out when the sequence starts and when the layer takes over, before its first note, once until a stop or another layer: CC 0, CC 32, Program change, on MIDI Out's channel (the MPE master in Lower / Upper). Saved as `pcbank`, `pcsub`, `pcpgm`.
+Layer pages A–D have **Bank:**, **Sub:** and **Pgm:** (`---` or 1–128), as on an Ableton MIDI clip. A layer's set goes out on the first pass after every start and when the layer takes over, before its first note: CC 0, CC 32, Program change, on MIDI Out's channel (the MPE master in Lower / Upper). Saved as `pcbank`, `pcsub`, `pcpgm`.
 
-State: SRAM4 `0x38007148`–`0x380073FC`.
+**Loop:** (Off / On) on the sequence's page: Off plays one pass and stops at its end (stock's quantised stop). Saved as `seqloop`.
+
+State: SRAM4 `0x38007148`–`0x380073FC`; start counters in backup SRAM `0x38800600`–`0x38800624`.
 
 Not yet tried on the unit. The checklist is at the end of docs/mpe-out.md.

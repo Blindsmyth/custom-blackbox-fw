@@ -4,6 +4,7 @@
 .global mpe_param_thunk
 .global mpe_out_thunk
 .global mpe_msg_thunk
+.global mpe_pass_thunk
 
 @ 0x0805EBCE in the player's event loop (FUN_0805E58C, audio task) replaces `ldrh.w r2, [sp, #0x24]`
 @ (b.w), right after the 0x39 message's key matched the player. The message is at sp + 0x18:
@@ -65,4 +66,16 @@ mpe_msg_thunk:
     ldr     r0, =0x0804D01D
     str     r0, [sp, #4]
     pop     {r0, pc}
+
+@ 0x0805E004 in Player_Tick (audio task): `bl FUN_0804F504`, the post of a pass's 0x4E. After it,
+@ mpe_pass(player) sets the stop request for Loop Off. fp = player; stock reloads every other
+@ register it needs after this call.
+.thumb_func
+mpe_pass_thunk:
+    push    {r4, lr}
+    ldr     r4, =0x0804F505
+    blx     r4
+    mov     r0, fp
+    bl      mpe_pass
+    pop     {r4, pc}
 .ltorg

@@ -89,7 +89,19 @@ if MX_SAFE:
     OUT, OUT_B2, SYMS = (OUT.parent / _sub / OUT.name, OUT_B2.parent / _sub / OUT_B2.name,
                          SYMS.parent / _sub / SYMS.name)
     OUT.parent.mkdir(exist_ok=True)
-LETTER = "U" if LINEUP else "B"                # 3.1.U: 3.1.T + Seq MIDI out
+# --usbdev (with --lineup): also a USB MIDI device on the power jack (../3.1.9-usbdev, after blackbox-mod), for
+# trying Seq MIDI out from a computer. Its own build directory; images go to lineup/usbdev/ (--emu: its build dir).
+USBDEV = LINEUP and "--usbdev" in sys.argv
+USBDEV_DIR = HERE.parent / "3.1.9-usbdev"
+if USBDEV:
+    BUILD = BUNGEE / "build-lineup-usbdev"
+    ELF = BUILD / ("bungee_emu.elf" if "--emu" in sys.argv else "bungee.elf")
+    if "--emu" in sys.argv:
+        OUT, OUT_B2, SYMS = BUILD / "BLACKBOX_emu.BIN", BUILD / f"{PAYLOAD}_emu.BIN", BUILD / "BLACKBOX_emu.sym.json"
+    else:
+        OUT, OUT_B2, SYMS = (HERE / "lineup" / "usbdev" / n for n in ("BLACKBOX.BIN", f"{PAYLOAD}.BIN", "BLACKBOX.sym.json"))
+        OUT.parent.mkdir(exist_ok=True)
+LETTER = ("UD" if USBDEV else "U") if LINEUP else "B"   # 3.1.U: 3.1.T + Seq MIDI out; 3.1.UD: + USB device
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
 CPU = ["-mthumb", "-mcpu=cortex-m7", "-mfloat-abi=hard"]
@@ -144,10 +156,12 @@ def compile_all(rb_id):
          HERE / "bungee_cave.S"])
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \
-        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c", MPE_DIR / "mpe.c"] if LINEUP else [])
+        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c", MPE_DIR / "mpe.c"] if LINEUP else []) + \
+        ([USBDEV_DIR / "usbdev.c"] if USBDEV else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
         run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DSONG_CUES", "-DWITH_SONG_DJ"] if LINEUP else []),
+             *(["-DWITH_USBDEV"] if USBDEV else []),
              "-I", BANK2, "-I", RUBBER, "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]
@@ -174,7 +188,7 @@ def compile_all(rb_id):
 
 def bank1_has_no_ram(objs):
     """Cave code has nowhere to keep .data/.bss: they would land in bank 2's SRAM1 block."""
-    for o in objs[:8 if LINEUP else 4]:          # the cave asm, then the bank-1 C (compile_all)
+    for o in objs[:(9 if USBDEV else 8) if LINEUP else 4]:   # the cave asm, then the bank-1 C (compile_all)
         out = subprocess.check_output([str(T / "arm-none-eabi-size"), "-A", str(o)], text=True)
         for line in out.splitlines():
             parts = line.split()
@@ -309,6 +323,8 @@ def add_rubber_sites(stock):
         spec.loader.exec_module(mpe)
         mix.SITES.extend(mpe.parts(stock, stock_bl))
         mix.BYTES.extend(mpe.BYTES)
+    if USBDEV:      # the MIDI manager's once-per-block pump: the "to USB" queue to the computer first (usbdev.c)
+        mix.SITES.append((0x08044B08, "usbdev_midi_out", True, stock_bl(stock, 0x08044B08, 0x08044896)))
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves
         mix.SITES.append((0x080667B8, "hook_lane", False, "2de9f04f"))   # per-lane render: the leaf renders
     mix.SITES.extend([

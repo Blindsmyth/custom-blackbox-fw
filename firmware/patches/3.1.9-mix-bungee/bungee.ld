@@ -29,6 +29,7 @@ SECTIONS {
     KEEP(*dj.o(.text .text.* .rodata .rodata.*))     /* 3.1.T: Song DJ row */
     KEEP(*mixer.o(.text .text.* .rodata .rodata.*))  /* 3.1.T: Song DJ mixer */
     KEEP(*mpe.o(.text .text.* .rodata .rodata.*))    /* 3.1.U: Seq MIDI out, MPE and Port */
+    KEEP(*usbdev.o(.text .text.* .rodata .rodata.*)) /* 3.1.UD: USB MIDI device (--usbdev) */
   } > CAVE
 
   .b2head : { KEEP(*(.b2head)) } > BANK2

@@ -2180,7 +2180,7 @@ def t_seqrec_params(bench, res):
     res.check(b.call(0x0808E305, 0x86) == 512, f"Step Count max {b.call(0x0808E305, 0x86)}")
     img = b.image
     u16 = lambda a: struct.unpack_from("<H", img, a - bd.BASE)[0]
-    nxt = (0, 0x74)      # 3.1.U's Port row follows it (t_mpe_sites)
+    nxt = (0, 0x1EF)     # 3.1.U's Loop row follows it (t_mpe_sites)
     res.check(u16(0x080EEF30) == SR_LEN and u16(0x080EEF32) in nxt, "Seq page 0 lists Rec Len")
     res.check(u16(0x080EEEE8) == SR_LEN and u16(0x080EEEEA) in nxt, "Seq page 0 (MIDI) lists Rec Len")
     res.check(u16(0x080EED66) == SR_DEF and u16(0x080EED68) == 0x1A0 and u16(0x080EED6A) == 0x1A1
@@ -8133,6 +8133,8 @@ def t_cue_late_stock(bench, res):
 MP_BASE = 0x38007148            # MpState (mpe.c): magic, then 16 players of 43 bytes from +4
 MP_STRIDE = 43
 ID_PCBANK = 0x1EC               # Bank, Sub, Pgm (per layer)
+ID_LOOP = 0x1EF                 # Loop: Off / On (per sequence)
+MP_BKP = 0x38800600             # backup SRAM: magic, starts[16], seen[16]
 MP_MAGIC = 0x3145504D
 ID_PORT, ID_MPE, ID_MPECH, ID_MPEBEND = 0x74, 0x1F0, 0x1F1, 0x1F2
 MIDI_SEND = 0x08044A0E          # (mgr, packet, DIN, USB)
@@ -8255,6 +8257,11 @@ def t_mpe_sites(bench, res):
                      (0x0804D004, "mpe_out_thunk")):
         got = _bl_target(img, va)
         res.check(got == sym[name], f"{va:#x} -> {got and hex(got)} ({name})")
+    for va in (0x0805E9D2, 0x0805EA1A, 0x0805ED04, 0x0805EEDC):
+        got = _bl_target(img, va)
+        res.check(got == sym["mpe_player_start"], f"{va:#x} -> {got and hex(got)} (Player_Start: mpe_player_start)")
+    got = _bl_target(img, 0x0805E004)
+    res.check(got == sym["mpe_pass_thunk"], f"0x0805e004 (a pass's 0x4E post) -> {got and hex(got)}")
     for va, name in ((0x0805EBCE, "mpe_param_thunk"), (0x0804D018, "mpe_msg_thunk")):
         got = _bw_target(img, va)
         res.check(got == sym[name], f"{va:#x} -> {got and hex(got)} (b.w {name})")
@@ -8262,7 +8269,8 @@ def t_mpe_sites(bench, res):
     res.check(ids == [0x85, 0x86, ID_PCBANK, ID_PCBANK + 1, ID_PCBANK + 2, 0], f"layer pages A-D {ids}")
     for at, midi in ((0x080EEF28, 0x6B), (0x080EEEE0, 0x7A)):
         ids = _u16s(img, at, 10)
-        res.check(ids == [0x49, 0x46, 0x88, midi, 0x19D, ID_PORT, ID_MPE, ID_MPECH, ID_MPEBEND, 0],
+        ids = _u16s(img, at, 11)
+        res.check(ids == [0x49, 0x46, 0x88, midi, 0x19D, ID_LOOP, ID_PORT, ID_MPE, ID_MPECH, ID_MPEBEND, 0],
                   f"Seq page 0 {at:#x}: {[hex(i) for i in ids]}")
     for at in (0x080A00CC, 0x080996AC):
         res.check(b.img_u32(at) == 0x20008201, f"layer-0 id mask {at:#x} has 0x74: {b.img_u32(at):#x}")
@@ -8287,7 +8295,13 @@ def t_mpe_registry(bench, res):
         mn, mx = b.call(0x0808E2D0, pid), b.call(0x0808E304, pid)
         res.check(n and b.cstr(n) == xml and t and b.cstr(t) == title and (mn, mx) == (lo, hi),
                   f"{pid:#x}: {n and b.cstr(n)!r} {t and b.cstr(t)!r} {mn}..{mx}")
-    for pid in (0x73, 0x75, 0x1E6, 0x1EB, 0x1EF, 0x1F3):
+    lab, cnt = b.call(0x0808E278, ID_LOOP), b.call(0x0808E2A4, ID_LOOP)
+    got = [b.cstr(b.u32(lab + 4 * i)) for i in range(cnt)] if lab else []
+    n, t = b.call(PARAM_XML_NAME, ID_LOOP), b.call(PARAM_TITLE, ID_LOOP)
+    res.check(got == ["Off", "On"] and n and b.cstr(n) == "seqloop" and t and b.cstr(t) == "Loop:", f"Loop: {got}")
+    res.check(b.u32(MP_BKP) == 0x3150504D and bytes(b.mu.mem_read(MP_BKP + 4, 32)) == b"\x00" * 32,
+              "backup SRAM start counters cleared at boot")
+    for pid in (0x73, 0x75, 0x1E6, 0x1EB, 0x1F3):
         t = b.call(PARAM_TITLE, pid)
         res.check(pid in (0x73, 0x75) and t != 0 or pid not in (0x73, 0x75) and t == 0,
                   f"{pid:#x} left as it was ({t and b.cstr(t)!r})")
@@ -8310,7 +8324,7 @@ def t_mpe_templates(bench, res):
     b = bench.b
     adds = []
     b.stub(BAG_ADD, lambda board: adds.append((board.arg(1), board.arg(2))))
-    ours = [(ID_PORT, 0), (ID_MPE, 0), (ID_MPECH, 16), (ID_MPEBEND, 48)]
+    ours = [(ID_LOOP, 1), (ID_PORT, 0), (ID_MPE, 0), (ID_MPECH, 16), (ID_MPEBEND, 48)]
     pc = [(ID_PCBANK + k, 0) for k in range(3)]
     tpl = 0x2001CF00
 
@@ -8325,8 +8339,8 @@ def t_mpe_templates(bench, res):
         return list(adds)
     got = run(0x47)
     i = got.index((0x88, 1)) if (0x88, 1) in got else -1
-    res.check(i >= 4 and got[i - 4:i] == ours and got[i + 1:i + 4] == pc and
-              sum(a in ours + pc for a in got) == 7, f"case 0x47: ours, 0x88, Bank / Sub / Pgm once {got}")
+    res.check(i >= 5 and got[i - 5:i] == ours and got[i + 1:i + 4] == pc and
+              sum(a in ours + pc for a in got) == 8, f"case 0x47: ours, 0x88, Bank / Sub / Pgm once {got}")
     got = run(0x48)
     i = got.index((0x86, 0x10)) if (0x86, 0x10) in got else -1
     res.check(i >= 0 and got[i + 1:i + 4] == pc and not any(a in ours for a in got),
@@ -8383,6 +8397,24 @@ def t_mpe_param(bench, res):
     p = _mp_pl(b, 6)
     res.check(p["pc"] == [[0, 0, 5], [0, 128, 0], [2, 0, 0], [0, 0, 0]] and b.u8(MP_PLAYER + 0x68) == _mp_tag(6, 1, 1),
               f"Bank / Sub / Pgm per layer, clamped, layer 7 dropped, the tag untouched {p['pc']}")
+    g = _mp_pl(b, 6)["gen"]
+    _mp_post(b, key, (ID_LOOP, 0, 0), (ID_LOOP, 1, 2))
+    p = _mp_pl(b, 6)
+    res.check(p["cfg"] >> 15 == 1 and p["gen"] == g and b.u8(MP_PLAYER + 0x68) == _mp_tag(6, 1, 1),
+              f"Loop Off: kept, no MPE setup, layer 2's post dropped {p['cfg']:#x}")
+    b.mu.mem_write(MP_PLAYER + 0x32, b"\x00")
+    b.call(bench.sym["mpe_pass"], MP_PLAYER)
+    res.check(b.u8(MP_PLAYER + 0x32) == 1, "Loop Off: a pass sets the stop request (stock stops at the loop end)")
+    _mp_post(b, key, (ID_LOOP, 1, 0))
+    b.mu.mem_write(MP_PLAYER + 0x32, b"\x00")
+    b.call(bench.sym["mpe_pass"], MP_PLAYER)
+    res.check(_mp_pl(b, 6)["cfg"] >> 15 == 0 and b.u8(MP_PLAYER + 0x32) == 0, "Loop On: nothing")
+    started = []
+    b.stub(0x0805CB64, lambda board: started.append((board.arg(0), board.arg(1), board.arg(2))))
+    b.call(bench.sym["mpe_player_start"], MP_PLAYER, 0x1234, MP_ROUTER)
+    res.check(started == [(MP_PLAYER, 0x1234, MP_ROUTER)] and b.u8(MP_BKP + 4 + 6) == 1,
+              f"mpe_player_start: stock's Player_Start with its arguments, then a start counted {started}")
+    b.unstub(0x0805CB64)
     other = 0x303
     _mp_player(b, other)
     _mp_post(b, other, (ID_MPE, 1, 0), (ID_PORT, 2, 0))
@@ -8569,7 +8601,7 @@ def _mp_xml_bag(bench, xml):
     el = b.call(XML_CHILD, doc, name)
     if ok == 0 and el:
         b.call(LOAD_PARAMS, el, bag)
-    ids = (ID_PORT, ID_MPE, ID_MPECH, ID_MPEBEND, ID_PCBANK, ID_PCBANK + 1, ID_PCBANK + 2)
+    ids = (ID_PORT, ID_MPE, ID_MPECH, ID_MPEBEND, ID_PCBANK, ID_PCBANK + 1, ID_PCBANK + 2, ID_LOOP)
     return ok == 0 and el != 0, [b.call(PARAM_GET, bag, i) for i in ids]
 
 
@@ -8577,10 +8609,10 @@ def t_mpe_xml(bench, res):
     """Stock's preset reader: the four attributes load by name; a preset without them keeps the defaults."""
     _mp_init(bench)
     ok, got = _mp_xml_bag(bench, '<sequence><params midiport="2" mpemode="1" mpelast="5" mpebend="24" '
-                                 'pcbank="3" pcpgm="10"/></sequence>')
-    res.check(ok and got == [2, 1, 5, 24, 3, 0, 10], f"saved values load: {got}")
+                                 'pcbank="3" pcpgm="10" seqloop="0"/></sequence>')
+    res.check(ok and got == [2, 1, 5, 24, 3, 0, 10, 0], f"saved values load: {got}")
     ok, got = _mp_xml_bag(bench, '<sequence><params midioutchan="3"/></sequence>')
-    res.check(ok and got == [0, 0, 16, 48, 0, 0, 0], f"an older preset: Both, Off, 16, 48, --- {got}")
+    res.check(ok and got == [0, 0, 16, 48, 0, 0, 0, 1], f"an older preset: Both, Off, 16, 48, ---, Loop On {got}")
 
 
 MP_PCM = 0xC0A50000                 # Pcm_PollMidi's r7 (pcm + 0xA000): +0x68B DIN, +0x68D USB Dev Out
@@ -8615,6 +8647,11 @@ def t_mpe_pc(bench, res):
     res.check(msg(0x69, 1) == [], "layer B (all ---): nothing")
     res.check(msg(0x69, 2) == [("b20000", 1, 1), ("b22002", 1, 1)], f"layer C: Bank 1, Sub 3, no Pgm {sent}")
     res.check(msg(0x69, 0) == [("b20001", 1, 1), ("c204", 1, 1)], "back to A: sent again")
+    res.check(msg(0x4E, 0) == [], "the next pass: nothing")
+    b.mu.mem_write(MP_BKP + 4 + P, bytes([b.u8(MP_BKP + 4 + P) + 1]))     # Player_Start (no 0x4F before it)
+    res.check(msg(0x69, 0) == [] and msg(0x4E, 0) == [("b20001", 1, 1), ("c204", 1, 1)],
+              "started again without a stop message: its first pass sends again (a layer message does not take it)")
+    res.check(msg(0x4E, 0) == [], "... once")
     msg(0x4F, 0)
     b.mu.mem_write(at + 26, struct.pack("<H", 1 | 1 << 2 | 15 << 4 | 48 << 8))   # DIN, Lower
     res.check(msg(0x4E, 0) == [("b00001", 1, 0), ("c004", 1, 0)], f"Lower on DIN: the master, ch 1 {sent}")
@@ -8633,6 +8670,287 @@ def t_mpe_memory(bench, res):
     res.check(0x38007148 <= MP_BASE and MP_BASE + 4 + 16 * MP_STRIDE <= 0x38007400,
               "MpState between diag (0x38007148) and DjState (0x38007400)")
     res.check(all(not (sym[s] & 0xFFFF0000 == 0x38000000) for s in ("mpe_out", "mpe_param")), "code is in flash")
+
+# ---- USB MIDI device on the power jack (3.1.UD, --usbdev): firmware/patches/3.1.9-usbdev -----------------
+# The controller model and the host's side follow blackbox-mod's test_usbdev.py ((c) 2026 Justin Joe, MIT), cut down
+# to MIDI and the polled receive. It is a reading of the OTG core's register behaviour, not the core: that the power
+# jack reaches PB14 / PB15, the real core, the clock and a real host are for the unit.
+
+UD_USB, UD_RCC, UD_GPIOB, UD_STATE = 0x40040000, 0x58024400, 0x58020400, 0x38800650
+UD_GRSTCTL, UD_GINTSTS, UD_GRXSTSP, UD_DCFG, UD_DCTL = 0x10, 0x14, 0x20, 0x800, 0x804
+UD_DIEPCTL0, UD_DIEPTSIZ0, UD_DOEPCTL0, UD_DOEPINT0, UD_FIFO = 0x900, 0x910, 0xB00, 0xB08, 0x1000
+UD_DIEPCTL1, UD_DIEPTSIZ1, UD_DOEPCTL1, UD_FIFO1 = 0x920, 0x930, 0xB20, 0x2000
+UD_MGR = 0x24002E88
+UD_IN_Q, UD_OUT_Q = UD_MGR + 0x4660, UD_MGR + 0x4B68
+
+
+class _UdCore:
+    def __init__(self):
+        self.reg = {UD_GRSTCTL: 0x80000000, UD_DCTL: 2}
+        self.rx, self.words, self.tx, self.sent, self.midi = [], [], None, [], []
+        self.reset_reads, self.stalled = 0, False
+
+    def get(self, off):
+        return self.reg.get(off, 0)
+
+    def read(self, off):
+        if off == UD_GRSTCTL and self.reg[UD_GRSTCTL] & 1:
+            self.reset_reads -= 1
+            if self.reset_reads <= 0:
+                self.reg[UD_GRSTCTL] &= ~1
+        if off == UD_GINTSTS:
+            return (self.get(UD_GINTSTS) & ~0x10) | (0x10 if self.rx else 0)
+        if off == UD_GRXSTSP:
+            if not self.rx:
+                return 0
+            kind, data = self.rx.pop(0)
+            ep = 0
+            if isinstance(kind, tuple):
+                kind, ep = kind
+            if kind == 3 and ep == 1:                # the packet is in: endpoint 1 OUT is idle again
+                self.reg[UD_DOEPCTL1] = self.get(UD_DOEPCTL1) & ~(1 << 31)
+            self.words = [struct.unpack_from("<I", data.ljust((len(data) + 3) // 4 * 4, b"\0"), i)[0]
+                          for i in range(0, len(data), 4)]
+            if kind == 6:                            # a setup drops an endpoint 0 stall
+                self.reg[UD_DIEPCTL0] = self.get(UD_DIEPCTL0) & ~(1 << 21)
+                self.reg[UD_DOEPCTL0] = self.get(UD_DOEPCTL0) & ~(1 << 21)
+            if kind == 4:
+                self.reg[UD_DOEPINT0] = self.get(UD_DOEPINT0) | 8
+            return kind << 17 | len(data) << 4 | ep
+        if off == UD_FIFO:
+            return self.words.pop(0) if self.words else 0xDEADBEEF
+        return self.get(off)
+
+    def write(self, off, v):
+        if off in (UD_GINTSTS, UD_DOEPINT0, 0x908, 0x928, 0xB28):
+            self.reg[off] = self.get(off) & ~v
+        elif off == UD_GRSTCTL:
+            if v & 1:
+                self.reset_reads = 3
+                self.reg[UD_GRSTCTL] = 0x80000001
+        elif off == UD_FIFO:
+            if self.tx is not None:
+                self.tx[1] += struct.pack("<I", v)
+                if len(self.tx[1]) >= self.tx[0]:
+                    self.sent.append(bytes(self.tx[1][:self.tx[0]]))
+                    self.tx = None
+                    self.reg[0x908] = self.get(0x908) | 1
+        elif off == UD_FIFO1:
+            self.midi.append(v)
+        elif off in (UD_DIEPCTL1, UD_DOEPCTL1):
+            keep = self.get(off) & (1 << 31)         # enabled stays set until the host moves the packet
+            if v & (1 << 30):
+                keep, v = 0, v & ~(1 << 31)
+            self.reg[off] = (v & ~((1 << 26) | (1 << 27) | (1 << 28) | (1 << 29) | (1 << 30))) | keep
+        elif off == UD_DIEPCTL0:
+            if v & (1 << 21):
+                self.stalled = True
+            if v & (1 << 31) and v & (1 << 26):
+                n = self.get(UD_DIEPTSIZ0) & 0x7F
+                if n == 0:
+                    self.sent.append(b"")
+                    self.reg[0x908] = self.get(0x908) | 1
+                else:
+                    self.tx = [n, bytearray()]
+            self.reg[off] = v & ~((1 << 31) | (1 << 26))
+        else:
+            self.reg[off] = v
+
+
+class _Ud:
+    """The driver on the bench: the controller model hooked onto OTG_HS's registers, the host's requests."""
+
+    def __init__(self, bench):
+        from unicorn import UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
+        self.b, self.sym = bench.b, bench.sym
+        mu = self.b.mu
+        for base in (0x40040000, 0x58020000):
+            try:
+                mu.mem_map(base, 0x10000)
+            except Exception:
+                pass
+        self.core = core = _UdCore()
+        mu.hook_add(UC_HOOK_MEM_READ, lambda uc, t, a, s, v, _: uc.mem_write(a, struct.pack("<I", core.read(a - UD_USB) & 0xFFFFFFFF)),
+                    begin=UD_USB, end=UD_USB + 0x3FFF)
+        mu.hook_add(UC_HOOK_MEM_WRITE, lambda uc, t, a, s, v, _: core.write(a - UD_USB, v & 0xFFFFFFFF),
+                    begin=UD_USB, end=UD_USB + 0x3FFF)
+
+    def poll(self, n=1):
+        for _ in range(n):
+            self.b.call(self.sym["usbdev_poll"])
+
+    def up(self):
+        """Stock's USB running, the ~2 s wait, the bring-up."""
+        b = self.b
+        b.w32(UD_RCC + 0xD8, 1 << 27)
+        b.w32(UD_RCC + 0x54, 1 << 20)
+        self.poll(400 + 20)
+
+    def control(self, setup):
+        core = self.core
+        core.sent.clear()
+        core.stalled = False
+        core.rx += [(6, setup), (4, b"")]
+        self.poll(2)
+        if core.stalled:
+            return "STALL"
+        n = 0
+        while len(core.sent) > n:
+            n = len(core.sent)
+            self.poll()
+        self.chunks = [len(x) for x in core.sent]
+        return b"".join(core.sent) if core.sent else None
+
+    def desc(self, kind, index, length):
+        return self.control(struct.pack("<BBBBHH", 0x80, 6, index, kind, 0, length))
+
+    def enumerate(self):
+        self.core.reg[UD_GINTSTS] = (1 << 12) | (1 << 13)
+        self.poll()
+        self.control(struct.pack("<BBHHH", 0x00, 5, 9, 0, 0))
+        self.control(struct.pack("<BBHHH", 0x00, 9, 1, 0, 0))
+        self.core.rx += [(2, b""), (3, b"")]
+        self.poll()
+
+
+def t_usbdev_bringup(bench, res):
+    b, sym = bench.b, bench.sym
+    res.check(_bl_target(b.image, 0x08044B08) == sym["usbdev_midi_out"], "0x08044B08 -> usbdev_midi_out (the to-USB pump)")
+    res.check(menu_letter(b.image) == "U", f"menu letter {menu_letter(b.image)!r} (3.1.UD)")
+    ud = _Ud(bench)
+    core = ud.core
+    b.mu.mem_write(UD_STATE, b"\xa5" * 12)          # backup SRAM as an earlier boot left it
+    b.w32(UD_GPIOB, 0xFFFFFFFF)                     # every pin analog, as after reset
+    ud.poll(50)
+    res.check(not b.u32(UD_RCC + 0xD8) & (1 << 25), "stock USB not started yet: OTG_HS's clock stays off")
+    res.check(b.u32(UD_RCC + 0xE0) & (1 << 28) and b.u32(0x58024800) & (1 << 8), "backup SRAM clock and writes enabled")
+    b.w32(UD_RCC + 0xD8, 1 << 27)
+    b.w32(UD_RCC + 0x54, 1 << 20)
+    b.w32(UD_RCC + 0x100, 0xFFFFFFFF)
+    ud.poll(399)
+    res.check(not b.u32(UD_RCC + 0xD8) & (1 << 25), "... and for 399 more blocks after it has")
+    ud.poll(1)
+    res.check(b.u32(UD_RCC + 0xD8) == (1 << 27) | (1 << 25) and not b.u32(UD_RCC + 0x100) & (1 << 26),
+              "block 400: OTG_HS clock on, its ULPI sleep clock off, the host controller's untouched")
+    res.check(b.u32(UD_GPIOB + 0x24) == 0xCC000000 and b.u32(UD_GPIOB) == 0xAFFFFFFF,
+              f"PB14 / PB15 = AF12, no other pin touched ({b.u32(UD_GPIOB + 0x24):#x} {b.u32(UD_GPIOB):#x})")
+    res.check(core.get(0x0C) & (1 << 6) and core.get(UD_GRSTCTL) & 1 and core.get(UD_DCTL) & 2,
+              "built-in transceiver, core reset asked, D+ pull-up off")
+    ud.poll(12)
+    res.check(core.get(UD_DCTL) & 2, "still disconnected while the mode change settles")
+    ud.poll(6)
+    res.check(core.get(0x0C) & (1 << 30) and core.get(0x38) & (1 << 16) and not core.get(0x38) & (1 << 21)
+              and core.get(0x00) & 0xC0 == 0xC0 and core.get(UD_DCFG) & 3 == 3 and not core.get(UD_DCTL) & 2,
+              "connected: device mode, transceiver on, VBUS overridden, full speed, pull-up on")
+    res.check(core.get(0x08) & 1 == 0 and core.get(0x18) == 0 and b.u32(0xE000E108) == 0,
+              "no interrupt: global off, nothing unmasked, NVIC untouched (everything polled)")
+    core.reg[UD_GINTSTS] = (1 << 12) | (1 << 13)
+    ud.poll()
+    res.check(core.get(UD_GINTSTS) == 0 and core.get(UD_DCFG) & 0x7F0 == 0 and core.get(UD_DIEPCTL0) & 3 == 0,
+              "bus reset + speed known: acknowledged, address 0, endpoint 0 at 64 bytes")
+    d = ud.desc(1, 0, 8)
+    res.check(d == bytes.fromhex("1201000200000040"), f"first 8 bytes of the device descriptor {d}")
+    d = ud.desc(1, 0, 18)
+    res.check(d and len(d) == 18 and d[4] == 0 and d[8:12] == bytes.fromhex("09120200"), f"device: 1209:0002 {d}")
+    r = ud.control(struct.pack("<BBHHH", 0x00, 5, 9, 0, 0))
+    res.check(r == b"" and (core.get(UD_DCFG) >> 4) & 0x7F == 9, f"SET_ADDRESS 9 {r}")
+    d = ud.desc(2, 0, 9)
+    res.check(d and len(d) == 9 and d[2] == 101 and d[4] == 2, f"configuration header: 101 bytes, 2 interfaces {d}")
+    d = ud.desc(2, 0, 255)
+    res.check(d and len(d) == 101 and ud.chunks == [64, 37], f"whole configuration: 64 + 37, a packet per block {ud.chunks}")
+    parts, i = [], 0
+    while d and i < len(d) and d[i]:
+        parts.append(d[i:i + d[i]])
+        i += d[i]
+    eps = [(x[2], x[3], x[4] | x[5] << 8) for x in parts if x[1] == 5]
+    ac = [x for x in parts if x[1] == 0x24 and x[2] == 1 and len(x) == 9]
+    ms = [x for x in parts if x[1] == 0x24 and x[2] == 1 and len(x) == 7]
+    after = parts[parts.index(ms[0]):] if ms else []
+    res.check(i == 101 and eps == [(1, 2, 64), (0x81, 2, 64)] and ac and list(ac[0][5:9]) == [9, 0, 1, 1]
+              and ms and ms[0][5] == sum(len(x) for x in after) == 65,
+              f"parses to the end: audio control (lists interface 1), MIDI streaming (65), bulk 0x01 / 0x81 {eps}")
+    res.check([x[4] for x in parts if x[1] == 0x25 and len(x) == 5] == [1, 3], "each endpoint names an embedded jack")
+    d = ud.desc(3, 2, 255)
+    res.check(d and d[0] == len(d) and d[2:].decode("utf-16-le") == "Blackbox", f"product 'Blackbox' {d}")
+    res.check(ud.desc(3, 0, 255) == bytes.fromhex("04030904"), "string 0: language 0x0409")
+    res.check(ud.desc(6, 0, 10) == "STALL" and ud.desc(3, 7, 255) == "STALL", "device qualifier, unknown string: stall")
+    res.check(ud.control(struct.pack("<BBHHH", 0xC0, 0x50, 0, 0x2407, 8)) == "STALL", "no debug peek in this port")
+    r = ud.control(struct.pack("<BBHHH", 0x00, 9, 1, 0, 0))
+    res.check(r == b"" and ud.control(struct.pack("<BBHHH", 0x80, 8, 0, 0, 1)) == b"\x01", "SET / GET_CONFIGURATION 1")
+    core.rx += [(2, b""), (3, b"")]
+    ud.poll()
+    res.check(core.get(UD_DIEPCTL1) & 0x03CC87FF == 0x00488040 and core.get(UD_DOEPCTL1) & 0x000C87FF == 0x00088040
+              and core.get(UD_DOEPCTL1) >> 31 and core.get(0xB30) == (1 << 19) | 64,
+              f"configured: bulk endpoints at 64, OUT armed {core.get(UD_DIEPCTL1):#x} {core.get(UD_DOEPCTL1):#x}")
+
+
+def t_usbdev_midi(bench, res):
+    """MIDI both ways once enumerated; the MPE setup and program change reach the computer (stock's packer drops them)."""
+    b, sym = bench.b, bench.sym
+    ud = _Ud(bench)
+    core = ud.core
+    ud.up()
+    ud.enumerate()
+
+    def queued():
+        n = b.u32(UD_MGR + 0x4B64)
+        return [bytes(b.mu.mem_read(UD_IN_Q + i * 5, 5)) for i in range(n)]
+    core.rx += [((2, 1), bytes.fromhex("09903c64" "0bb04a7f" "0ff80000" "08803c00")), ((3, 1), b"")]
+    ud.poll()
+    q = queued()
+    res.check([m[:m[4]].hex() for m in q] == ["903c64", "b04a7f", "f8", "803c00"],
+              f"from the computer: note, CC, clock, note off into stock's from-USB queue {[m.hex() for m in q]}")
+    res.check(core.get(UD_DOEPCTL1) >> 31 and not core.rx, "... read by the poll, endpoint armed again")
+    outbuf, lenp = 0x24070000, 0x24070400
+
+    def put(*msgs):
+        for m in msgs:
+            w = b.u32(UD_OUT_Q + 0x504)
+            b.mu.mem_write(UD_OUT_Q + (w & 0xFF) * 5, bytes(m).ljust(4, b"\0") + bytes([len(m)]))
+            b.w32(UD_OUT_Q + 0x504, w + 1)
+
+    def pump():
+        core.midi.clear()
+        b.w32(lenp, 0)
+        b.call(sym["usbdev_midi_out"], UD_MGR, UD_OUT_Q, outbuf, 0x300, lenp)
+        n = b.u32(lenp) & 0xFFFF
+        return [struct.pack("<I", w).hex() for w in core.midi], bytes(b.mu.mem_read(outbuf, n)).hex()
+    ours, stock = pump()
+    res.check(ours == [] and stock == "" and not core.get(UD_DIEPCTL1) >> 31, "nothing queued: nothing sent")
+    put([0xB0, 101, 0], [0xB0, 100, 6], [0xB0, 6, 4], [0xB0, 0, 1], [0xC2, 4], [0x91, 60, 100], [0x81, 60, 100],
+        [0xE1, 0, 64], [0xF8])
+    ours, stock = pump()
+    res.check(ours == ["0bb06500", "0bb06406", "0bb00604", "0bb00001", "0cc20400", "09913c64", "08813c64",
+                       "0ee10040", "0ff80000"],
+              f"to the computer: MCM RPN, bank, program change, notes on ch 2, bend, clock {ours}")
+    res.check(core.get(UD_DIEPTSIZ1) == (1 << 19) | 36 and core.get(UD_DIEPCTL1) >> 31, "one 36-byte transfer")
+    res.check(stock == "09913c64" "08813c64" "0ff80000" and b.u32(UD_OUT_Q + 0x500) == b.u32(UD_OUT_Q + 0x504),
+              f"stock still packs the queue for the host jack (notes, clock) and consumes it {stock}")
+    put([0x90, 62, 90])
+    ours, stock = pump()
+    res.check(ours == [] and stock == "09903e5a", "the computer has not taken the last packet: it waits; the host jack gets it now")
+    core.reg[UD_DIEPCTL1] &= ~(1 << 31)
+    ours, stock = pump()
+    res.check(ours == ["09903e5a"] and stock == "", f"... and the computer gets it the next block {ours}")
+    core.reg[UD_DIEPCTL1] &= ~(1 << 31)
+    put([0xFA], [0xFA], [0xF8], [0xFC], [0xFC])
+    ours, stock = pump()
+    res.check(ours == ["0ffa0000", "0ff80000", "0ffc0000"], f"slaved Start / Stop twice each: once each to the computer {ours}")
+    core.reg[UD_DIEPCTL1] &= ~(1 << 31)
+    put(*[[0x90, i, 1] for i in range(100)])
+    ours, stock = pump()
+    res.check(len(ours) == 64 and len(stock) == 800, "100 in a block: 64 to the computer, all 100 to the host jack")
+    core.reg[UD_DIEPCTL1] &= ~(1 << 31)
+    ours2, stock = pump()
+    res.check(len(ours2) == 36 and ours2[0] == "09904001" and ours2[-1] == "09906301" and stock == "",
+              f"... the other 36 the next block, in order (an MPE setup burst arrives whole) {len(ours2)}")
+    core.reg[UD_DIEPCTL1] &= ~(1 << 31)
+    put(*[[0x80, i & 0x7F, 0] for i in range(300)])
+    pump()
+    core.reg[UD_DIEPCTL1] &= ~(1 << 31)
+    ours, _ = pump()
+    res.check(len(ours) == 64 and ours[0] == f"0880{(300 - 256 + 64) & 0x7F:02x}00",
+              f"300 at once: lapped, the last 256 kept (from #44 on) {ours[:1]}")
 
 
 def main():
@@ -8824,6 +9142,12 @@ def main():
             ("Seq MIDI out: preset attributes load, older presets get the defaults", t_mpe_xml),
             ("Seq MIDI out: program change on start / layer, once, channel, Port", t_mpe_pc),
             ("Seq MIDI out: state memory range", t_mpe_memory),
+        ]
+    if "usbdev_poll" in sym:
+        kind = kind + "+usbdev"
+        cases += [
+            ("USB device: bring-up, enumeration (controller model)", t_usbdev_bringup),
+            ("USB device: MIDI both ways, CCs and program change to the computer", t_usbdev_midi),
         ]
     cases += [("MIDI note path facts", t_midi_path_facts),
               ("waveform bar name length", t_deck_bar_name)]

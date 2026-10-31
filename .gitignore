@@ -39,3 +39,5 @@ tools/lab/*/m7/*.wav
 tools/stretch/bungee/build-lineup/
 firmware/patches/**/BBWARP.BIN
 firmware/patches/3.1.9-mix-bungee/lineup/BLACKBOX.BIN
+firmware/patches/3.1.9-mix-bungee/lineup/*/BLACKBOX.BIN
+tools/stretch/bungee/build-lineup-*/

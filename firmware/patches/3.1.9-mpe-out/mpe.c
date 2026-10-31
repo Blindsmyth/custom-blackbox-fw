@@ -27,9 +27,13 @@
  *   0x1ED "Sub:"     --- / 1..128   CC 32
  *   0x1EE "Pgm:"     --- / 1..128   program change
  * They go out when the sequence starts and when a layer takes over, right before its first note:
- * pcmStreamer sees the player's own start (0x4E, every pass), stop (0x4F) and layer (0x69) messages
- * in the same queue as its notes (mpe_msg), and sends a layer's set once until a stop or another
- * layer. Channel: MIDI Out, or the MPE master (Lower 1, Upper 16).
+ * pcmStreamer sees the player's own pass (0x4E, every pass) and layer (0x69) messages in the same
+ * queue as its notes (mpe_msg), and sends a layer's set on the first pass after each Player_Start
+ * (counted by mpe_player_start in backup SRAM, as there are stop paths that post no 0x4F) and when
+ * another layer takes over. Channel: MIDI Out, or the MPE master (Lower 1, Upper 16).
+ *   0x1EF "Loop:"    Off / On (default On), per sequence: Off plays one pass. mpe_pass sets the
+ *                    player's stop request (+0x32) as the pass starts, so stock's own stop at the
+ *                    loop end (0x4F, all-off) ends it there, as a quantised stop does.
  * Ids 0x1E5 (stock App_SetParam's own) and the Song DJ row's widgets (to 0x1E4) are taken.
  */
 
@@ -43,7 +47,11 @@
 #define ID_LAST      0x1F1
 #define ID_OUTCH     0x6B          /* MIDI Out: the first note channel */
 #define ID_BEND      0x1F2
+#define ID_LOOP      0x1EF         /* per sequence, with Port .. PB Rng (0x1EF-0x1F2 contiguous) */
 #define ID_BANK      0x1EC         /* Bank, Sub, Pgm: per layer */
+#define MP_BKP       0x38800600u   /* backup SRAM: start counters (below usbdev's 0x38800650) */
+#define MP_BKP_MAGIC 0x3150504Du   /* 'MPP1' */
+#define PL_STOP      0x32          /* player: stop at the next pass start (stock's quantised stop) */
 #define ID_PGM       0x1EE
 #define PC_NONE      7             /* sent: no layer's program change out since a stop */
 #define MIDI_MGR     ((void *)0x24002E88u)   /* Pcm_PollMidi's FUN_08044A0E object (0x0804D174) */
@@ -54,11 +62,12 @@ enum { MODE_OFF, MODE_LOWER, MODE_UPPER, MODE_MULTI, MODES };
 #define BEND_DEF     48
 #define BEND_MAX     96
 
-/* cfg: port | mode << 2 | (last - 1) << 4 | bend << 8 */
+/* cfg: port | mode << 2 | (last - 1) << 4 | bend << 8 | loop off << 15 */
 #define C_PORT(c)    ((c) & 3)
 #define C_MODE(c)    (((c) >> 2) & 3)
 #define C_LAST(c)    (((c) >> 4) & 15)    /* 0-based */
 #define C_BEND(c)    (((c) >> 8) & 127)
+#define C_ONCE(c)    (((c) >> 15) & 1)
 #define CFG(p, m, n, b) ((unsigned short)((p) | (m) << 2 | (n) << 4 | (b) << 8))
 
 /* player+0x68 tag: 64 + idx * 12 + port * 4 + mode. Stock's own values there are 0 (nothing in
@@ -91,18 +100,28 @@ typedef char mp_after_diag[(MP_BASE >= 0x38007148u) ? 1 : -1];
 
 #define S ((MpState *)MP_BASE)
 
+typedef struct {
+    unsigned magic;
+    unsigned char starts[N_PL];    /* Player_Start calls (audio task) */
+    unsigned char seen[N_PL];      /* starts whose program change went out (pcmStreamer) */
+} MpBkp;
+#define B ((volatile MpBkp *)MP_BKP)
+void rb_bkp_enable(void);          /* tools/bank2/b2pair.c: backup SRAM clock and writes */
+
 typedef void (*reg_enum_fn)(void *, unsigned, const char *, const char *const *, int, const char *);
 typedef void (*reg_num_fn)(void *, unsigned, int, const char *, int, int, const char *);
 typedef void (*param_add_fn)(void *, unsigned, int);
 typedef void (*send_fn)(void *, const unsigned char *, int, int);
 typedef void (*alloff_fn)(void *, int, void *, int);
 typedef void (*liveoff_fn)(void *, void *);
+typedef void (*start_fn)(void *, int, int);
 #define PARAM_ENUM   ((reg_enum_fn)0x0808C0D9u)   /* reg, id, title, labels, count, xml */
 #define PARAM_NUMBER ((reg_num_fn)0x0808C12Du)    /* reg, id, type, title, min, max, xml */
 #define PARAM_ADD    ((param_add_fn)0x08093EF7u)  /* bag, id, default */
 #define MIDI_SEND    ((send_fn)0x08044A0Fu)       /* (mgr, packet, DIN, USB): 3 bytes + length at +4 */
 #define ALL_OFF      ((alloff_fn)0x0805D56Du)     /* (player, offset, router, 1): offs for the step's notes */
 #define LIVE_OFF     ((liveoff_fn)0x0805E0F9u)    /* (player, router): offs for live notes (+0xC28) */
+#define PLAYER_START ((start_fn)0x0805CB65u)      /* Player_Start(player, transport, router) */
 
 #define PL_KEY       0x18
 #define PL_TAG       0x68
@@ -124,6 +143,10 @@ static const char t_last[] = "Last Ch:";
 static const char x_last[] = "mpelast";
 static const char t_bend[] = "PB Rng:";
 static const char x_bend[] = "mpebend";
+static const char t_loop[] = "Loop:";
+static const char x_loop[] = "seqloop";
+static const char s_on[] = "On";
+static const char *const loop_names[2] = {s_off, s_on};
 static const char t_pc[3][6] = {"Bank:", "Sub:", "Pgm:"};
 static const char x_pc[3][7] = {"pcbank", "pcsub", "pcpgm"};
 /* "---", "1" .. "128" */
@@ -176,6 +199,12 @@ void mpe_register(void *reg)
         p->sent = PC_NONE << 4;
     }
     S->magic = MP_MAGIC;
+    rb_bkp_enable();
+    B->magic = 0;
+    for (i = 0; i < N_PL; i++)
+        B->starts[i] = B->seen[i] = 0;
+    B->magic = MP_BKP_MAGIC;
+    PARAM_ENUM(reg, ID_LOOP, t_loop, loop_names, 2, x_loop);
     PARAM_ENUM(reg, ID_PORT, t_port, port_names, PORTS, x_port);
     PARAM_ENUM(reg, ID_MODE, t_mode, mode_names, MODES, x_mode);
     PARAM_NUMBER(reg, ID_LAST, 1, t_last, 1, 16, x_last);
@@ -198,6 +227,7 @@ void mpe_tpl_layer(void *bag, unsigned id, int def)
  * add of 0x88 (bl 0x0809441C): the sequence's MIDI out settings, then layer A's program change. */
 void mpe_tpl(void *bag, unsigned id, int def)
 {
+    PARAM_ADD(bag, ID_LOOP, 1);
     PARAM_ADD(bag, ID_PORT, PORT_BOTH);
     PARAM_ADD(bag, ID_MODE, MODE_OFF);
     PARAM_ADD(bag, ID_LAST, LAST_DEF);
@@ -242,7 +272,7 @@ int mpe_param(unsigned char *pl, void *router, const unsigned *msg)
     }
     if (id == ID_OUTCH)                                /* as stock's case: +0x44 = on, +0x69 = channel */
         p->outch = (unsigned char)clamp(value, 0, 16);
-    if ((msg[5] & 0xFFFF) != 0 && (id == ID_PORT || (id >= ID_MODE && id <= ID_BEND)))
+    if ((msg[5] & 0xFFFF) != 0 && (id == ID_PORT || (id >= ID_LOOP && id <= ID_BEND)))
         return 1;
     switch (id) {
     case ID_PORT:
@@ -257,11 +287,14 @@ int mpe_param(unsigned char *pl, void *router, const unsigned *msg)
     case ID_BEND:
         now = (now & ~(127u << 8)) | clamp(value, 0, BEND_MAX) << 8;
         break;
+    case ID_LOOP:
+        now = (now & 0x7FFFu) | (value ? 0u : 0x8000u);
+        break;
     default:
         handled = 0;
     }
     p->cfg = (unsigned short)now;
-    if (handled || id == ID_OUTCH || now != old)
+    if (((handled || id == ID_OUTCH) && id != ID_LOOP) || ((now ^ old) & 0x7FFFu))
         p->gen++;
     tag = TAG(idx, C_PORT(now), C_MODE(now));
     was = pl[PL_TAG];
@@ -445,7 +478,11 @@ void mpe_msg(const unsigned char *msg, const unsigned char *pcm)
         return;
     }
     layer = msg[0xC];
-    if (layer > 3 || (unsigned)(p->sent >> 4) == layer)
+    if (layer > 3)
+        return;
+    if (type == 0x4E && B->magic == MP_BKP_MAGIC && B->seen[idx] != B->starts[idx])
+        B->seen[idx] = B->starts[idx];                 /* the first pass after a start: always */
+    else if ((unsigned)(p->sent >> 4) == layer)
         return;
     p->sent = (unsigned char)((p->sent & 15) | layer << 4);
     pc = p->pc[layer];
@@ -466,4 +503,23 @@ void mpe_msg(const unsigned char *msg, const unsigned char *pcm)
         unsigned char pk[8] = {(unsigned char)(0xC0 | ch), (unsigned char)(pc[2] - 1u), 0, 0, 2};
         MIDI_SEND(MIDI_MGR, pk, din, usb);
     }
+}
+
+/* In place of `bl Player_Start` in the player's event loop (0x0805E9D2, 0x0805EA1A, 0x0805ED04, 0x0805EEDC,
+ * audio task): a launch, quantised or not, counts for the program change. */
+void mpe_player_start(unsigned char *pl, int transport, int router)
+{
+    int idx;
+    PLAYER_START(pl, transport, router);
+    if (live() && B->magic == MP_BKP_MAGIC && (idx = key_idx(*(unsigned *)(pl + PL_KEY))) >= 0)
+        B->starts[idx]++;
+}
+
+/* Player_Tick, right after a pass starts (its 0x4E post, mpe_pass_thunk; audio task). Loop Off: the
+ * stop request, so the pass ends the sequence. */
+void mpe_pass(unsigned char *pl)
+{
+    int idx;
+    if (live() && (idx = key_idx(*(unsigned *)(pl + PL_KEY))) >= 0 && C_ONCE(S->pl[idx].cfg))
+        pl[PL_STOP] = 1;
 }
