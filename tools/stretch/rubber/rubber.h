@@ -21,6 +21,8 @@ typedef int (*rb_boot_fn)(void);   /* 1 = started, 0 = not (out of memory) */
 typedef void (*rb_mix_fn)(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);
 typedef void (*rb_work_fn)(void);  /* the leaf's background task body, one wake (Bungee) */
 typedef int (*rb_lanes_fn)(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);   /* 1 = rendered */
+typedef void (*rb_master_fn)(unsigned op, unsigned l, unsigned r, unsigned n);   /* master chain stage */
+typedef unsigned (*rb_ui_fn)(unsigned op, unsigned a, unsigned b, unsigned c);   /* master chain UI */
 
 /* The first 32 bytes of bank 2 (one flash word). The loader writes it last. */
 typedef struct RbHeader {
@@ -40,6 +42,9 @@ typedef struct RbHeader {
 typedef struct RbExt {
     uint32_t lanes;       /* rb_lanes_fn | 1: render one lane of a Fill / Slice / Grain Clip */
     uint32_t pool_bytes;  /* SDRAM to allocate at boot (stock FUN_0804436C), 0 = none */
+    uint32_t master;      /* rb_master_fn | 1: one master chain stage on bus 0 (docs/master-chain.md),
+                             0 = none. Pairing by id keeps bank 1 and bank 2 on the same layout. */
+    uint32_t ui;          /* rb_ui_fn | 1: its drawing, called from the UI task directly, 0 = none */
 } RbExt;
 
 /* Voice header, SRAM4 (free on main; Capi used the same slot on warp-capi). */

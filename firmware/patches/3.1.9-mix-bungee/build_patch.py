@@ -56,6 +56,12 @@ DECK_ID_BASE = 0x1B0
 # And the Song DJ row (../3.1.9-song-dj: beatjump and autoloop on the Song screen), which steers Clip
 # Deck's units.
 DJ_DIR = HERE.parent / "3.1.9-song-dj"
+# And the master chain (docs/master-chain.md): its DSP links into bank 2 (RbExt.master), mixer.c
+# reaches it from the master render.
+MC = ROOT / "tools" / "master_chain"
+MC_SRC = [MC / "src" / "dsp" / f for f in ("mc_dsp.c", "mc_clr.c", "mc_cmp.c", "mc_max.c")] + \
+    [MC / "fw" / "mc_b2.c", MC / "fw" / "mc_ui.c"]
+MC_INC = ["-I", MC / "src" / "dsp", "-I", MC / "fw"]
 T = Path(os.environ.get("ARM_GNU", Path.home() / ".local" / "arm-gnu-15.3" / "bin"))
 GCC, GXX = T / "arm-none-eabi-gcc", T / "arm-none-eabi-g++"
 
@@ -79,9 +85,27 @@ if REPITCH:
 # --mx-safe (with --lineup): the Song DJ mixer without its audio taps (mx_comp_tap, mx_bus_tap, mx_eq_thunk), for
 # finding faults on the unit. The BPM setting and the Song screen stay. Images go to lineup/mx-safe/.
 MX_SAFE = LINEUP and "--mx-safe" in sys.argv
-MX_TAPS = {"mx_comp_tap", "mx_bus_tap", "mx_eq_thunk"}
+MX_TAPS = {"mx_comp_tap", "mx_bus_tap", "mx_eq_thunk", "mx_master"}
 if MX_SAFE:
     _sub = "mx-safe"
+    BUILD = BUNGEE / f"build-lineup-{_sub}"
+    ELF = BUILD / "bungee.elf"
+    OUT, OUT_B2, SYMS = (OUT.parent / _sub / OUT.name, OUT_B2.parent / _sub / OUT_B2.name,
+                         SYMS.parent / _sub / SYMS.name)
+    OUT.parent.mkdir(exist_ok=True)
+# --stock-cache (with --lineup): stock's 615 cache entries (no room for saving big presets), for A/B tests
+# on the unit. Images go to lineup/cache-stock/.
+STOCK_CACHE = LINEUP and "--stock-cache" in sys.argv
+# --no-mc-audio (with --lineup): everything of the master chain but its audio (stock compressor, EQ and the
+# Song DJ taps as before it), for A/B tests on the unit. Images go to lineup/mc-noaudio/.
+NO_MC_AUDIO = LINEUP and "--no-mc-audio" in sys.argv
+# --mc-nodsp: the master chain's hooks without bank 2's DSP calls; --mc-comp: the stock compressor not
+# skipped. A/B builds for the unit, in lineup/mc-nodsp/ and lineup/mc-comp/.
+MC_NODSP = LINEUP and "--mc-nodsp" in sys.argv
+MC_COMP = LINEUP and "--mc-comp" in sys.argv
+if STOCK_CACHE or NO_MC_AUDIO or MC_NODSP or MC_COMP:
+    _sub = ("cache-stock" if STOCK_CACHE else "mc-noaudio" if NO_MC_AUDIO else
+            "mc-nodsp" if MC_NODSP else "mc-comp")
     BUILD = BUNGEE / f"build-lineup-{_sub}"
     ELF = BUILD / "bungee.elf"
     OUT, OUT_B2, SYMS = (OUT.parent / _sub / OUT.name, OUT_B2.parent / _sub / OUT_B2.name,
@@ -109,7 +133,8 @@ LANE_SRC = [STRETCH / "beats.c", STRETCH / "granular.c"]
 LANE_DEFS = ["-DBEATS_NO_CLOUD", "-DBEATS_SHARED_SCRATCH", "-DBEATS_CACHE=32", "-DGRAN_FW_HANN", "-DGRAN_SRC=256",
              "-DGRAN_NO_TABLES", "-DBEATS_LOOP_GROW=24000"]
 if LINEUP:
-    B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", *LANE_SRC]
+    B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", *LANE_SRC,
+                   *MC_SRC, MC / "src" / "dsp" / "mc_dsp.h", MC / "fw" / "mc_fw.h"]
 BANK1_DEFS = ['-DRB_LABEL="Bungee"', f'-DRB_PAYLOAD_FILE="{PAYLOAD}.BIN"']
 BUNGEE_CXX = ["-std=c++20", "-fwrapv", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
               "-DBUNGEE_VISIBILITY=", "-DBUNGEE_SELF_TEST=0", "-DBUNGEE_NO_LOG", "-DBUNGEE_FIXED_PITCH",
@@ -145,7 +170,10 @@ def compile_all(rb_id):
     for src in bank1:
         o = BUILD / (src.stem + ".o")
         run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DSONG_CUES", "-DWITH_SONG_DJ"] if LINEUP else []),
-             "-I", BANK2, "-I", RUBBER, "-c", "-o", o, src])
+             *(["-DMX_CACHE_N=615u"] if STOCK_CACHE else []),
+             *(["-DMC_NO_AUDIO"] if NO_MC_AUDIO else []),
+             *(["-DMC_NO_DSP"] if MC_NODSP else []), *(["-DMC_KEEP_COMP"] if MC_COMP else []),
+             "-I", BANK2, "-I", RUBBER, *(MC_INC if LINEUP else []), "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]
     inc = ["-I", RUBBER, "-I", BG, "-I", BG / "submodules" / "eigen", "-I", CMSIS / "Include", "-I", STRETCH]
@@ -157,6 +185,10 @@ def compile_all(rb_id):
     for src in LANE_SRC if LINEUP else []:
         o = BUILD / ("ln_" + src.stem + ".o")
         run([GCC, *BANK2_FLAGS, *LANE_DEFS, "-I", STRETCH, "-c", "-o", o, src])
+        objs.append(o)
+    for src in MC_SRC if LINEUP else []:
+        o = BUILD / ("mc_" + src.stem + ".o")
+        run([GCC, *BANK2_FLAGS, "-std=c11", "-Wall", *MC_INC, "-c", "-o", o, src])
         objs.append(o)
     o = BUILD / "rt.o"
     run([GCC, *BANK2_FLAGS, "-c", "-o", o, BUNGEE / "rt.c"])
@@ -171,7 +203,7 @@ def compile_all(rb_id):
 
 def bank1_has_no_ram(objs):
     """Cave code has nowhere to keep .data/.bss: they would land in bank 2's SRAM1 block."""
-    for o in objs[:6 if LINEUP else 4]:
+    for o in objs[:7 if LINEUP else 4]:   # the cave object, then the bank-1 C (compile_all's order)
         out = subprocess.check_output([str(T / "arm-none-eabi-size"), "-A", str(o)], text=True)
         for line in out.splitlines():
             parts = line.split()
@@ -297,6 +329,8 @@ def add_rubber_sites(stock):
         mix.SITES.extend(sites)
         mix.VTABLE.extend(vtable)
         mix.BYTES.extend(dj.BYTES)
+        if not STOCK_CACHE:
+            mix.BYTES.extend(dj.cache_bytes(stock))
         # Master moves from the Tools tabs to the FX row (fxret.S, dj.c): Tools keeps its 4 tabs.
         mix.WORDS[:] = [w for w in mix.WORDS if w[0] != 0x080EEE90]
         mix.SITES.extend(SONG_SITES)

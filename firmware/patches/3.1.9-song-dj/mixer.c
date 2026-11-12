@@ -18,7 +18,7 @@
  * until neither a DJ loop nor an audio loop is left. 131 cache entries (64 KB each: 128 for the audio,
  * 2 for the tick anchors, 1 scratch) are taken in pcmStreamer's own task (mx_stream_poll) the way
  * stock takes one for a block (FUN_08071D64), marked reserved (state 3, no wave), and given back as
- * stock frees them. The rest of the time the cache is stock's 615 entries.
+ * stock frees them. The rest of the time the cache has all its 567 entries (stock 615, sites.py).
  *
  * Capture (BACK with the DJ row's Loop on, dj.c): the DJ loop is switched off at once, so the project
  * plays its pass to the end W and on past it. The audio loop is the last pass [W - L, W), already in
@@ -44,8 +44,12 @@
 #define PEAKS_OFF    (2 * BLOCK * 4)   /* scratch half 0: lp / rp, then one peak byte per ring block */
 #define PROJ_N       4096u     /* project peaks kept (dj.c's buffer): ~43.7 s, the ring's span */
 #define PROJ_PARTS   4         /* 128-frame parts per project peak: ~10.7 ms */
-#define CACHE        0x2400A9C0u   /* sample manager (pcmStreamer's object): 615 entries of 0x1C */
-#define CACHE_N      0x267u
+#define CACHE        0x2400A9C0u   /* sample manager (pcmStreamer's object): entries of 0x1C */
+#ifdef MX_CACHE_N
+#define CACHE_N      MX_CACHE_N   /* build_patch.py --stock-cache */
+#else
+#define CACHE_N      567u     /* sites.py CACHE_N: stock's 615 less 48, room for saving */
+#endif
 #define C_LBUF       0x04          /* entry: float L[8192] */
 #define C_RBUF       0x08          /* entry: float R[8192] */
 #define C_BLOCK      0x0C
@@ -302,8 +306,11 @@ static int ready(void) { return M->have == H_READY; }
 /* SessionMgr_FinalizeBankLoading 0x0809CE82: a loaded preset's BPM (0x84) and Swing go to the
  * engine's tempo node. With BPM Global, or an audio loop held, the BPM stays: the preset's value
  * is replaced in the session bag by the one playing, so the screen and the next save show it. */
+void mc_preset_load(void);
+
 void mx_bpm_send(void *eng, unsigned key, unsigned id, int value, int a4, int a5)
 {
+    mc_preset_load();
     if (id == ID_TEMPO && live() && (M->bpm_keep || M->state != ST_IDLE)) {
         unsigned char *se = SE;
         if (se) {
@@ -327,16 +334,22 @@ static const char s_project[] = "Project";
 static const char s_global[] = "Global";
 static const char *const bpmg_names[2] = {s_project, s_global};
 
-/* Param_RegisterAll tail (deck_register): Tools -> Clock "BPM: Project / Global". */
+void mc_register(void *reg);
+void mc_global_tpl(void *bag);
+
+/* Param_RegisterAll tail (deck_register): Tools -> Clock "BPM: Project / Global", and the master
+ * chain's parameters. */
 void mx_register(void *reg)
 {
     PARAM_ENUM(reg, ID_BPMG, t_bpmg, bpmg_names, 2, x_bpmg);
+    mc_register(reg);
 }
 
 /* Global bag template, last add (seqrec_global_tpl): default Project. Saved in settings.tml. */
 void mx_global_tpl(void *bag)
 {
     PARAM_ADD(bag, ID_BPMG, 0);
+    mc_global_tpl(bag);
 }
 
 /* SessionMgr_LoadBank 0x0809E258 (msg 0x36, first thing a load does): the held loop stops
@@ -412,13 +425,18 @@ static void pos_of(long long rq, unsigned *blk, float *off)
     *off = f * BLOCK;
 }
 
+/* The ring holds int16 at 1/RING_HEAD of full scale: the master bus before MAX (or without the stock
+ * compressor's -4 dB and 4:1 in front) runs well over 0 dBFS, and clamping it there crushed the loop.
+ * 18 dB of headroom leaves ~78 dB below it, plenty for a DJ loop. */
+#define RING_HEAD    8.0f
+
 static void ring_put(const float *l, const float *r, int n)
 {
     unsigned *o = word((M->wblk & RING_MASK) * BLOCK);   /* a block never spans two halves */
     float pk = 0;
     int i;
     for (i = 0; i < n && i < BLOCK; i++) {
-        float a = l[i] * 32767.0f, c = r[i] * 32767.0f;
+        float a = l[i] * (32767.0f / RING_HEAD), c = r[i] * (32767.0f / RING_HEAD);
         float al = l[i] < 0 ? -l[i] : l[i], ar = r[i] < 0 ? -r[i] : r[i];
         pk = al > pk ? al : pk;
         pk = ar > pk ? ar : pk;
@@ -439,8 +457,8 @@ static void frame(unsigned fr, float t, float *l, float *r)
     unsigned w0 = *word(fr), w1 = *word(fr + 1);
     float l0 = (short)(w0 & 0xFFFF), l1 = (short)(w1 & 0xFFFF);
     float r0 = (short)(w0 >> 16), r1 = (short)(w1 >> 16);
-    *l = (l0 + (l1 - l0) * t) * (1.0f / 32768.0f);
-    *r = (r0 + (r1 - r0) * t) * (1.0f / 32768.0f);
+    *l = (l0 + (l1 - l0) * t) * (RING_HEAD / 32768.0f);
+    *r = (r0 + (r1 - r0) * t) * (RING_HEAD / 32768.0f);
 }
 
 /* n samples of the window from tick rq (TQ), added into lp/rp at weight w0 + k * dw (held in 0..1).
@@ -791,18 +809,28 @@ typedef int (*proc_fn)(void *, void *);
 /* A node's process (vt +0x0C): the EQ node, the FX container, an FX slot. */
 static void proc(void *obj, void *se) { ((proc_fn)(*(void *const *const *)obj)[3])(obj, se); }
 
+int mc_chain_off(void);
+
 /* 0x08053522 (mx_eq_thunk) in the master render: the master EQ node, which ends by processing its
- * next stage, the DJ FX container. That is left out here; our tap runs the FX after the compressor. */
+ * next stage, the DJ FX container. That is left out here; our tap runs the FX after the compressor.
+ * With the master chain switched off (bank 2 running), the EQ is part of what is off: only its next
+ * stage runs. */
 void mx_eq(void *node, unsigned char *se)
 {
     unsigned *nd = (unsigned *)node, fx = nd[2];
+    int off = mc_chain_off();
     if (!live() || !M->fxb || fx != (unsigned)(se + SE_FX)) {
-        proc(node, se);
+        if (!off)
+            proc(node, se);
+        else if (fx)
+            proc((void *)fx, se);
         return;
     }
-    nd[2] = 0;
-    proc(node, se);
-    nd[2] = fx;
+    if (!off) {
+        nd[2] = 0;
+        proc(node, se);
+        nd[2] = fx;
+    }
     M->fx_due = 1;
 }
 
@@ -1162,4 +1190,399 @@ void mx_wave_done(void)
     dmb();
     if (live())
         M->ui_busy = 0;
+}
+
+/* ---- the master chain (docs/master-chain.md) ----
+ *
+ * EQ -> CLR -> CMP -> [loop capture + DJ FX] -> MAX, the DSP in bank 2 (RbExt.master,
+ * tools/master_chain/fw/mc_b2.c). The stock compressor and its limiter are skipped (mc_comp_skip,
+ * master.S); with the chain on, mx_master runs it on bus 0 where the master render copies it to the
+ * recorder's resample input, so resampling records what is heard. With the chain off there is no
+ * master processing (mx_eq skips the EQ too): the Song DJ block, then the stock limiter model as a
+ * safety. With bank 2 not running, everything is stock. */
+
+#include "rubber.h"
+#include "mc_fw.h"
+
+int rb_ready(void);
+unsigned rb_call_on_stack(unsigned fn, unsigned a, unsigned b, unsigned c, unsigned d);
+#ifdef MC_NO_DSP
+#define MC_DSP(fn, op, l, r, n) ((void)0)   /* build_patch.py --mc-nodsp */
+#else
+#define MC_DSP(fn, op, l, r, n) rb_call_on_stack(fn, op, l, r, n)
+#endif
+
+typedef char mc_after_mx[(MX_BASE + sizeof(MxState) <= MC_SHARED_ADDR) ? 1 : -1];
+
+/* Never registered in stock and used by no patch (docs/master-chain.md "Parameters") */
+enum {
+    MC_CHAIN = 0x13D, MC_TYPE, MC_SIDEPASS, MC_GLUE, MC_SCOPE, MC_SKRONK, MC_GIRTH, MC_DRIVE,
+    MC_SQUISH, MC_BLOOM, MC_OUTPUT, MC_MIX, MC_MAXIMIZE, MC_RELX
+};
+typedef char mc_ids_end[(MC_RELX == 0x14A) ? 1 : -1];
+#define MC_VALUES   0x14C                     /* Values: Global / Preset (0x14B is a UI event code) */
+/* the stock compressor and limiter ids master.S exposes (CMP's Stock type, the chain off) */
+#define ID_C_ATK    0x12F
+#define ID_C_REL    0x130
+#define ID_C_THR    0x131
+#define ID_C_RATIO  0x132
+#define ID_C_GAIN   0x13A
+#define ID_L_ATK    0x1A8
+#define ID_L_REL    0x1A9
+
+typedef void (*reg_int_fn)(void *, unsigned, unsigned, const char *, int, int, const char *);
+typedef void (*copy_fn)(void *, void *);
+#define PARAM_INT   ((reg_int_fn)0x0808C12Du) /* reg, id, fmt, title, min, max, xml */
+#define BUS_COPY    ((copy_fn)0x0804D881u)    /* (dst, src): the resample input copy at 0x0805353A */
+#define FMT_TOGGLE  4
+#define FMT_1000    8                         /* 0..1000 */
+
+static const char t_chain[] = "Chain:", x_chain[] = "mcchain";
+static const char t_type[] = "Type:", x_type[] = "mctype";
+static const char s_squish[] = "Squish", s_stock[] = "Stock";
+static const char *const type_names[2] = {s_squish, s_stock};
+static const char t_relx[] = "Rel x:", x_relx[] = "mcrelx";
+static const char t_values[] = "Values:", x_values[] = "mcvalues";
+static const char s_vglobal[] = "Global", s_vpreset[] = "Preset";
+static const char *const values_names[2] = {s_vglobal, s_vpreset};
+static const char s_x05[] = "x0.5", s_x1[] = "x1", s_x2[] = "x2";
+static const char *const relx_names[3] = {s_x05, s_x1, s_x2};
+
+/* 0..1000 controls: id, title, xml name, default (the plugin's mc_default_params) */
+typedef struct { unsigned short id, def; const char *title, *xml; } McCtl;
+static const char t_sidepass[] = "Sidepass:", x_sidepass[] = "mcsidepass";
+static const char t_glue[] = "Glue:", x_glue[] = "mcglue";
+static const char t_scope[] = "Scope:", x_scope[] = "mcscope";
+static const char t_skronk[] = "Skronk:", x_skronk[] = "mcskronk";
+static const char t_girth[] = "Girth:", x_girth[] = "mcgirth";
+static const char t_drive[] = "Drive:", x_drive[] = "mcdrive";
+static const char t_squish[] = "Squish:", x_squish[] = "mcsquish";
+static const char t_bloom[] = "BassBlm:", x_bloom[] = "mcbassblm";
+static const char t_output[] = "Output:", x_output[] = "mcoutput";
+static const char t_mix[] = "Dry/Wet:", x_mix[] = "mcdrywet";
+static const char t_max[] = "Maximize:", x_max[] = "mcmaximize";
+static const McCtl mc_ctls[] = {
+    {MC_SIDEPASS, 300, t_sidepass, x_sidepass}, {MC_GLUE, 300, t_glue, x_glue},
+    {MC_SCOPE, 500, t_scope, x_scope}, {MC_SKRONK, 500, t_skronk, x_skronk},
+    {MC_GIRTH, 500, t_girth, x_girth}, {MC_DRIVE, 500, t_drive, x_drive},
+    {MC_SQUISH, 400, t_squish, x_squish}, {MC_BLOOM, 300, t_bloom, x_bloom},
+    {MC_OUTPUT, 1000, t_output, x_output}, {MC_MIX, 1000, t_mix, x_mix},
+    {MC_MAXIMIZE, 650, t_max, x_max},
+};
+#define MC_NCTL ((int)(sizeof mc_ctls / sizeof mc_ctls[0]))
+
+/* Values: the stored ids (global set + every preset's session) and their defaults; the global set
+ * kept aside while Values = Preset lives at MC_STORE + i (settings.tml, no widget). */
+#define MC_STORE    0x15A
+#define MC_NSTORED  19
+typedef char mc_mirror_fits[(MC_NSTORED <= MC_MIRROR_N) ? 1 : -1];
+static const unsigned short mc_stored[MC_NSTORED + 1] = {
+    MC_CHAIN, MC_TYPE, MC_SIDEPASS, MC_GLUE, MC_SCOPE, MC_SKRONK, MC_GIRTH, MC_DRIVE, MC_SQUISH,
+    MC_BLOOM, MC_OUTPUT, MC_MIX, MC_MAXIMIZE, MC_RELX, ID_C_THR, ID_C_RATIO, ID_C_ATK, ID_C_REL, ID_C_GAIN, 0
+};
+static const short mc_stored_def[MC_NSTORED] = {
+    0, 0, 300, 300, 500, 500, 500, 500, 400, 300, 1000, 1000, 650, 1, -4000, 4, 10, 250, -4000
+};
+static const char mc_store_xml[MC_NSTORED][6] = {
+    "mcg00", "mcg01", "mcg02", "mcg03", "mcg04", "mcg05", "mcg06", "mcg07", "mcg08", "mcg09",
+    "mcg10", "mcg11", "mcg12", "mcg13", "mcg14", "mcg15", "mcg16", "mcg17", "mcg18"
+};
+typedef char mc_store_fits[(MC_STORE + MC_NSTORED - 1 < 0x16F) ? 1 : -1];   /* 0x16F: a UI event code */
+
+void mc_register(void *reg)
+{
+    int i;
+    for (i = 0; i < MC_NSTORED; i++)
+        PARAM_INT(reg, MC_STORE + i, 0x10, 0, -50000, 50000, mc_store_xml[i]);
+    PARAM_INT(reg, MC_CHAIN, FMT_TOGGLE, t_chain, 0, 1, x_chain);
+    PARAM_ENUM(reg, MC_TYPE, t_type, type_names, 2, x_type);
+    PARAM_ENUM(reg, MC_RELX, t_relx, relx_names, 3, x_relx);
+    PARAM_ENUM(reg, MC_VALUES, t_values, values_names, 2, x_values);
+    for (i = 0; i < MC_NCTL; i++)
+        PARAM_INT(reg, mc_ctls[i].id, FMT_1000, mc_ctls[i].title, 0, 1000, mc_ctls[i].xml);
+}
+
+/* Global values (settings.tml). The chain starts off: switching it on is a choice on the MAX page. */
+void mc_global_tpl(void *bag)
+{
+    int i;
+    PARAM_ADD(bag, MC_CHAIN, 0);
+    PARAM_ADD(bag, MC_TYPE, 0);
+    PARAM_ADD(bag, MC_RELX, 1);
+    PARAM_ADD(bag, MC_VALUES, 0);
+    for (i = 0; i < MC_NSTORED; i++)
+        PARAM_ADD(bag, MC_STORE + i, mc_stored_def[i]);
+    for (i = 0; i < MC_NCTL; i++)
+        PARAM_ADD(bag, mc_ctls[i].id, mc_ctls[i].def);
+}
+
+static float clampf_(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+/* bank 2's master stage function, 0 = not running (no payload, not booted, too slow) */
+static unsigned mc_fn(void)
+{
+    const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
+    if (!rb_ready() || !h->ext)
+        return 0;
+    return ((const volatile RbExt *)h->ext)->master;
+}
+
+/* Neutral values until the first read of the bag: the chain off, the stock settings. */
+static void mc_shared_init(McShared *s)
+{
+    unsigned char *p = (unsigned char *)s;
+    unsigned i;
+    for (i = 0; i < sizeof *s; i++)
+        p[i] = 0;
+    s->p.clr_sidepass = 0.3f; s->p.clr_glue = 0.3f;
+    s->p.clr_scope = s->p.clr_skronk = s->p.clr_girth = s->p.clr_drive = 0.5f;
+    s->p.sq_squish = 0.4f; s->p.sq_bassbloom = 0.3f; s->p.sq_output = 1.0f; s->p.sq_mix = 1.0f;
+    s->p.comp_gain_db = -4.0f; s->p.comp_thresh_db = -4.0f; s->p.comp_ratio = 4.0f;
+    s->p.comp_attack_ms = 10.0f; s->p.comp_release_ms = 250.0f;
+    s->p.lim_attack_ms = 4.0f; s->p.lim_release_ms = 750.0f;
+    s->p.max_amount = 0.65f; s->p.max_relx = 1.0f;
+    dmb();
+    s->magic = MC_SHARED_MAGIC;
+}
+
+/* The bag's values into s->p, one pass over its rows {u16 id, pad, s32 value} at bag+4, count at
+ * +0xA. A row missing for a moment (a load re-templating the bag) keeps the last value. */
+static void mc_sync(McShared *s)
+{
+    unsigned char *bag = (unsigned char *)GLOBAL_BAG, *rows = *(unsigned char **)(bag + 4);
+    unsigned n = *(unsigned short *)(bag + 0xA), i;
+    McParams *p = &s->p;
+    if (!rows)
+        return;
+    for (i = 0; i < n; i++) {
+        unsigned id = *(unsigned short *)(rows + 8 * i);
+        int v = *(int *)(rows + 8 * i + 4);
+        float f = (float)v;
+        switch (id) {
+        case MC_CHAIN: p->chain_on = v ? 1.0f : 0.0f; break;
+        case MC_TYPE: p->cmp_type = v ? 1.0f : 0.0f; break;
+        case MC_RELX: p->max_relx = clampf_(f, 0.0f, 2.0f); break;
+        case MC_SIDEPASS: p->clr_sidepass = clampf_(f * 0.001f, 0, 1); break;
+        case MC_GLUE: p->clr_glue = clampf_(f * 0.001f, 0, 1); break;
+        case MC_SCOPE: p->clr_scope = clampf_(f * 0.001f, 0, 1); break;
+        case MC_SKRONK: p->clr_skronk = clampf_(f * 0.001f, 0, 1); break;
+        case MC_GIRTH: p->clr_girth = clampf_(f * 0.001f, 0, 1); break;
+        case MC_DRIVE: p->clr_drive = clampf_(f * 0.001f, 0, 1); break;
+        case MC_SQUISH: p->sq_squish = clampf_(f * 0.001f, 0, 1); break;
+        case MC_BLOOM: p->sq_bassbloom = clampf_(f * 0.001f, 0, 1); break;
+        case MC_OUTPUT: p->sq_output = clampf_(f * 0.001f, 0, 1); break;
+        case MC_MIX: p->sq_mix = clampf_(f * 0.001f, 0, 1); break;
+        case MC_MAXIMIZE: p->max_amount = clampf_(f * 0.001f, 0, 1); break;
+        case ID_C_THR: p->comp_thresh_db = clampf_(f * 0.001f, -48.0f, 0.0f); break;
+        case ID_C_RATIO: p->comp_ratio = clampf_(f, 1.0f, 100.0f); break;
+        case ID_C_ATK: p->comp_attack_ms = clampf_(f, 0.1f, 10000.0f); break;
+        case ID_C_REL: p->comp_release_ms = clampf_(f, 1.0f, 10000.0f); break;
+        case ID_C_GAIN: p->comp_gain_db = clampf_(f * 0.001f, -36.0f, 36.0f); break;
+        case ID_L_ATK: p->lim_attack_ms = clampf_(f, 0.1f, 10000.0f); break;
+        case ID_L_REL: p->lim_release_ms = clampf_(f, 1.0f, 10000.0f); break;
+        default: break;
+        }
+    }
+    s->seq++;
+}
+
+static float mc_tempo(void)
+{
+    unsigned char *se = SE;
+    float bpm = se ? *(volatile float *)(se + SE_TEMPO) : 0.0f;
+    return bpm >= 20.0f && bpm <= 400.0f ? bpm : 0.0f;
+}
+
+/* master.S master_comp (0x08053CA0, compressor on): 1 = skip the stock compressor and its limiter.
+ * Only with the chain on, which has CMP (Squish or the stock compressor model) and MAX. With the chain
+ * off the stock compressor runs as ever when it is switched on (Tools -> Master), the Song DJ block
+ * inside it (mx_comp_tap), and mx_master's limiter model after it. Skipping it there sent the bus
+ * 4-10 dB hotter into the DJ block and the safety limiter, whose per-block gain steps then sounded
+ * metallic (2026-11-11, on the unit). */
+int mc_comp_skip(void)
+{
+    McShared *s = MC_SHARED;
+#if defined(MC_NO_AUDIO) || defined(MC_KEEP_COMP)
+    return 0 * (int)(unsigned)s;
+#endif
+    return mc_fn() && s->magic == MC_SHARED_MAGIC && s->p.chain_on > 0.5f;
+}
+
+/* mx_eq: bank 2 running and the chain switched off. */
+int mc_chain_off(void)
+{
+    McShared *s = MC_SHARED;
+#ifdef MC_NO_AUDIO
+    return 0 * (int)(unsigned)s;
+#endif
+    return mc_fn() && s->magic == MC_SHARED_MAGIC && s->p.chain_on < 0.5f;
+}
+
+/* 0x0805353A in the master render: was bl FUN_0804D880(SE+0x15864, bus 0), bus 0 copied after the
+ * compressor and before the Song DJ block (mx_bus_tap). Voices read that copy back into the next
+ * block's mix (0x08062784), so it is taken where stock takes it: after CLR + CMP (the compressor's
+ * place), before the DJ block and MAX. Taken after them, the loop and the DJ FX came round again
+ * one block later: a comb filter, a metallic sound (2026-11-11, on the unit).
+ * With the chain on: CLR + CMP, the copy, the Song DJ block (capture, DJ FX), MAX. */
+void mx_master(void *dst, void *bus)
+{
+    McShared *s = MC_SHARED;
+    unsigned fn = mc_fn();
+#ifdef MC_NO_AUDIO
+    fn = 0;                                       /* build_patch.py --no-mc-audio: the copy only */
+#endif
+    if (fn) {
+        if (s->magic != MC_SHARED_MAGIC)
+            mc_shared_init(s);
+        if ((s->tick++ & 7u) == 0)
+            mc_sync(s);
+        if (s->p.chain_on > 0.5f) {
+            float *l = 0, *r = 0;
+            int n;
+            if (!s->was_on) {
+                MC_DSP(fn, MC_OP_RESET, 0, 0, 0);
+                s->was_on = 1;
+            }
+            s->bpm = mc_tempo();
+            BUS_LR(bus, &l, &r);
+            n = BUS_LEN(bus);
+            if (l && r && n > 0) {
+                MC_DSP(fn, MC_OP_PRE, (unsigned)l, (unsigned)r, (unsigned)n);
+                BUS_COPY(dst, bus);
+                dst = 0;
+                if (live() && !M->done) {         /* not run in the compressor already */
+                    mx_block(l, r, n);
+                    M->done = 1;                  /* mx_bus_tap: already done */
+                }
+                MC_DSP(fn, MC_OP_MAX, (unsigned)l, (unsigned)r, (unsigned)n);
+            }
+        } else {
+            /* the chain off: no master processing, the Song DJ block, then the stock limiter model as
+             * a safety (the stock compressor, which holds stock's limiter, is skipped either way) */
+            float *l = 0, *r = 0;
+            int n;
+            s->was_on = 0;
+            BUS_LR(bus, &l, &r);
+            n = BUS_LEN(bus);
+            if (l && r && n > 0) {
+                BUS_COPY(dst, bus);
+                dst = 0;
+                if (live() && !M->done) {         /* not run in the compressor already */
+                    mx_block(l, r, n);
+                    M->done = 1;
+                }
+                MC_DSP(fn, MC_OP_LIMIT, (unsigned)l, (unsigned)r, (unsigned)n);
+            }
+        }
+    }
+    if (dst)
+        BUS_COPY(dst, bus);
+}
+
+/* ---- Values: Global / Preset ----
+ * The chain's live values are always the global bag's (the knobs write there, mx_master reads it).
+ * Each preset also carries them in its session bag (preset.xml): the session template adds them, a
+ * preset without them gets the current global values. With Values = Preset a load copies them
+ * into the live values (mc_preset_load) and knob edits are mirrored back (mc_values_tick), so a save keeps
+ * them; with Global, presets leave the live values alone. */
+
+static int mc_per_preset(void) { return PARAM_GET(GLOBAL_BAG, MC_VALUES) != 0; }
+
+/* bl site 0x08094500, Param_BagTemplate case 0x1F (session), its last add: then ours, seeded from
+ * the global set (kept aside at MC_STORE while Values = Preset). */
+void mc_session_tpl(void *bag, unsigned id, int value)
+{
+    int i, pp = mc_per_preset();
+    PARAM_ADD(bag, id, value);
+    for (i = 0; i < MC_NSTORED; i++)
+        PARAM_ADD(bag, mc_stored[i], PARAM_GET(GLOBAL_BAG, pp ? MC_STORE + i : mc_stored[i]));
+}
+
+/* mx_bpm_send: FinalizeBankLoading's loop over the loaded session (0x0809CE86) passes on only BPM,
+ * Swing and 0xC2, so it is the load's hook, not a row filter. With Values = Preset the loaded
+ * preset's values become the live ones here. The mirror then starts from them, so only a later
+ * knob edit goes back into the session. Runs up to three times per load: idempotent. */
+void mc_preset_load(void)
+{
+    McShared *s = MC_SHARED;
+    int i, v;
+    if (s->magic != MC_SHARED_MAGIC || !mc_per_preset())
+        return;
+    for (i = 0; i < MC_NSTORED; i++) {
+        v = PARAM_GET(SESSION_BAG, mc_stored[i]);
+        PARAM_SET(GLOBAL_BAG, mc_stored[i], v);
+        s->mirror[i] = v;
+    }
+    s->mirror_ok = 1;
+}
+
+#define PRESET_EDITED (0x24020088u + 0x8CC4u)   /* App: the preset has unsaved edits (App_SetParam 0x080A028C) */
+
+typedef void (*save_settings_fn)(void *, const char *, void *);
+#define SAVE_SETTINGS ((save_settings_fn)0x08090CBDu)   /* PresetMgr_RequestSaveSettings(pm, name, bag) */
+#define PM_OBJ      ((void *)0x2401F508u)
+#define S_SETTINGS  ((const char *)0x080CF300u)       /* the name App_SetParam passes */
+
+/* UI task (dj.c, the Return page's tick), where Values is switched (MAX):
+ *   Global -> Preset: the global set is kept aside (MC_STORE), the preset's values become live;
+ *   Preset -> Global: the global set comes back.
+ * With Values = Preset the session bag follows the live values, so a save keeps them.
+ * Returns 1 after a switch: the knobs hold the values from before it, so the page is rebuilt. */
+int mc_values_tick(void)
+{
+    McShared *s = MC_SHARED;
+    int i, pp = mc_per_preset(), v, switched = 0;
+    if (s->magic != MC_SHARED_MAGIC)
+        return 0;
+    if (s->values_known && s->values_last != pp) {
+        for (i = 0; i < MC_NSTORED; i++) {
+            if (pp) {
+                PARAM_SET(GLOBAL_BAG, MC_STORE + i, PARAM_GET(GLOBAL_BAG, mc_stored[i]));
+                PARAM_SET(GLOBAL_BAG, mc_stored[i], s->mirror[i] = PARAM_GET(SESSION_BAG, mc_stored[i]));
+            } else {
+                PARAM_SET(GLOBAL_BAG, mc_stored[i], PARAM_GET(GLOBAL_BAG, MC_STORE + i));
+            }
+        }
+        s->mirror_ok = (unsigned char)pp;
+        SAVE_SETTINGS(PM_OBJ, S_SETTINGS, GLOBAL_BAG);
+        switched = 1;
+    }
+    s->values_last = (unsigned char)pp;
+    s->values_known = 1;
+    if (!pp)
+        return switched;
+    for (i = 0; i < MC_NSTORED; i++) {          /* a knob edit since the load or the last look */
+        v = PARAM_GET(GLOBAL_BAG, mc_stored[i]);
+        if (s->mirror_ok && v != s->mirror[i]) {
+            PARAM_SET(SESSION_BAG, mc_stored[i], v);
+            *(volatile unsigned char *)PRESET_EDITED = 1;   /* Save lights up, as for any preset edit */
+        }
+        s->mirror[i] = v;
+    }
+    s->mirror_ok = 1;
+    return switched;
+}
+
+/* For the UI (dj.c): bank 2's drawing entry (RbExt.ui), called directly on the UI task, 0 = none. */
+unsigned mc_ui_fn(void)
+{
+    const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
+    if (!rb_ready() || !h->ext)
+        return 0;
+    return ((const volatile RbExt *)h->ext)->ui;
+}
+
+/* BACK on CMP / MAX: bank 2 clears the max-reduction holds at its next block. */
+void mc_hold_reset(void)
+{
+    McShared *s = MC_SHARED;
+    if (s->magic == MC_SHARED_MAGIC)
+        s->hold_req++;
+}
+
+/* For the UI: the meters bank 2 wrote, 0 when the chain is not running. */
+const McMeters *mc_meters(void)
+{
+    McShared *s = MC_SHARED;
+    return mc_fn() && s->magic == MC_SHARED_MAGIC ? &s->m : 0;
 }

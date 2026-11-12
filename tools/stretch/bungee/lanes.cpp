@@ -96,8 +96,12 @@ struct Pool {
 struct RbExtInit {
     rb_lanes_fn lanes;
     uint32_t pool_bytes;
+    rb_master_fn master;  /* tools/master_chain/fw/mc_b2.c */
+    rb_ui_fn ui;          /* tools/master_chain/fw/mc_ui.c */
 };
-extern "C" __attribute__((used)) const RbExtInit rb_ext = { rubber_lanes, sizeof(Pool) };
+extern "C" void mc_b2_run(unsigned op, unsigned l, unsigned r, unsigned n);
+extern "C" unsigned mc_b2_ui(unsigned op, unsigned a, unsigned b, unsigned c);
+extern "C" __attribute__((used)) const RbExtInit rb_ext = { rubber_lanes, sizeof(Pool), mc_b2_run, mc_b2_ui };
 
 static Pool *pool()
 {

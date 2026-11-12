@@ -71,6 +71,11 @@ fxret_on_event:
     add.w   r0, r4, #FXR_BAR        @ bar along the bottom edge, like the pad page tabs
     adr     r1, fxr_bar_rect
     call    W_SETRECT
+.ifdef WARP_LINEUP
+    mov     r0, r4                  @ 3.1.T: DLY RVB AUX EQ CLR CMP MAX, and the master chain's
+    bl      mc_ret_row              @ knobs on CLR / CMP / MAX (song-dj/dj.c)
+    b       9f
+.endif
     movs    r6, #0
 1:
     adr     r0, fxr_btns
@@ -93,8 +98,9 @@ fxret_on_event:
 9:
     pop     {r4, r5, r6, pc}
 
-@ fx_row_button(button r0, position r1 (0..3), lit r2): place one button of the bottom row
-@ (A Delay | B Reverb | EQ | empty), with id 0x7A0 + position, its label and highlight.
+@ fx_row_button(button r0, position r1, lit r2): place one button of the bottom row
+@ (A Delay | B Reverb | EQ | empty; 3.1.T: DLY RVB AUX EQ CLR CMP MAX), with id 0x7A0 +
+@ position, its label and highlight.
 .thumb_func
 fx_row_button:
     push    {r4, r5, r6, lr}
@@ -138,13 +144,13 @@ fxr_btns:
     .hword  FXR_TABS + 2 * FXR_TAB_SZ, FXR_TABS + FXR_TAB_SZ, FXR_TABS, 0x3AC
 fxr_labels:
 .ifdef WARP_LINEUP
-    .word   s_ra_short, s_rb_short, s_eq, s_master_tab  @ 3.1.T: Master (Tools page 4) next to EQ
+    .word   s_dly, s_rvb, s_aux, s_eq, s_clr, s_cmp, s_max   @ 3.1.T: the master chain (docs/master-chain.md)
 .else
     .word   s_ra, s_rb, s_eq, s_none
 .endif
 fxr_x:                              @ button edges: labels are 12 px per character
 .ifdef WARP_LINEUP
-    .hword  0, 80, 160, 240, 320    @ A Dly | B Rvb | EQ | Master, 80 px each
+    .hword  0, 46, 92, 138, 184, 230, 276, 320   @ 7 x 46 px: 3 letters of 12 px fit
 .else
     .hword  0, 104, 216, 268, 320
 .endif
@@ -162,25 +168,40 @@ fxret_child_event:
     ldr     r2, [r1, #0xC]
     movw    r3, #FXR_ID
     subs    r2, r2, r3
-    cmp     r2, #3
-    bhi     9f
 .ifdef WARP_LINEUP
+    cmp     r2, #6
+    bhi     9f
+    cmp     r2, #2                  @ AUX: not yet (a third / external send)
+    bne     3f
+    movs    r0, #0
+    bx      lr
+3:
+    cmp     r2, #4                  @ CLR CMP MAX: the master chain's knobs (dj.c)
+    blo     4f
+    push    {r4, lr}
+    mov     r0, r2
+    bl      mc_row_press
+    movs    r0, #0
+    pop     {r4, pc}
+4:
     push    {r4, lr}
     ldr     r0, =APP
-    movs    r1, #0x29               @ Master: Tools page 4, shown with this row (dj.c)
+    movs    r1, #0x36               @ EQ
     cmp     r2, #3
     beq     1f
 .else
+    cmp     r2, #3
+    bhi     9f
     bne     2f
     movs    r0, #0                  @ the empty fourth button does nothing
     bx      lr
 2:
     push    {r4, lr}
     ldr     r0, =APP
-.endif
     movs    r1, #0x36
     cmp     r2, #2
     beq     1f
+.endif
     movw    r1, #0x300
     add.w   r1, r1, r2, lsl #4
     strh    r1, [r0, #APP_FXKEY]
@@ -207,6 +228,12 @@ s_eq: .asciz "EQ"
 s_none: .asciz ""
 .ifdef WARP_LINEUP
 s_master_tab: .asciz "Master"
+s_dly: .asciz "DLY"
+s_rvb: .asciz "RVB"
+s_aux: .asciz "AUX"
+s_clr: .asciz "CLR"
+s_cmp: .asciz "CMP"
+s_max: .asciz "MAX"
 s_ra_short: .asciz "A Dly"
 s_rb_short: .asciz "B Rvb"
 .endif
@@ -271,6 +298,11 @@ eq_graph_rect:
     call    EQ_GRAPH_RECT
     sub     r0, r4, #0x34           @ page
     bl      eq_fix_defaults
+.ifdef WARP_LINEUP
+    sub     r0, r4, #0x34           @ 3.1.T: the 7-button row (dj.c)
+    bl      mc_eq_row
+    pop     {r4, r5, r6, pc}
+.endif
     ldr     r5, =EQ_BTNS
     movs    r6, #0
 1:
@@ -358,6 +390,13 @@ eq_child_event:
     ldr     r2, [r1, #0xC]
     movw    r3, #FXR_ID
     subs    r2, r2, r3
+.ifdef WARP_LINEUP
+    cmp     r2, #6
+    bhi     9f
+    cmp     r2, #3                  @ EQ: here already
+    beq     8f
+    b.w     fxret_child_event       @ DLY RVB AUX CLR CMP MAX: as on the Return page
+.endif
     cmp     r2, #3
     bhi     9f
     cmp     r2, #2

@@ -232,6 +232,14 @@ static void compose(char *buf)
         *p++ = '/';
         p = put_uint(p, m->sd_failed);
     }
+    {   /* " M812": SDRAM free between the sample stack (top, 0x24000088) and the bottom allocator
+         * (0x2400008C), in KB. Saving builds the whole XML document there; when it runs out, stock
+         * spins at 0x0808A37C until the watchdog resets (docs/map-319.md). */
+        uint32_t top = *(volatile uint32_t *)0x24000088u, bot = *(volatile uint32_t *)0x2400008Cu;
+        *p++ = ' ';
+        *p++ = 'M';
+        p = put_uint(p, top > bot ? (top - bot) >> 10 : 0u);
+    }
     *p = 0;
 }
 
@@ -242,7 +250,7 @@ static void compose(char *buf)
 void cpu_mid(uint8_t *label)
 {
     volatile struct diag_state *m = DIAG;
-    char buf[40];                /* "999/999%+99 R999/999 E9999/9999" at most */
+    char buf[48];                /* "999/999%+99 R999/999 E9999/9999 M99999" at most */
     if (m->magic == DIAG_MAGIC && m->n) {
         m->avg_shown = (uint16_t)(m->sum / m->n);
         m->peak_shown = m->peak;

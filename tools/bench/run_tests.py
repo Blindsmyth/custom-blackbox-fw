@@ -19,6 +19,7 @@ that changed instead.
 """
 import argparse
 import json
+import re
 import struct
 import os
 import struct
@@ -1529,8 +1530,12 @@ def t_mix_layout(bench, res):
               "faders use the Mix fader vtable")
     res.check(all(b.u8(MIX_OBJ + f + 0x30) == 1 for f in MIX_FRAMES), "empty frames hidden")
     rects = {n: _fader(b, n)["rect"] for n in MIX_FADERS}
-    res.check(rects == {"tl": (1, 111, 30, 109), "tr": (288, 111, 30, 109), "bl": (1, 1, 30, 109),
-                        "br": (288, 1, 30, 109)}, f"corner rects {rects}")
+    res.check(rects == {"tl": (1, 111, 12, 109), "tr": (307, 111, 12, 109), "bl": (1, 1, 12, 109),
+                        "br": (307, 1, 12, 109)}, f"corner rects {rects}")
+    cell = lambda r, c: tuple(b.u32(MIX_OBJ + 0x3AC + r * 0x680 + c * 0x1A0 + o) for o in (4, 8, 0xC, 0x10))
+    res.check([cell(r, c) for r in range(4) for c in range(4)]
+              == [(14 + 61 * c, 1 + 55 * r, 60, 54) for r in range(4) for c in range(4)],
+              "Mix pad grid: 4 x 60 px on a 61 px pitch from x=14")
     ids = {n: _fader(b, n)["id"] for n in MIX_FADERS}
     res.check(ids == MIX_MAIN, f"main layer Vol/Decay/Cutoff/Pitch {ids}")
     res.check(_slider_ids(b) == MIX_MAIN, f"knobs bound to the main layer {_slider_ids(b)}")
@@ -1626,9 +1631,9 @@ def t_mix_detent_draw(bench, res):
     b = _mix_setup(bench)
     MIX_VALUES[0xC8] = -500
     _mix_tick(bench)
-    fills = _draw_rects(bench, "tr")                 # Cutoff, logical rect (288,111,30,109)
+    fills = _draw_rects(bench, "tr")                 # Cutoff, logical rect (307,111,12,109)
     centre = 111 + 109 // 2
-    res.check((3, (288, centre, 30, 1)) in fills, f"Cutoff draws a white centre line {fills}")
+    res.check((3, (307, centre, 12, 1)) in fills, f"Cutoff draws a white centre line {fills}")
     bars = [r for c, r in fills if c == 5]
     res.check(len(bars) == 1 and bars[0][1] + bars[0][3] == centre and bars[0][3] > 20,
               f"negative Cutoff bar hangs below the centre {bars}")
@@ -1637,7 +1642,8 @@ def t_mix_detent_draw(bench, res):
     bars = [r for c, r in _draw_rects(bench, "tr") if c == 5]
     res.check(len(bars) == 1 and bars[0][1] == centre and bars[0][3] > 15, f"positive Cutoff bar rises from the centre {bars}")
     fills = _draw_rects(bench, "tl")                 # Vol: -96..+12 dB is not bipolar
-    res.check(not any(c == 3 for c, _ in fills), f"Vol keeps the stock look {fills}")
+    res.check(not any(c == 3 and r[2] > 1 for c, r in fills),   # 1x1 white = label pixels
+              f"Vol keeps the stock look {fills}")
 
 
 def t_mix_detent_snap(bench, res):
@@ -1924,18 +1930,33 @@ def t_fx_return(bench, res):
     b.call(bench.sym["fx_to_return"], APP_OBJ, 0x30, 0, 0)
     res.check(screens == [0x23] and b.u16(APP_OBJ + 0x28) == 0x300, f"FX from DJ FX opens Return A {screens}")
     page = 0x30020000
+    lineup = "dj_tools_tick" in bench.sym       # 3.1.T: DLY RVB AUX EQ CLR CMP MAX, 46 px each
+    if lineup:
+        b.call(bench.sym["deck_init"])          # the row's last three buttons live in DjDeck
     b.mu.mem_write(page, b"\0" * 0x3800)
     b.call(0x080ABA84, page)
     b.stub(0x080AB900, lambda board: None)
     b.call(bench.sym["fxret_on_event"], page, _mix_ev(b, 0x66))
     btns = [page + 0x70 + 2 * 0xA0, page + 0x70 + 0xA0, page + 0x70, page + 0x3AC]   # left to right
+    if lineup:
+        w = b.u32(page + 0x18)
+        while w:
+            if 0x7A4 <= b.u32(w + 0x14) <= 0x7A6:
+                btns.append(w)
+            w = b.u32(w + 0x20)
+        btns = btns[:4] + sorted(btns[4:], key=lambda w_: b.u32(w_ + 0x14))
     ids = [b.u32(btn + 0x14) for btn in btns]
     sel = [b.u8(btn + 0x96) for btn in btns]
     xs = [struct.unpack("<4i", b.mu.mem_read(btn + 4, 16)) for btn in btns]
-    res.check(ids == [0x7A0, 0x7A1, 0x7A2, 0x7A3] and sel == [1, 0, 0, 0], f"buttons A Delay / B Reverb / EQ / empty, A lit {ids} {sel}")
-    lineup = "dj_tools_tick" in bench.sym       # 3.1.T: A Dly | B Rvb | EQ | Master, 80 px each
-    edges = [0, 80, 160, 240] if lineup else [0, 104, 216, 268]
-    res.check([r[1] for r in xs] == [0, 0, 0, 0] and [r[0] for r in xs] == edges, f"row along the bottom edge {xs}")
+    if lineup:
+        labels = [b.cstr(btn + 0x65, 6) for btn in btns]
+        res.check(ids == list(range(0x7A0, 0x7A7)) and sel == [1, 0, 0, 0, 0, 0, 0]
+                  and labels == ["DLY", "RVB", "AUX", "EQ", "CLR", "CMP", "MAX"],
+                  f"buttons DLY RVB AUX EQ CLR CMP MAX, DLY lit {ids} {sel} {labels}")
+    else:
+        res.check(ids == [0x7A0, 0x7A1, 0x7A2, 0x7A3] and sel == [1, 0, 0, 0], f"buttons A Delay / B Reverb / EQ / empty, A lit {ids} {sel}")
+    edges = list(range(0, 320, 46))[:7] if lineup else [0, 104, 216, 268]
+    res.check(all(r[1] == 0 for r in xs) and [r[0] for r in xs] == edges, f"row along the bottom edge {xs}")
     res.check(struct.unpack("<4i", b.mu.mem_read(page + 0x34 + 4, 16))[1] == 0, "button bar moved to the bottom")
     screens.clear()
     ev = _mix_ev(b, 1)
@@ -1943,15 +1964,23 @@ def t_fx_return(bench, res):
     r = b.call(bench.sym["fxret_child_event"], page, ev)
     res.check(r == 0 and screens == [0x23] and b.u16(APP_OBJ + 0x28) == 0x310, f"B shows Reverb {screens}")
     screens.clear()
-    b.w32(ev + 0xC, 0x7A2)
+    b.w32(ev + 0xC, 0x7A3 if lineup else 0x7A2)
     b.call(bench.sym["fxret_child_event"], page, ev)
     res.check(screens == [0x36], f"EQ opens the EQ page {screens}")
     screens.clear()
-    b.w32(ev + 0xC, 0x7A3)
-    r = b.call(bench.sym["fxret_child_event"], page, ev)
     if lineup:
-        res.check(r == 0 and screens == [0x29], f"Master opens Tools page 4 {screens}")
+        b.w32(ev + 0xC, 0x7A2)
+        r = b.call(bench.sym["fxret_child_event"], page, ev)
+        res.check(r == 0 and not screens, "AUX does nothing (yet)")
+        for ident, pg in ((0x7A4, 1), (0x7A5, 2), (0x7A6, 3)):
+            screens.clear()
+            b.w32(ev + 0xC, ident)
+            r = b.call(bench.sym["fxret_child_event"], page, ev)
+            res.check(r == 0 and screens == [0x23] and b.u16(APP_OBJ + 0x28) == 0x330 and b.u8(0x38006F00 + 0xF0) == pg,
+                      f"{['CLR', 'CMP', 'MAX'][pg - 1]}: the Return page on the master chain (key 0x330, page {pg}) {screens}")
     else:
+        b.w32(ev + 0xC, 0x7A3)
+        r = b.call(bench.sym["fxret_child_event"], page, ev)
         res.check(r == 0 and not screens, "the empty button does nothing")
     b.mu.mem_write(APP_OBJ + 0x28, struct.pack("<H", 0x37))
     screens.clear()
@@ -2004,6 +2033,13 @@ def t_pads_panel(bench, res):
     hid = lambda: (b.u8(pads + 0x2110 + 0x30), b.u8(pads + 0x21F0 + 0x30))
     fl = MIX_FL
     res.check(hid() == (0, 1), f"stock shows the VEL fader {hid()}")
+    b.mu.mem_write(fl, b"\0\0")
+    b.call(bench.sym["pads_tick"], pads, fl)
+    cell = lambda r, c: tuple(b.u32(pads + 0x34 + r * 0x820 + c * 0x1A0 + o) for o in (4, 8, 0xC, 0x10))
+    res.check([cell(r, c) for r in range(4) for c in range(4)]
+              == [(14 + 61 * c, 1 + 55 * r, 60, 54) for r in range(4) for c in range(4)],
+              "Pads grid: same as Mix")
+    res.check(b.mu.mem_read(fl, 2) == b"\1\1", "layout change asks for both redraw passes")
     _btn(b, 0, True)
     b.mu.mem_write(fl, b"\0\0")
     b.call(bench.sym["pads_tick"], pads, fl)
@@ -2082,9 +2118,10 @@ def t_gui_fx_flow(bench, res):
     mu.mem_write(APP_OBJ + 0x8CC3, b"\x00")
     b.call(SET_SCREEN, APP_OBJ, 2, 0, 0)
     pump()
+    eq_id = 0x7A3 if "mc_ret_row" in bench.sym else 0x7A2      # 3.1.T: DLY RVB AUX EQ ...
     steps = [("FX", None, (0x37, 0x905A0)), ("FX", None, (0x23, 0x36910)),
-             ("fxret_child_event", 0x7A2, (0x36, 0x8DE50)), ("eq_child_event", 0x7A1, (0x23, 0x36910)),
-             ("fxret_child_event", 0x7A2, (0x36, 0x8DE50)), ("eq_child_event", 0x7A2, (0x36, 0x8DE50)),
+             ("fxret_child_event", eq_id, (0x36, 0x8DE50)), ("eq_child_event", 0x7A1, (0x23, 0x36910)),
+             ("fxret_child_event", eq_id, (0x36, 0x8DE50)), ("eq_child_event", eq_id, (0x36, 0x8DE50)),
              ("FX", None, (0x37, 0x905A0))]
     for what, ident, want in steps:
         if what == "FX":
@@ -2194,6 +2231,12 @@ def t_seqrec_templates(bench, res):
     b.stub(0x08093EF6, lambda board: adds.append((board.arg(1), board.arg(2))))
     b.call(bench.sym["seqrec_global_tpl"], 0x30040000, 0x19B, 0)
     mixer = [(0x1D8, 0)] if "mx_global_tpl" in bench.sym else []    # 3.1.T: Tools -> Clock BPM
+    if "mc_global_tpl" in bench.sym:                                  # 3.1.T: the master chain, off
+        mixer += [(0x13D, 0), (0x13E, 0), (0x14A, 1), (0x14C, 0)]
+        mixer += [(0x15A + k, v & 0xFFFFFFFF) for k, v in enumerate((0, 0, 300, 300, 500, 500, 500, 500, 400, 300, 1000, 1000, 650, 1,
+                                                         -4000, 4, 10, 250, -4000))]          # the global set kept aside
+        mixer += [(0x13F, 300), (0x140, 300), (0x141, 500), (0x142, 500),
+                  (0x143, 500), (0x144, 500), (0x145, 400), (0x146, 300), (0x147, 1000), (0x148, 1000), (0x149, 650)]
     res.check(adds == [(0x19B, 0), (SR_DEF, 4), (0x1A0, 2), (0x1A1, 1)] + mixer,
               f"global template adds Seq Default = 1 bar, Loop BPM 80-160, Dbl Copy On {adds}")
     for glob, want in ((4, 4), (0, 0), (6, 6), (99, 4)):
@@ -4514,6 +4557,13 @@ def diag_tools_label(bench):
     return got.get(mid), "12.3 GB"
 
 
+def _diag_mem(b, mid):
+    """Split the Tools label's " M<KB>" (SDRAM free, diag.c) off; check it against the two pointers."""
+    m = re.search(r" M(\d+)$", mid)
+    want = max(b.u32(0x24000088) - b.u32(0x2400008C), 0) >> 10
+    return (mid[:m.start()] if m else mid), (m is not None and int(m.group(1)) == want)
+
+
 def t_diag_cpu_meter(bench, res):
     b = bench.b
     clock = [0]
@@ -4534,6 +4584,8 @@ def t_diag_cpu_meter(bench, res):
         b.w32(0xE0001004, clock[0])
     mid, space = diag_tools_label(bench)
     res.check(space == "12.3 GB", f"free space still set ({space!r})")
+    mid, mem_ok = _diag_mem(b, mid)
+    res.check(mem_ok, "SDRAM free in KB at the end")
     res.check(mid == "39/39%", f"load {mid!r} (1.0M of 2.56M cycles = 39%)")
     b.w32(RB_VOICE + 8, 1)                      # Rubber running, 120 % of a block on its own
     b.w32(RB_VOICE + 48, 25600 * 120)          # rb_mix's smoothed cost (RbVoice.cyc_avg)
@@ -4544,6 +4596,7 @@ def t_diag_cpu_meter(bench, res):
         clock[0] += busy
         b.w32(0xE0001004, clock[0])
     mid, _ = diag_tools_label(bench)
+    mid = _diag_mem(b, mid)[0]
     res.check(mid == "39/39% R120/131", f"with Rubber's own share: {mid!r}")
     res.check(b.u32(RB_VOICE + 56) == 0, "peak starts again after the look")
     res.check(b.u32(0x50003004) & (1 << 9), "watchdog early wakeup armed")
@@ -4583,6 +4636,7 @@ def t_diag_fault_record(bench, res):
     res.check(0x38800040 in flushed and 0x38800060 in flushed, "record cleaned out of the data cache before the reset")
     b.call(bench.sym["rb_pair"])                # the next boot
     mid, _ = diag_tools_label(bench)
+    mid = _diag_mem(b, mid)[0]
     res.check(mid == "F08123456", f"Tools shows the fault PC: {mid!r}")
     res.check(rb_label(bench) == rb_name(bench) + "! 11", f"Rubber label names the stage: {rb_label(bench)!r}")
     b.call(bench.sym["rb_pair"])                # and the one after
@@ -4741,7 +4795,7 @@ def t_rubber_cpu_guard(bench, res):
         b.call(bench.sym["cpu_wait"], 0, 0, 0, 0)
     mid, _ = diag_tools_label(bench)
     import re
-    m = re.search(r"R(\d+)/\d+$", mid or "")
+    m = re.search(r"R(\d+)/\d+(?: M\d+)?$", mid or "")
     res.check(m is not None and 25 <= int(m.group(1)) <= 40, f"cost still on Tools (the last, 30 % leaf): {mid!r}")
 
 
@@ -5955,7 +6009,8 @@ def t_dj_ui(bench, res):
 MX = 0x38007A60                 # MxState
 MX_SE = 0xC0900000              # fake sequencer engine: tempo +0x18, ticks +0x30, playing +0x38
 MX_RING = 0xC1000000            # the fake sample cache's buffers (64 KB per entry)
-MX_CACHE = 0x2400A9C0           # sample manager: 615 entries of 0x1C
+MX_CACHE = 0x2400A9C0           # sample manager: entries of 0x1C
+MX_CACHE_N = 567                # 3.1.T: stock's 615 less 48 (song-dj/sites.py), room for saving
 MX_BUF = 0xC0980000             # one block, L then R
 MX_FR = 70000                   # test signal: a saw this many frames long (not a loop multiple)
 
@@ -5993,12 +6048,28 @@ class _MxClock:
                 struct.unpack("<128f", bytes(b.mu.mem_read(MX_BUF + 512, 512))))
 
 
+def t_cache_size(bench, res):
+    """The sample cache has MX_CACHE_N entries: every stock bound on them is patched (sites.py), so the
+    boot loops give buffers to that many and the rest of SDRAM goes to the sample stack."""
+    img = open(bench.image_path, "rb").read()
+    def imm(va):
+        o = va - 0x08040000
+        h1, h2 = struct.unpack_from("<HH", img, o)
+        return (h1 & 0xF) << 12 | ((h1 >> 10) & 1) << 11 | ((h2 >> 12) & 7) << 8 | (h2 & 0xFF)
+    count = [0x08071D8E, 0x0807226C, 0x080726DA, 0x08072FDE, 0x08073000, 0x08073024, 0x080731D4,
+             0x080733A6, 0x080733BA, 0x0807340E, 0x0807347A, 0x08073902, 0x08074570, 0x08074A42]
+    end = [0x08070BFA, 0x080723D0, 0x080728E6, 0x08073998]
+    got = [imm(va) for va in count] + [imm(va) for va in end]
+    want = [MX_CACHE_N] * len(count) + [MX_CACHE_N * 0x1C] * len(end)
+    res.check(got == want, f"cache bounds {sorted(set(got))} (want {MX_CACHE_N}, {MX_CACHE_N * 0x1C:#x})")
+
+
 def _mx_setup(bench):
     """A stock-like sample cache: 160 free entries with buffers, the rest loaded and old."""
     b = bench.b
     b.mu.mem_write(0xE000ED88, struct.pack("<I", 0xF << 20))    # FPU on
     b.call(bench.sym["deck_init"])
-    for i in range(0x267):
+    for i in range(MX_CACHE_N):
         e = MX_CACHE + i * 0x1C
         free = i < 160
         # stock's fields run +0x04..+0x1F (they overlap the next entry's first word)
@@ -6037,7 +6108,7 @@ def t_mx_loop(bench, res):
     clk.block(sym)
     res.check(b.u32(MX + 0x50) == 0 and b.u32(MX + 0x58) == 0, "no DJ loop: no ring, nothing recorded")
     _mx_borrow(bench, clk, 3840, 7680)
-    borrowed = [i for i in range(0x267) if _mx_cache_state(b, i) == 3]
+    borrowed = [i for i in range(MX_CACHE_N) if _mx_cache_state(b, i) == 3]
     res.check(b.u32(MX + 0x50) == 2 and len(borrowed) == 131 and borrowed == list(range(131)),
               f"Loop on: 131 cache entries borrowed, reserved (state 3) {len(borrowed)}")
     w0 = b.u32(MX + 0x58)
@@ -6376,6 +6447,152 @@ def _mx_fx_rig(bench):
     return calls, eq_seen
 
 
+def t_mx_master(bench, res):
+    """--emu build: the master chain (docs/master-chain.md). Bank 2 boots; mx_master (the render's
+    resample copy, 0x0805353A) leaves bus 0 alone with the chain off, and with it on runs CLR + CMP,
+    the copy (voices read it back), the Song DJ block, then MAX; the stock compressor is skipped; the cost per block."""
+    pay = rb_payload(bench)
+    if pay is None or "_emu" not in bench.image_path:
+        res.check(True, "master chain needs the --emu build (skipped)")
+        return
+    import math
+    from capstone import CS_ARCH_ARM, CS_MODE_MCLASS, CS_MODE_THUMB, Cs
+    from unicorn import UC_HOOK_BLOCK
+    b, sym = bench.b, bench.sym
+    md, seen, count = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS), {}, [False, 0]
+
+    def on_block(mu, a, sz, d):     # bank 2 cycles, M7 model (tools/master_chain/m7/measure.py)
+        if not count[0]:
+            return
+        w = seen.get((a, sz))
+        if w is None:
+            w = 0
+            for i in md.disasm(bytes(mu.mem_read(a, sz)), a):
+                m = i.mnemonic
+                w += 14 if m.startswith(("vdiv", "vsqrt")) else max(1, i.op_str.count(",") + 1) \
+                    if m.startswith(("push", "pop", "ldm", "stm", "vpush", "vpop", "vldm", "vstm")) else 1
+            seen[(a, sz)] = w
+        count[1] += w
+    b.mu.hook_add(UC_HOOK_BLOCK, on_block, begin=RB_B2, end=0x081FFFFF)
+
+    clk = _mx_setup(bench)
+    b.mu.mem_write(RB_B2, bytes(pay))
+    rb_bkp(bench)
+    b.call(sym["rb_pair"])
+    b.call(sym["rb_load_poll"], limit=2_000_000_000)
+    res.check(rb_state(bench) == 1, f"bank 2 started ({rb_label(bench)!r})")
+    if rb_state(bench) != 1:
+        return
+
+    # the global bag: the chain's rows (mixer.c MC_*), as the template adds them
+    rows_at, bag = MX_FXW + 0x800, 0x24028D18
+    vals = {0x13D: 0, 0x13E: 0, 0x14A: 1, 0x13F: 300, 0x140: 300, 0x141: 500, 0x142: 500, 0x143: 500,
+            0x144: 500, 0x145: 400, 0x146: 300, 0x147: 1000, 0x148: 1000, 0x149: 1000}
+
+    def put_bag():
+        rows = b"".join(struct.pack("<HHi", k, 0, v) for k, v in vals.items())
+        b.mu.mem_write(rows_at, rows)
+        b.w32(bag + 4, rows_at)
+        b.mu.mem_write(bag + 0xA, struct.pack("<H", len(vals)))
+    put_bag()
+
+    bus, dst = MX_SE + 0x150E4, MX_SE + 0x15864
+    calls, eq_seen = _mx_fx_rig(bench)                 # a master EQ node with the DJ FX behind it
+    b.mu.mem_write(bus, struct.pack("<IIIIBB", 128, 128, MX_BUF, MX_BUF + 512, 0, 1))
+    copies, order = [], []
+    b.stub(0x0804D880, lambda bd_: copies.append((bd_.arg(0), bd_.arg(1))) or order.append("copy") or 0)
+    from unicorn import UC_HOOK_CODE as _HC
+    _dj = sym["mx_block"] & ~1
+    _hdj = b.mu.hook_add(_HC, lambda mu, a, sz, d: order.append("dj"), begin=_dj, end=_dj + 1)
+    sine = lambda k: [0.3 * math.sin(2 * math.pi * 1000 * (k * 128 + i) / 48000) for i in range(128)]
+
+    def block(k, amp=1.0):
+        x = [v * amp for v in sine(k)]
+        b.mu.mem_write(MX_BUF, struct.pack("<128f", *x))
+        b.mu.mem_write(MX_BUF + 512, struct.pack("<128f", *x))
+        b.w32(MX_SE + 0x30, int(clk.tick))
+        b.call(sym["mx_master"], dst, bus)
+        b.call(sym["mx_bus_tap"], bus, 0x30042000, 0x30042004)   # the render's next tap: clears done
+        clk.tick += 128 * clk.tpf()
+        return x, struct.unpack("<128f", bytes(b.mu.mem_read(MX_BUF, 512)))
+
+    for k in range(9):
+        x, y = block(k)
+    res.check(list(y) == list(struct.unpack('<128f', struct.pack('<128f', *x))) and len(copies) == 9 and copies[-1] == (dst, bus),
+              "chain off: bus 0 untouched, the resample copy still made")
+    res.check(order[-2:] == ["copy", "dj"], f"chain off: the copy voices read back is taken before the DJ block {order[-2:]}")
+    res.check(b.call(sym["mc_comp_skip"]) == 0,
+              "chain off: the stock compressor runs when switched on (skipped, the DJ block ran 4-10 dB hotter)")
+    res.check(order[-2:] == ["copy", "dj"] and order.count("dj") == 9,
+              f"chain off: the DJ block ran once per block, inside, before the safety limiter ({order.count('dj')} in 9)")
+
+    vals[0x13D] = 1
+    put_bag()
+    ins, outs = [], []
+    for k in range(9, 60):
+        count[0] = k >= 40
+        x, y = block(k)
+        if k >= 40:
+            ins += x
+            outs += y
+    count[0] = False
+    peak = max(abs(v) for v in outs)
+    rms = lambda v: math.sqrt(sum(a * a for a in v) / len(v))
+    res.check(b.call(sym["mc_comp_skip"]) == 1, "chain on: the stock compressor and limiter are skipped")
+    res.check(peak <= 0.96606 and peak > 0.5, f"chain on, Maximize 1000: peak {peak:.4f} under the -0.3 dBFS ceiling")
+    res.check(rms(outs) > rms(ins) * 1.5, f"... louder: rms {rms(ins):.3f} -> {rms(outs):.3f}")
+    res.check(order.count("dj") == 60, f"chain on: the DJ block ran once per block, inside (mx_bus_tap skips it) ({order.count('dj')} in 60)")
+    res.check(order[-2:] == ["copy", "dj"],
+              f"chain on: the copy is taken after CLR + CMP, before the DJ block and MAX (no comb) {order[-2:]}")
+    b.mu.hook_del(_hdj)
+    met = sym["mc_meters"]
+    mp = b.call(met)
+    gr = struct.unpack("<f", bytes(b.mu.mem_read(mp + 4 * (2 * 5 + 3), 4)))[0] if mp else 0.0
+    res.check(mp != 0 and gr < -1.0, f"meters: MAX gain reduction {gr:.1f} dB")
+    per_block = count[1] / 20
+    res.check(per_block < 0.25 * 1_280_000, f"bank 2 per 128-frame block: {per_block:,.0f} cycles "
+              f"({100 * per_block / 1_280_000:.1f}% of the block, M7 model)")
+    eq_seen.clear()
+    b.call(sym["mx_eq"], MX_FXW, MX_SE)
+    res.check(eq_seen == [0], f"chain on: the master EQ runs (without its next stage) {eq_seen}")
+    # the chain off again, a hot input: no EQ, no chain, the stock limiter model holds it under 0 dBFS
+    vals[0x13D] = 0
+    put_bag()
+    for k in range(60, 68):                            # the bag is read every 8th block
+        block(k, 0.2)
+    quiet = [block(k, 0.2) for k in range(68, 70)]
+    res.check(all(list(y) == list(struct.unpack("<128f", struct.pack("<128f", *x))) for x, y in quiet),
+              "chain off, quiet input: untouched")
+    hot = [block(k, 4.0)[1] for k in range(70, 110)]           # peaks 1.2: 1.6 dB over 0 dBFS
+    pk = max(abs(v) for blk in hot[-10:] for v in blk)
+    lim = struct.unpack("<f", bytes(b.mu.mem_read(b.call(met) + 4 * (2 * 5 + 5), 4)))[0]
+    res.check(pk <= 1.0 and lim < -1.0, f"chain off, hot input (+1.6 dB over): the safety limiter holds it (peak {pk:.3f}, GR {lim:.1f} dB)")
+    eq_seen.clear()
+    b.call(sym["mx_eq"], MX_FXW, MX_SE)
+    res.check(eq_seen == [], f"chain off: no master EQ {eq_seen}")
+
+    # the MAX page's meter text (bank 2's UI entry) and BACK clearing its hold
+    ui, buf = b.call(sym["mc_ui_fn"]), MX_FXW + 0xA00
+
+    def meter_text():
+        b.call(ui, 2, buf, 2, 0)
+        t = b.cstr(buf, 40).split()
+        return float(t[1]), float(t[3])
+    gr_now, hold = meter_text()
+    held = hold
+    res.check(ui != 0 and -2.0 < gr_now < -1.0 and hold < -3.0,
+              f"MAX meter text: GR {gr_now} now, MAX {hold} (the chain's deeper reduction, held)")
+    b.mu.mem_write(APP_OBJ + 0x8CA4, b"\x23")         # the Return page,
+    b.mu.mem_write(APP_OBJ + 0x28, struct.pack("<H", 0x330))   # on the master chain,
+    b.mu.mem_write(0x38006F00 + 0xF0, b"\x03")         # MAX
+    res.check(b.call(sym["dj_back_key"], APP_OBJ) == 0, "BACK on MAX is taken (clears the hold)")
+    block(110, 4.0)
+    gr_now, hold = meter_text()
+    res.check(held + 3.0 < hold <= 0.0, f"... the hold starts again from the next block (MAX {held} -> {hold})")
+    b.mu.mem_write(0x38006F00 + 0xF0, b"\x01")         # CLR: no meter, BACK is stock's
+    res.check(b.call(sym["dj_back_key"], APP_OBJ) == 1, "BACK on CLR stays stock's")
+
+
 def t_mx_fx(bench, res):
     """The DJ FX behind the compressor: mx_eq runs the master EQ node without its next stage (the FX
     container), and the tap runs FX A then FX B on what the DJ FX screen routes to each."""
@@ -6509,6 +6726,165 @@ def t_dj_fx(bench, res):
     b.call(sym["mx_set_route"], 1, 1)
 
 
+def t_mc_pages(bench, res):
+    """CLR / CMP / MAX: the Return page's knob grid gets the master chain's parameters, bound to the
+    global key 0x40; CMP's Type swaps the set (the tick rebuilds); two sides of four as stock."""
+    b, sym = bench.b, bench.sym
+    b.call(sym["deck_init"])
+    page = 0x30020000
+    b.mu.mem_write(page, b"\0" * 0x3800)
+    b.call(0x080ABA84, page)
+    b.stub(0x080AB900, lambda board: None)
+    screens = []
+    b.stub(SET_SCREEN, lambda board: screens.append(board.arg(1)))
+    grid = page + 0x450
+    ev = _mix_ev(b, 1)
+    cells = lambda: [grid + 0x40 + i * 0x3D0 for i in range(8)]
+    found = {}
+
+    def ids_now(want):
+        """the id each cell is bound to: found at the offset where cell 0 holds want[0]"""
+        c0 = cells()[0]
+        if "off" not in found:
+            for off in range(0, 0x3D0, 2):
+                if b.u16(c0 + off) == want[0]:
+                    found["off"] = off
+                    break
+        off = found.get("off")
+        return [b.u16(c + off) for c in cells()[:len(want)]] if off is not None else []
+
+    b.stub(0x080AEB44, lambda board: None)            # the Return page's own tick
+    for ident, pg, want in ((0x7A4, 1, [0x13F, 0x140, 0x141, 0x143, 0x142, 0x144]),
+                            (0x7A5, 2, [0x13E, 0x145, 0x146, 0x147, 0x148]),
+                            (0x7A6, 3, [0x149, 0x14A, 0x13D, 0x14C])):
+        ev = _mix_ev(b, 1)                      # one event buffer: rebuilt for each press
+        b.w32(ev + 0xC, ident)
+        b.call(sym["fxret_child_event"], page, ev)
+        b.call(sym["fxret_on_event"], page, _mix_ev(b, 0x66))
+        got = ids_now(want)
+        res.check(got == want and b.u16(grid + 0x38) == 0x40 and b.u32(grid + 0x3C) == 0,
+                  f"{['CLR', 'CMP', 'MAX'][pg - 1]}: knobs {[hex(x) for x in got]} on the global key ({b.u16(grid + 0x38):#x}), left side")
+        if pg == 1:
+            b.call(0x080A83F2, grid, 1)                    # a touch on Skronk / Drive: the right four
+            b.call(sym["mc_ret_tick"], page, MX_FXW + 0x3000, 0, 0)
+            b.call(sym["fxret_on_event"], page, _mix_ev(b, 0x66))   # a knob turn rebuilds the page
+            res.check(b.u32(grid + 0x3C) == 1, f"CLR: the right side stays after a rebuild ({b.u32(grid + 0x3C)})")
+    # CMP: Type = Stock in the global bag -> the tick rebuilds with the compressor's ids
+    ev = _mix_ev(b, 1)
+    b.w32(ev + 0xC, 0x7A5)
+    b.call(sym["fxret_child_event"], page, ev)
+    b.call(sym["fxret_on_event"], page, _mix_ev(b, 0x66))
+    screens.clear()
+    b.call(sym["mc_ret_tick"], page, MX_FXW + 0x3000, 0, 0)
+    res.check(screens == [], "CMP: nothing to rebuild while Type is as built")
+    b.stub(0x08093E9C, lambda bd_: 1 if bd_.arg(1) == 0x13E else 0)   # PARAM_GET: Type = Stock
+    b.call(sym["mc_ret_tick"], page, MX_FXW + 0x3000, 0, 0)
+    res.check(screens == [0x23], f"CMP: Type changed, the page rebuilds {screens}")
+    b.call(sym["fxret_on_event"], page, _mix_ev(b, 0x66))
+    got = ids_now([0x13E, 0x131, 0x132, 0x12F, 0x130, 0x13A])
+    res.check(got == [0x13E, 0x131, 0x132, 0x12F, 0x130, 0x13A], f"CMP Stock: Type, Thresh, Ratio, Atk, Rel, Gain {[hex(x) for x in got]}")
+    b.unstub(0x08093E9C)
+    meters = []
+    w = b.u32(page + 0x18)
+    while w:
+        if b.u32(w + 0x14) in (0x7B0, 0x7B1):
+            meters.append((b.u32(w + 0x14), b.u8(w + 0x30)))
+        w = b.u32(w + 0x20)
+    res.check(sorted(meters) == [(0x7B0, 1), (0x7B1, 1)], f"CMP meter attached once, hidden while bank 2 is not running {meters}")
+
+
+def t_mc_values(bench, res):
+    """Values Global / Preset. The live values are the global bag's; each preset's session bag carries
+    them too (template seeded from the global set, a load takes its rows and never sends them).
+    Global -> Preset keeps the global set aside (0x15A..) and makes the preset's values live; edits are
+    mirrored into the session; Preset -> Global brings the global set back; each switch saves settings."""
+    b, sym = bench.b, bench.sym
+    gbag, sbag, at = 0x24028D18, 0x240230C0, MX_FXW + 0xC00
+    stored = [0x13D, 0x13E, 0x13F, 0x140, 0x141, 0x142, 0x143, 0x144, 0x145, 0x146, 0x147, 0x148, 0x149, 0x14A,
+              0x131, 0x132, 0x12F, 0x130, 0x13A]
+    store = {i: 0x15A + k for k, i in enumerate(stored)}
+
+    def bag(addr, rows_at, vals):
+        b.mu.mem_write(rows_at, b"".join(struct.pack("<HHi", k, 0, v) for k, v in vals.items()))
+        b.w32(addr + 4, rows_at)
+        b.mu.mem_write(addr + 0xA, struct.pack("<H", len(vals)))
+
+    def get(addr, ident):
+        rows, n = b.u32(addr + 4), b.u16(addr + 0xA)
+        for i in range(n):
+            if b.u16(rows + 8 * i) == ident:
+                return struct.unpack("<i", bytes(b.mu.mem_read(rows + 8 * i + 4, 4)))[0]
+        return None
+
+    def put(addr, ident, v):
+        rows, n = b.u32(addr + 4), b.u16(addr + 0xA)
+        for i in range(n):
+            if b.u16(rows + 8 * i) == ident:
+                b.mu.mem_write(rows + 8 * i + 4, struct.pack("<i", v))
+    glob = {i: 100 + k for k, i in enumerate(stored)}
+    g = dict(glob)
+    g[0x14C] = 0
+    g.update({store[i]: 0 for i in stored})
+    bag(gbag, at, g)
+    bag(sbag, at + 0x400, {i: 900 for i in stored})
+    b.mu.mem_write(0x38007CA0, b"\x00" * 0x200)
+    b.w32(0x38007CA0, 0x3143534D)                      # McShared live (the audio task's first block)
+    saves = []
+    b.stub(0x08090CBC, lambda bd_: saves.append(bd_.arg(2)))
+    adds = []
+    b.stub(0x08093EF6, lambda bd_: adds.append((bd_.arg(1), bd_.arg(2))))
+    b.call(sym["mc_session_tpl"], 0x30040000, 0x8A, 3)
+    b.unstub(0x08093EF6)
+    res.check(adds[0] == (0x8A, 3) and adds[1:] == [(i, glob[i]) for i in stored],
+              f"session template: stock's last row, then the chain's, seeded from the global set ({len(adds) - 1})")
+    # stock's FinalizeBankLoading loop passes on only these rows of the loaded session
+    fw = open(bench.image_path, "rb").read()
+    cmps = [struct.unpack_from("<H", fw, va - 0x08040000)[0] & 0xFF for va in (0x0809CE9C, 0x0809CEA0, 0x0809CEA4)]
+    res.check(cmps == [0x84, 0xD7, 0xC2], f"finalize sends only BPM / Swing / 0xC2 {[hex(c) for c in cmps]}: the chain's rows never pass")
+    sent = []
+    b.stub(0x0804C59C, lambda bd_: sent.append(bd_.arg(2)))
+    b.call(sym["mx_bpm_send"], 0, 0x10400, 0xD7, 5, 0, 0)
+    res.check(sent == [0xD7] and all(get(gbag, i) == glob[i] for i in stored),
+              "Values Global: a load leaves the live values alone, its rows still go to the engine")
+    b.call(sym["mc_values_tick"])
+    res.check(get(sbag, 0x149) == 900 and saves == [], "Values Global: the session is left alone")
+    put(gbag, 0x14C, 1)                                # Values = Preset
+    sw = b.call(sym["mc_values_tick"])
+    res.check(sw == 1 and b.call(sym["mc_values_tick"]) == 0,
+              "a switch returns 1 once (dj.c rebuilds the page: the knobs show the new set)")
+    res.check(all(get(gbag, store[i]) == glob[i] for i in stored) and all(get(gbag, i) == 900 for i in stored)
+              and saves == [gbag], "Global -> Preset: the global set kept aside, the preset's values live, settings saved")
+    b.mu.mem_write(0x24020088 + 0x8CC4, b"\x00")
+    b.call(sym["mc_values_tick"])
+    res.check(b.u8(0x24020088 + 0x8CC4) == 0, "Values Preset: no edit, the preset stays unedited")
+    put(gbag, 0x149, 555)                              # a knob turn
+    b.call(sym["mc_values_tick"])
+    res.check(get(sbag, 0x149) == 555 and b.u8(0x24020088 + 0x8CC4) == 1,
+              "Values Preset: an edit is mirrored into the preset's session and marks it edited (Save)")
+    for i in stored:                                   # another preset loads: its session has its own values
+        put(sbag, i, 300)
+    b.call(sym["mc_values_tick"])
+    res.check(all(get(sbag, i) == 300 for i in stored), "Values Preset: the loaded session is not overwritten by the old live values")
+    b.call(sym["mx_bpm_send"], 0, 0x10400, 0x84, 120, 0, 0)
+    res.check(all(get(gbag, i) == 300 for i in stored), f"Values Preset: the load makes its values live ({get(gbag, 0x149)})")
+    b.call(sym["mc_values_tick"])
+    put(gbag, 0x14A, 42)
+    b.call(sym["mc_values_tick"])
+    res.check(get(sbag, 0x14A) == 42 and get(sbag, 0x149) == 300, "Values Preset: only the edited value goes to the session")
+    adds = []
+    b.stub(0x08093EF6, lambda bd_: adds.append((bd_.arg(1), bd_.arg(2))))
+    b.call(sym["mc_session_tpl"], 0x30040000, 0x8A, 3)
+    b.unstub(0x08093EF6)
+    res.check(adds[1:] == [(i, glob[i]) for i in stored], "Values Preset: a preset without values is seeded from the global set")
+    put(gbag, 0x14C, 0)                                # back to Global
+    sw = b.call(sym["mc_values_tick"])
+    res.check(sw == 1, "Preset -> Global returns 1 too")
+    res.check(all(get(gbag, i) == glob[i] for i in stored) and len(saves) == 2,
+              "Preset -> Global: the global set comes back, settings saved")
+    b.unstub(0x0804C59C)
+    b.unstub(0x08090CBC)
+
+
 def t_master_row(bench, res):
     """Master sits in the FX row next to EQ: its button opens Tools page 4, where the row replaces
     the Tools tabs; the other Tools pages keep them; INFO's Tools cycle skips Master."""
@@ -6550,22 +6926,22 @@ def t_master_row(bench, res):
     res.check(b.u8(tools + 0xA5E0) == 4, f"shown as screen 0x29: the Master page (compressor), not Main ({b.u8(tools + 0xA5E0)})")
     b.call(sym["dj_tools_tick"], tools, flags, 0, 0)
     r = row()
-    want = [("A Dly", 0, 0, 80, 38, 0, 0), ("B Rvb", 80, 0, 80, 38, 0, 0),
-            ("EQ", 160, 0, 80, 38, 0, 0), ("Master", 240, 0, 80, 38, 1, 0)]
+    want = [("DLY", 0, 0, 46, 38, 0, 0), ("RVB", 46, 0, 46, 38, 0, 0),
+            ("AUX", 92, 0, 46, 38, 0, 0), ("EQ", 138, 0, 46, 38, 1, 0)]
     res.check(r == want and b.u8(tools + 0x9E28 + 0x30) == 1, f"Master page: the FX row instead of the tabs, Master lit {r}")
     res.check(len(row()) == 4, "built once")
     stock.clear()
     res.check(b.call(sym["dj_tools_child"], tools, ev(1, 0x7A1)) == 0 and shown == [0x23], f"B Reverb: the Return page {shown}")
     shown.clear()
     b.call(sym["dj_tools_child"], tools, ev(1, 0x7A2))
-    res.check(shown == [0x36], f"EQ: the EQ page {shown}")
+    res.check(shown == [], f"AUX: nothing (yet) {shown}")
     shown.clear()
-    res.check(b.call(sym["dj_tools_child"], tools, ev(1, 0x7A3)) == 0 and shown == [] and stock == [], "Master: stays")
+    res.check(b.call(sym["dj_tools_child"], tools, ev(1, 0x7A3)) == 0 and shown == [] and stock == [], "the fourth button: stays")
     b.call(sym["dj_tools_child"], tools, ev(1, 0x130))
     res.check(stock == [("child", 0x130)], "Tools' own presses reach stock")
     shown.clear()
     b.call(sym["fxret_child_event"], tools, ev(1, 0x7A3))
-    res.check(shown == [0x29], f"Return / EQ page: Master opens Tools page 4 {shown}")
+    res.check(shown == [0x36], f"Return / EQ page: EQ opens the EQ page (no Master button since the master chain) {shown}")
     b.mu.mem_write(app_scr, b"\x25")                   # Tools from the menu, Master left over
     b.call(sym["dj_tools_event"], tools, ev(0xD4))
     res.check(b.u8(tools + 0xA5E0) == 0 and b.u8(tools + 0x9E28 + 0x30) == 0,
@@ -8254,8 +8630,13 @@ def main():
             cases += [("Song DJ: DJ FX screen toggles, knobs, Hold moved", t_dj_fx)]
         if "dj_tools_tick" in sym:
             cases += [("Song DJ: Master in the FX row, next to EQ", t_master_row)]
+        if "mc_ret_row" in sym:
+            cases += [("Master chain: CLR / CMP / MAX knob pages on the global key", t_mc_pages)]
+        if "mc_session_tpl" in sym:
+            cases += [("Master chain: Values Global / Preset through the session bag", t_mc_values)]
     if "mx_block" in sym:
         cases += [
+            ("sample cache: 567 entries, room for saving", t_cache_size),
             ("Song DJ mixer: capture, play, grow, load, repitch, clear", t_mx_loop),
             ("Song DJ mixer: no ring, playing", t_mx_noring),
             ("Song DJ mixer: DJ filters", t_mx_filters),
@@ -8264,6 +8645,8 @@ def main():
         ]
         if "mx_eq" in sym:
             cases += [("Song DJ mixer: DJ FX behind the compressor, routed", t_mx_fx)]
+        if "mx_master" in sym:
+            cases += [("Master chain: off untouched, on CLR+CMP, DJ, MAX, under the ceiling", t_mx_master)]
     if "deck_knob_turn" in sym:
         kind = kind + "+editor"
         cases += [

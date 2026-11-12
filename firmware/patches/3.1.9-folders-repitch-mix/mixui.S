@@ -329,7 +329,7 @@ show_layer:
     movs    r3, #0
     call    SLIDER_BIND
     add.w   r0, r6, #F_LABEL
-    ldr     r1, [r5, #8]
+    ldr     r1, =s_nolabel             @ the label is drawn vertically by fader_draw
     call    SET_TEXT
 3:
     adds    r5, #12
@@ -343,13 +343,55 @@ show_layer:
 @ Corner rects in GUI coordinates (fader, x, y, w, h).
 .align 2
 corner_rects:
-    .hword  F_TL, 1,   111, 30, 109
-    .hword  F_TR, 288, 111, 30, 109
-    .hword  F_BL, 1,   1,   30, 109
-    .hword  F_BR, 288, 1,   30, 109
+    .hword  F_TL, 1,   111, 12, 109
+    .hword  F_TR, 307, 111, 12, 109
+    .hword  F_BL, 1,   1,   12, 109
+    .hword  F_BR, 307, 1,   12, 109
     .hword  0, 0, 0, 0, 0
 frame_offs:
     .hword  0x29C8, 0x2A68, 0x2B08, 0x2BA8, 0
+
+@ Pad grid shared by Pads and Mix: 4 columns of 60 px on a 61 px pitch from x=14 (stock:
+@ 63 px on 64), rows as stock (54 px on 55, GUI y bottom-up from 1). The left strip is
+@ x=1..12 and the right strip x=259..318, so the grid sits slightly left of centre.
+@ r0 = widget, r1 = offset of its first cell, r2 = row stride. Cells are 0x1A0 apart.
+.thumb_func
+place_cells:
+    push.w  {r4, r5, r6, r7, r8, r9, lr}
+    sub     sp, #16
+    add     r4, r0, r1
+    mov     r5, r2
+    movs    r6, #0                  @ row
+1:
+    mov     r7, r4                  @ cell
+    mov.w   r8, #0                  @ column
+    mov.w   r9, #14                 @ x
+2:
+    str     r9, [sp]
+    movs    r0, #55
+    muls    r0, r6, r0
+    adds    r0, #1
+    str     r0, [sp, #4]
+    movs    r0, #60
+    str     r0, [sp, #8]
+    movs    r0, #54
+    str     r0, [sp, #12]
+    ldr     r0, [r7]
+    ldr     r2, [r0, #0x20]         @ vtable setRect
+    mov     r0, r7
+    mov     r1, sp
+    blx     r2
+    add.w   r7, r7, #0x1A0
+    add.w   r9, r9, #61
+    add.w   r8, r8, #1
+    cmp.w   r8, #4
+    blt     2b
+    add     r4, r5
+    adds    r6, #1
+    cmp     r6, #4
+    blt     1b
+    add     sp, #16
+    pop.w   {r4, r5, r6, r7, r8, r9, pc}
 
 @ Attach the four faders once per Mix widget, give them our vtable and corners, and hide
 @ the empty frames behind them. r0 = Mix. Returns r0 = 1 if it attached now.
@@ -397,6 +439,10 @@ attach:
     strb    r6, [r1, #W_HIDDEN]
     b       3b
 4:
+    mov     r0, r4
+    movw    r1, #0x3AC              @ Mix pad cells
+    movw    r2, #0x680
+    bl      place_cells
     bl      mx_state
     movs    r1, #0
     str     r1, [r0, #MX_LAYER]
@@ -578,10 +624,103 @@ is_bipolar:
     movs    r0, #0
     pop     {r4, r5, r6, pc}
 
-@ draw(fader, ctx): stock look for unipolar params; bipolar ones get a centre line and a
-@ bar from the centre to the value. ctx[0] = full redraw, ctx+4 = canvas.
+@ r0 = param id. Returns r0 = the label string of that id's corner in the layer tables, or 0.
+@ Clobbers r1-r3.
+.thumb_func
+label_of:
+    adr     r1, layer_main
+    movs    r3, #10                 @ 5 entries per table incl. the terminator, two tables
+1:
+    ldrh    r2, [r1]
+    cbz     r2, 2f
+    ldrh    r2, [r1, #4]
+    cmp     r2, r0
+    beq     3f
+2:
+    adds    r1, #12
+    subs    r3, #1
+    bne     1b
+    movs    r0, #0
+    bx      lr
+3:
+    ldr     r0, [r1, #8]
+    bx      lr
+
+@ draw_label(fader r0, canvas r1): the fader's label as upright capitals running top to
+@ bottom, 5x7 pixels per letter on a 9 px pitch, centred in the 12 px strip, 3 px below the
+@ top edge. 1x1 FILL_RECTs; fine, it only runs on repaints.
+.thumb_func
+draw_label:
+    push.w  {r4, r5, r6, r7, r8, r9, r10, r11, lr}
+    sub     sp, #16
+    mov     r4, r0
+    mov     r5, r1
+    ldrh    r0, [r4, #F_ID]
+    bl      label_of
+    mov     r6, r0
+    cbz     r6, 9f
+    ldr     r8, [r4, #8]
+    ldr     r0, [r4, #0x10]
+    add     r8, r0
+    sub.w   r8, r8, #4              @ y of the first letter's top row (y runs bottom-up)
+1:
+    ldrb    r0, [r6], #1
+    cbz     r0, 9f
+    subs    r0, #65
+    movs    r1, #7
+    muls    r0, r1, r0
+    ldr     r7, =font_5x7
+    adds    r7, r7, r0
+    mov.w   r9, #0                  @ row
+2:
+    ldrb.w  r11, [r7, r9]
+    mov.w   r10, #0                 @ column
+3:
+    tst.w   r11, #0x10
+    beq     4f
+    ldr     r0, [r4, #4]
+    adds    r0, #3
+    add     r0, r10
+    str     r0, [sp]
+    sub.w   r0, r8, r9
+    str     r0, [sp, #4]
+    movs    r0, #1
+    str     r0, [sp, #8]
+    str     r0, [sp, #12]
+    mov     r0, sp
+    movs    r1, #C_WHITE
+    mov     r2, r5
+    call    FILL_RECT
+4:
+    lsl.w   r11, r11, #1
+    add.w   r10, r10, #1
+    cmp.w   r10, #5
+    blt     3b
+    add.w   r9, r9, #1
+    cmp.w   r9, #7
+    blt     2b
+    sub.w   r8, r8, #9
+    b       1b
+9:
+    add     sp, #16
+    pop.w   {r4, r5, r6, r7, r8, r9, r10, r11, pc}
+
+@ draw(fader, ctx): the body below, then the vertical label on top. ctx+4 = canvas.
 .thumb_func
 fader_draw:
+    push    {r4, r5, lr}
+    mov     r4, r0
+    mov     r5, r1
+    bl      fader_body
+    ldr     r1, [r5, #4]
+    mov     r0, r4
+    bl      draw_label
+    pop     {r4, r5, pc}
+
+@ Stock look for unipolar params; bipolar ones get a centre line and a bar from the centre
+@ to the value. ctx[0] = full redraw, ctx+4 = canvas.
+.thumb_func
+fader_body:
     push    {r4, r5, r6, r7, lr}
     sub     sp, #20
     mov     r4, r0
@@ -745,13 +884,42 @@ mix_btn_screen:
     bx      lr
 
 .align 2
-s_vol: .asciz "Vo"
-s_dec: .asciz "De"
-s_cut: .asciz "Cu"
-s_pit: .asciz "Pi"
-s_pan: .asciz "Pa"
-s_att: .asciz "At"
-s_sa:  .asciz "A"
-s_sb:  .asciz "B"
+s_vol: .asciz "VOL"
+s_dec: .asciz "DCY"
+s_cut: .asciz "CUT"
+s_pit: .asciz "PIT"
+s_pan: .asciz "PAN"
+s_att: .asciz "ATK"
+s_sa:  .asciz "SNDA"
+s_sb:  .asciz "SNDB"
+s_nolabel: .asciz ""
+@ 5x7 capitals A-Z, one byte per row, bit 4 = leftmost pixel.
+font_5x7:
+    .byte 0x0E,0x11,0x11,0x1F,0x11,0x11,0x11  @ A
+    .byte 0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E  @ B
+    .byte 0x0E,0x11,0x10,0x10,0x10,0x11,0x0E  @ C
+    .byte 0x1E,0x11,0x11,0x11,0x11,0x11,0x1E  @ D
+    .byte 0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F  @ E
+    .byte 0x1F,0x10,0x10,0x1E,0x10,0x10,0x10  @ F
+    .byte 0x0E,0x11,0x10,0x17,0x11,0x11,0x0F  @ G
+    .byte 0x11,0x11,0x11,0x1F,0x11,0x11,0x11  @ H
+    .byte 0x0E,0x04,0x04,0x04,0x04,0x04,0x0E  @ I
+    .byte 0x07,0x02,0x02,0x02,0x02,0x12,0x0C  @ J
+    .byte 0x11,0x12,0x14,0x18,0x14,0x12,0x11  @ K
+    .byte 0x10,0x10,0x10,0x10,0x10,0x10,0x1F  @ L
+    .byte 0x11,0x1B,0x15,0x15,0x11,0x11,0x11  @ M
+    .byte 0x11,0x11,0x19,0x15,0x13,0x11,0x11  @ N
+    .byte 0x0E,0x11,0x11,0x11,0x11,0x11,0x0E  @ O
+    .byte 0x1E,0x11,0x11,0x1E,0x10,0x10,0x10  @ P
+    .byte 0x0E,0x11,0x11,0x11,0x15,0x12,0x0D  @ Q
+    .byte 0x1E,0x11,0x11,0x1E,0x14,0x12,0x11  @ R
+    .byte 0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E  @ S
+    .byte 0x1F,0x04,0x04,0x04,0x04,0x04,0x04  @ T
+    .byte 0x11,0x11,0x11,0x11,0x11,0x11,0x0E  @ U
+    .byte 0x11,0x11,0x11,0x11,0x11,0x0A,0x04  @ V
+    .byte 0x11,0x11,0x11,0x15,0x15,0x15,0x0A  @ W
+    .byte 0x11,0x11,0x0A,0x04,0x0A,0x11,0x11  @ X
+    .byte 0x11,0x11,0x0A,0x04,0x04,0x04,0x04  @ Y
+    .byte 0x1F,0x01,0x02,0x04,0x08,0x10,0x1F  @ Z
 .align 2
 .ltorg
