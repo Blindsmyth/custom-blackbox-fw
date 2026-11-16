@@ -1394,18 +1394,18 @@ static float mc_tempo(void)
 }
 
 /* master.S master_comp (0x08053CA0, compressor on): 1 = skip the stock compressor and its limiter.
- * Only with the chain on, which has CMP (Squish or the stock compressor model) and MAX. With the chain
- * off the stock compressor runs as ever when it is switched on (Tools -> Master), the Song DJ block
- * inside it (mx_comp_tap), and mx_master's limiter model after it. Skipping it there sent the bus
- * 4-10 dB hotter into the DJ block and the safety limiter, whose per-block gain steps then sounded
- * metallic (2026-11-11, on the unit). */
+ * With bank 2 running they are never used: the chain on has CMP (Squish or the stock compressor
+ * model) and MAX; the chain off has only the stock limiter model (mx_master). The render is the only
+ * reader of the Compressor flag (SE+0x28D60), so this is the same as switching it off.
+ * Without the compressor's -4 dB and 4:1 in front, the bus into the Song DJ block runs over 0 dBFS:
+ * the loop ring's headroom (RING_HEAD) is what keeps the loop clean (2026-11-12, on the unit). */
 int mc_comp_skip(void)
 {
     McShared *s = MC_SHARED;
 #if defined(MC_NO_AUDIO) || defined(MC_KEEP_COMP)
     return 0 * (int)(unsigned)s;
 #endif
-    return mc_fn() && s->magic == MC_SHARED_MAGIC && s->p.chain_on > 0.5f;
+    return mc_fn() && s->magic == MC_SHARED_MAGIC;
 }
 
 /* mx_eq: bank 2 running and the chain switched off. */
@@ -1423,7 +1423,9 @@ int mc_chain_off(void)
  * block's mix (0x08062784), so it is taken where stock takes it: after CLR + CMP (the compressor's
  * place), before the DJ block and MAX. Taken after them, the loop and the DJ FX came round again
  * one block later: a comb filter, a metallic sound (2026-11-11, on the unit).
- * With the chain on: CLR + CMP, the copy, the Song DJ block (capture, DJ FX), MAX. */
+ * With the chain on: CLR + CMP, the copy, MAX, the Song DJ block, the stock limiter model. The DJ loop
+ * is recorded from the mastered project and played back round the chain, so it is not mastered twice;
+ * the DJ filters and FX sit there too, as on a DJ mixer after the master. Only the safety limiter follows. */
 void mx_master(void *dst, void *bus)
 {
     McShared *s = MC_SHARED;
@@ -1450,11 +1452,12 @@ void mx_master(void *dst, void *bus)
                 MC_DSP(fn, MC_OP_PRE, (unsigned)l, (unsigned)r, (unsigned)n);
                 BUS_COPY(dst, bus);
                 dst = 0;
-                if (live() && !M->done) {         /* not run in the compressor already */
-                    mx_block(l, r, n);
-                    M->done = 1;                  /* mx_bus_tap: already done */
-                }
                 MC_DSP(fn, MC_OP_MAX, (unsigned)l, (unsigned)r, (unsigned)n);
+                if (live() && !M->done) {         /* not run in the compressor already */
+                    mx_block(l, r, n);            /* records the mastered project; the loop and the */
+                    M->done = 1;                  /* DJ FX go round the chain (mx_bus_tap: done) */
+                }
+                MC_DSP(fn, MC_OP_LIMIT, (unsigned)l, (unsigned)r, (unsigned)n);
             }
         } else {
             /* the chain off: no master processing, the Song DJ block, then the stock limiter model as

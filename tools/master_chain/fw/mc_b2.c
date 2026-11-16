@@ -55,7 +55,8 @@ void mc_b2_run(unsigned op, unsigned l, unsigned r, unsigned n)
         mc_run_limit(&chain, L, R, (int)n);
         s->m.lim_gr_db = chain.m.lim_gr_db;
         s->m.out_peak_db = chain.m.out_peak_db;
-        if (chain.m.lim_gr_db < s->max_hold) s->max_hold = chain.m.lim_gr_db;
+        if (s->p.chain_on < 0.5f && chain.m.lim_gr_db < s->max_hold)   /* chain on: MAX's meter */
+            s->max_hold = chain.m.lim_gr_db;
         break;
     default:
         break;

@@ -3,7 +3,9 @@
 The FX row becomes `DLY | RVB | AUX | EQ | CLR | CMP | MAX`. The master path becomes:
 
 EQ (5-band dynamic) -> CLR (Airwindows Mastering2) -> CMP (Airwindows PurestSquish, or the stock
-compressor) -> [loop capture + DJ FX, unchanged] -> MAX (one-knob look-ahead maximizer).
+compressor) -> MAX (one-knob look-ahead maximizer) -> [Song DJ: loop capture, loop playback, DJ
+filters and FX] -> the stock limiter model as a safety. The DJ loop is recorded from the mastered
+project and played back round the chain, so it is never mastered twice.
 
 The DSP is the desktop prototype's plain C (`tools/master_chain/src/dsp`). It is checked against the
 original Airwindows code (`tools/master_chain/reference`) and costs ~14% of a 256-frame block on
@@ -24,7 +26,7 @@ the M7 model (`tools/master_chain/m7`). The plugin in `tools/master_chain` is th
   - `master_comp` (0x08053CA0) returns without running the stock compressor.
   - `mx_master` replaces `bl FUN_0804D880` at 0x0805353A.
   - That call copies bus 0 to the recorder's resample input, SE+0x15864.
-  - `mx_master` runs CLR+CMP -> `mx_block` (capture + DJ FX) -> MAX on bus 0, makes the copy, and
+  - `mx_master` runs CLR+CMP -> the copy -> MAX -> `mx_block` (capture, loop, DJ FX) -> the safety limiter on bus 0, and
     sets `done` so `mx_bus_tap` skips.
 - **Resampling:** it records the mastered signal. With the compressor on, stock already records
   post-compressor.
@@ -60,11 +62,11 @@ the M7 model (`tools/master_chain/m7`). The plugin in `tools/master_chain` is th
 4 that fail also fail on the committed build: Song vt 0x30 / 0x34, Lineup Fill / Grain.
 - **Cost:** bank 2 takes ~183k cycles per 128-frame block, 14.3%.
 - **Defaults:** the chain starts **off** (`Chain:` 0x13D in `settings.tml`). Switch it on on MAX.
-- **Chain off** (bank 2 running): no EQ, no CLR/CMP/MAX. The stock compressor runs when it is switched
-  on (its switch is the 5th knob on MAX, side 2; Tools -> Master has no button any more), with the
-  Song DJ block inside it as stock, then the stock limiter model as a safety (`MC_OP_LIMIT`).
-  Skipping the stock compressor there made the DJ loop and filters sound crushed on the unit
-  (2026-11-11, not explained yet: not CPU, not the bank-2 DSP).
+- **Chain off** (bank 2 running): no master processing. No EQ, no CLR/CMP/MAX, no stock compressor
+  (whatever its switch says; the render is its flag's only reader, so skipping it is the same as off).
+  The Song DJ block, then the stock limiter model as a safety (`MC_OP_LIMIT`).
+  Without the compressor in front the bus runs over 0 dBFS: the loop ring needs its 18 dB of headroom,
+  or the loop is squared off and sounds crushed (found on the unit, 2026-11-11/12).
 - **Bank 2 not running:** everything is stock.
 - **Tools page 4:** the Master page (the stock compressor's settings) has no button any more. CMP's
   Stock type edits the same ids. The limiter's attack/release (0x1A8/0x1A9) are not reachable on the

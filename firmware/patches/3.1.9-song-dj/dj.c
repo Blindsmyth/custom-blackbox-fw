@@ -1679,7 +1679,7 @@ static const unsigned short ret_row_off[4] = {0x70 + 2 * 0xA0, 0x70 + 0xA0, 0x70
 static const unsigned short mc_ids_clr[] = {0x13F, 0x140, 0x141, 0x143, 0x142, 0x144, 0};  /* Sidepass Glue Scope Girth | Skronk Drive */
 static const unsigned short mc_ids_sq[] = {ID_MC_TYPE, 0x145, 0x146, 0x147, 0x148, 0};     /* Type Squish BassBlm Output | Dry/Wet */
 static const unsigned short mc_ids_stock[] = {ID_MC_TYPE, 0x131, 0x132, 0x12F, 0x130, 0x13A, 0}; /* Type Thresh Ratio Atk Rel | Gain */
-static const unsigned short mc_ids_max[] = {0x149, 0x14A, ID_MC_CHAIN, 0x14C, 0xB4, 0};     /* Maximize Rel x Chain Values; side 2: stock Compressor on/off */
+static const unsigned short mc_ids_max[] = {0x149, 0x14A, ID_MC_CHAIN, 0x14C, 0};           /* Maximize Rel x Chain Values */
 
 static unsigned row_lit(unsigned pos, unsigned key, int eq)
 {

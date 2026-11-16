@@ -6450,7 +6450,7 @@ def _mx_fx_rig(bench):
 def t_mx_master(bench, res):
     """--emu build: the master chain (docs/master-chain.md). Bank 2 boots; mx_master (the render's
     resample copy, 0x0805353A) leaves bus 0 alone with the chain off, and with it on runs CLR + CMP,
-    the copy (voices read it back), the Song DJ block, then MAX; the stock compressor is skipped; the cost per block."""
+    the copy (voices read it back), MAX, the Song DJ block, then the safety limiter; the stock compressor is skipped; the cost per block."""
     pay = rb_payload(bench)
     if pay is None or "_emu" not in bench.image_path:
         res.check(True, "master chain needs the --emu build (skipped)")
@@ -6504,6 +6504,11 @@ def t_mx_master(bench, res):
     from unicorn import UC_HOOK_CODE as _HC
     _dj = sym["mx_block"] & ~1
     _hdj = b.mu.hook_add(_HC, lambda mu, a, sz, d: order.append("dj"), begin=_dj, end=_dj + 1)
+    from unicorn.arm_const import UC_ARM_REG_R1 as _R1
+    _rc = sym["rb_call_on_stack"] & ~1
+    _ops = {3: "max", 5: "lim"}
+    _hrc = b.mu.hook_add(_HC, lambda mu, a, sz, d: order.append(_ops[mu.reg_read(_R1)]) if mu.reg_read(_R1) in _ops else None,
+                         begin=_rc, end=_rc + 1)
     sine = lambda k: [0.3 * math.sin(2 * math.pi * 1000 * (k * 128 + i) / 48000) for i in range(128)]
 
     def block(k, amp=1.0):
@@ -6520,10 +6525,9 @@ def t_mx_master(bench, res):
         x, y = block(k)
     res.check(list(y) == list(struct.unpack('<128f', struct.pack('<128f', *x))) and len(copies) == 9 and copies[-1] == (dst, bus),
               "chain off: bus 0 untouched, the resample copy still made")
-    res.check(order[-2:] == ["copy", "dj"], f"chain off: the copy voices read back is taken before the DJ block {order[-2:]}")
-    res.check(b.call(sym["mc_comp_skip"]) == 0,
-              "chain off: the stock compressor runs when switched on (skipped, the DJ block ran 4-10 dB hotter)")
-    res.check(order[-2:] == ["copy", "dj"] and order.count("dj") == 9,
+    res.check(order[-3:-1] == ["copy", "dj"], f"chain off: the copy voices read back is taken before the DJ block {order[-3:-1]}")
+    res.check(b.call(sym["mc_comp_skip"]) == 1, "chain off: no stock compressor (stock's limiter goes with it)")
+    res.check(order[-3:] == ["copy", "dj", "lim"] and order.count("dj") == 9,
               f"chain off: the DJ block ran once per block, inside, before the safety limiter ({order.count('dj')} in 9)")
 
     vals[0x13D] = 1
@@ -6542,9 +6546,10 @@ def t_mx_master(bench, res):
     res.check(peak <= 0.96606 and peak > 0.5, f"chain on, Maximize 1000: peak {peak:.4f} under the -0.3 dBFS ceiling")
     res.check(rms(outs) > rms(ins) * 1.5, f"... louder: rms {rms(ins):.3f} -> {rms(outs):.3f}")
     res.check(order.count("dj") == 60, f"chain on: the DJ block ran once per block, inside (mx_bus_tap skips it) ({order.count('dj')} in 60)")
-    res.check(order[-2:] == ["copy", "dj"],
-              f"chain on: the copy is taken after CLR + CMP, before the DJ block and MAX (no comb) {order[-2:]}")
+    res.check(order[-4:] == ["copy", "max", "dj", "lim"],
+              f"chain on: CLR + CMP, the copy, MAX, the DJ block, the safety limiter {order[-4:]}")
     b.mu.hook_del(_hdj)
+    b.mu.hook_del(_hrc)
     met = sym["mc_meters"]
     mp = b.call(met)
     gr = struct.unpack("<f", bytes(b.mu.mem_read(mp + 4 * (2 * 5 + 3), 4)))[0] if mp else 0.0
@@ -6558,9 +6563,9 @@ def t_mx_master(bench, res):
     # the chain off again, a hot input: no EQ, no chain, the stock limiter model holds it under 0 dBFS
     vals[0x13D] = 0
     put_bag()
-    for k in range(60, 68):                            # the bag is read every 8th block
-        block(k, 0.2)
-    quiet = [block(k, 0.2) for k in range(68, 70)]
+    for k in range(60, 2700):                          # the bag is read every 8th block; the safety
+        block(k, 0.2)                                  # limiter (behind the DJ block with the chain on
+    quiet = [block(k, 0.2) for k in range(68, 70)]     # too) releases with 750 ms to unity (~6 s)
     res.check(all(list(y) == list(struct.unpack("<128f", struct.pack("<128f", *x))) for x, y in quiet),
               "chain off, quiet input: untouched")
     hot = [block(k, 4.0)[1] for k in range(70, 110)]           # peaks 1.2: 1.6 dB over 0 dBFS
@@ -6586,7 +6591,7 @@ def t_mx_master(bench, res):
     b.mu.mem_write(APP_OBJ + 0x28, struct.pack("<H", 0x330))   # on the master chain,
     b.mu.mem_write(0x38006F00 + 0xF0, b"\x03")         # MAX
     res.check(b.call(sym["dj_back_key"], APP_OBJ) == 0, "BACK on MAX is taken (clears the hold)")
-    block(110, 4.0)
+    block(110, 0.2)
     gr_now, hold = meter_text()
     res.check(held + 3.0 < hold <= 0.0, f"... the hold starts again from the next block (MAX {held} -> {hold})")
     b.mu.mem_write(0x38006F00 + 0xF0, b"\x01")         # CLR: no meter, BACK is stock's

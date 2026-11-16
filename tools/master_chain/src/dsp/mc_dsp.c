@@ -171,7 +171,7 @@ static void lim_block(McChain *c, float *L, float *R, int n, McMeters *m)
     float target = pk > 1.f ? 1.f / pk : 1.f;
     float coef = block_coef(c, n, target < c->lim_gain ? p->lim_attack_ms : p->lim_release_ms);
     float newg = c->lim_gain + (target - c->lim_gain) * coef;
-    if (newg > 1.f) newg = 1.f;
+    if (newg > 0.99989f) newg = 1.f;         /* within 0.001 dB: unity, so a bus under 0 dBFS passes bit-exact */
     float old = c->lim_gain;
     for (int i = 0; i < n; i++) {
         float gi = old + (newg - old) * (float)(i + 1) / (float)n;
