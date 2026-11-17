@@ -1423,8 +1423,9 @@ int mc_chain_off(void)
  * block's mix (0x08062784), so it is taken where stock takes it: after CLR + CMP (the compressor's
  * place), before the DJ block and MAX. Taken after them, the loop and the DJ FX came round again
  * one block later: a comb filter, a metallic sound (2026-11-11, on the unit).
- * With the chain on: CLR + CMP, the copy, MAX, the Song DJ block, the stock limiter model. The DJ loop
- * is recorded from the mastered project and played back round the chain, so it is not mastered twice;
+ * With the chain on: CLR + CMP, the copy, MAX, the Song DJ block, a look-ahead safety limiter (MAX's,
+ * no drive; the stock block limiter hard-clipped the loop + project's overs: clicks). The DJ loop is
+ * recorded from the mastered project and played back round the chain, so it is not mastered twice;
  * the DJ filters and FX sit there too, as on a DJ mixer after the master. Only the safety limiter follows. */
 void mx_master(void *dst, void *bus)
 {

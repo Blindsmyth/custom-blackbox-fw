@@ -3902,6 +3902,12 @@ def t_lineup_deck(bench, res):
     tail = last_pos()
     res.check(tail and all(4 * spu - 600 <= p < 8 * spu + 600 for p in tail),
               f"Bungee relaunches into the loop at Loop End (playhead {min(tail) if tail else None}..{max(tail) if tail else None})")
+    # the relaunch fades the old position out over 128 frames: no step at the wrap (it clicked, and
+    # Song DJ recorded the click into the captured loop). The source's own steps at unit edges are
+    # 0.02, the sine's slope at most ~0.012 a frame.
+    steps = [abs(out[i + 1] - out[i]) for i in range(len(out) - 1)]
+    big = max(steps) if steps else 9
+    res.check(big < 0.05, f"Bungee's loop wrap is faded: largest step {big:.4f} at frame {steps.index(big) if steps else -1}")
 
     # A sequenced cue note one block after a bar boundary (it arrives after the bar's first unit was
     # chosen): Bungee still jumps at that bar, not a bar later. The launch is on a bar, as a quantised
@@ -6548,6 +6554,19 @@ def t_mx_master(bench, res):
     res.check(order.count("dj") == 60, f"chain on: the DJ block ran once per block, inside (mx_bus_tap skips it) ({order.count('dj')} in 60)")
     res.check(order[-4:] == ["copy", "max", "dj", "lim"],
               f"chain on: CLR + CMP, the copy, MAX, the DJ block, the safety limiter {order[-4:]}")
+
+    # the DJ block adds overs after MAX (loop + project at the crossfader's centre): the look-ahead
+    # safety limiter has its gain in place before them, no hard clip at 0 dBFS (clicks, 2026-11-16)
+    def hot_dj(bd_):
+        for a in (bd_.arg(0), bd_.arg(1)):
+            v = struct.unpack("<128f", bytes(b.mu.mem_read(a, 512)))
+            b.mu.mem_write(a, struct.pack("<128f", *[x * 2.0 for x in v]))
+        return 0
+    b.stub(sym["mx_block"], hot_dj)
+    hot = [block(k)[1] for k in range(60, 72)]
+    b.unstub(sym["mx_block"])
+    pk = max(abs(v) for blk in hot for v in blk)
+    res.check(0.9 < pk <= 0.96606, f"chain on, the DJ block 6 dB over: every sample under the ceiling from the first block (peak {pk:.4f})")
     b.mu.hook_del(_hdj)
     b.mu.hook_del(_hrc)
     met = sym["mc_meters"]

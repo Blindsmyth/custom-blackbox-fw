@@ -4,8 +4,11 @@ The FX row becomes `DLY | RVB | AUX | EQ | CLR | CMP | MAX`. The master path bec
 
 EQ (5-band dynamic) -> CLR (Airwindows Mastering2) -> CMP (Airwindows PurestSquish, or the stock
 compressor) -> MAX (one-knob look-ahead maximizer) -> [Song DJ: loop capture, loop playback, DJ
-filters and FX] -> the stock limiter model as a safety. The DJ loop is recorded from the mastered
-project and played back round the chain, so it is never mastered twice.
+filters and FX] -> a safety limiter. The DJ loop is recorded from the mastered project and played
+back round the chain, so it is never mastered twice. With the chain on the safety limiter is MAX's
+look-ahead limiter with no drive (`run_safety` in `fw/mc_b2.c`, 1.5 ms more latency): the stock
+block limiter model hard-clipped the loop + project's overs for several ms before its gain arrived,
+which clicked on the unit (2026-11-16). With the chain off it is the stock limiter model.
 
 The DSP is the desktop prototype's plain C (`tools/master_chain/src/dsp`). It is checked against the
 original Airwindows code (`tools/master_chain/reference`) and costs ~14% of a 256-frame block on

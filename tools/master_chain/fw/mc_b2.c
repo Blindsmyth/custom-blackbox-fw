@@ -4,7 +4,22 @@
 #include "mc_fw.h"
 
 static McChain chain;
-static unsigned booted;
+static McMax safety;                    /* chain on: the last stage, after the Song DJ block */
+static unsigned booted, safety_on;
+
+/* Chain on, the safety limiter is MAX's look-ahead limiter with no drive: the Song DJ loop and FX
+ * are summed after MAX, and the stock block limiter hard-clips an over for several ms before its
+ * gain arrives (clicks on the loop at the crossfader's centre). This one has the gain in place
+ * before the over leaves its 1.5 ms delay. */
+static void run_safety(McShared *s, float *L, float *R, int n)
+{
+    McParams p = chain.p;
+    float gr = 0.f;
+    p.max_amount = 0.f;
+    p.max_relx = 1.f;
+    mc_max_process(&safety, chain.sr, chain.bpm, &p, L, R, n, &gr, 0);
+    s->m.lim_gr_db = gr;
+}
 
 void mc_b2_run(unsigned op, unsigned l, unsigned r, unsigned n)
 {
@@ -14,6 +29,7 @@ void mc_b2_run(unsigned op, unsigned l, unsigned r, unsigned n)
         return;
     if (!booted || op == MC_OP_RESET) {
         mc_init(&chain, 48000.f);
+        safety_on = 0;
         booted = 1;
         if (op == MC_OP_RESET)
             return;
@@ -52,6 +68,14 @@ void mc_b2_run(unsigned op, unsigned l, unsigned r, unsigned n)
         if (chain.m.max_gr_db < s->max_hold) s->max_hold = chain.m.max_gr_db;
         break;
     case MC_OP_LIMIT:
+        if (s->p.chain_on >= 0.5f) {
+            if (!safety_on)                  /* no stale audio from before in its delay */
+                mc_max_reset(&safety, 48000.f);
+            safety_on = 1;
+            run_safety(s, L, R, (int)n);
+            break;
+        }
+        safety_on = 0;
         mc_run_limit(&chain, L, R, (int)n);
         s->m.lim_gr_db = chain.m.lim_gr_db;
         s->m.out_peak_db = chain.m.out_peak_db;
