@@ -6,7 +6,7 @@ One image with everything on this line:
 - **Clip Deck** (3.1.E, `../../3.1.9-clip-deck`): Start / End / Loop, 8 hot cues, the waveform editor.
 - **Song DJ row** (`../../3.1.9-song-dj`, `docs/song-dj.md`): SONG again on the Song screen gives Beatjump << / >> and Autoloop for every playing Clip, pad sequence and the song.
 - **Song cues:** a Song scene sends Clip pads to one of their hot cues when it starts (see below).
-- **Warp Stutter / Fill / Repitch / Chop / Grain / Bungee.**
+- **Warp Stutter / Fill / Repitch / Chop / Grain / Deluge / Bungee.**
 - **The preset-folder fixes** (`docs/preset-folders.md`):
   - no dropout when entering big folders;
   - Save / Save As safe in deep folders;
@@ -24,7 +24,8 @@ The menu version reads `3.1.T`. Built with `build_patch.py --lineup`.
 4. Presets saved on 3.1.B load with their old Warp numbers, which mean different modes here:
    - Bungee was 1 (2 in the Repitch build), which is now Fill (or Repitch).
    - Set Warp again on those pads.
-5. Presets saved on 3.1.E keep their Start / End / Loop and cues: they're stored by name, and only the internal ids moved.
+5. **Presets saved on an earlier 3.1.T with Bungee load as Deluge.** Deluge came in at Bungee's old value 5, before it, and Bungee is now 6. Set Warp back to Bungee on those pads if you want it.
+6. Presets saved on 3.1.E keep their Start / End / Loop and cues: they're stored by name, and only the internal ids moved.
 
 ## The modes
 
@@ -37,6 +38,7 @@ Clip → Pos → **Warp**. A Slicer pad always plays stock grains, except with R
 | **Repitch** | Varispeed: the grain rate is scaled by the tempo ratio, so pitch moves with tempo. | stock path, scaled |
 | **Chop** | Fill's segments, but each segment fades out (1024 frames) where its audio ends. A slower tempo leaves a gap, a faster one cuts. It's a sliced-loop player that retriggers on the grid or the slices. | bank 2, per lane |
 | **Grain** | The stock Granular engine's model, synced to the clock: the playhead scans the file at the tempo ratio. The settings are fixed (see below). With Sync on, the playhead snaps to the clock as the clock reaches each segment. Grains are centred on the playhead. | bank 2, per lane |
+| **Deluge** | The Synthstrom Deluge's time stretcher (see below). Hops of 3k–12k frames, each starting a new play head where the clock will be mid-hop. A hop's length is picked so the hops land on hits, the new head is slid up to ±10 ms to line up with the old one, and the two crossfade. In between it plays at 1x, so there's no phasey smear. Sync and the segments don't apply. | bank 2, per lane |
 | **Bungee** | 3.1.B's phase vocoder: one Clip at a time, the latest launch wins, offered only within one choke group (`../README.md`). | bank 2, own task |
 
 Grain's settings are the Warp Lab's for pads and melodic material: Size 200, Density 1000, Scatter 9, Window 100, Pan Rnd 300, Root none.
@@ -46,9 +48,9 @@ How the modes follow the Sync parameter:
 - **Sync = Slice:** the segments are the pad's slices.
 - **Sync None:** the whole file is one segment.
 
-Fill, Chop and Grain follow the clock while the transport runs: the launch's tick, the tempo map, and the Clip's length in ticks, as Bungee's clock lock does. With the transport stopped they follow the tempo ratio instead.
+Fill, Chop, Grain and Deluge follow the clock while the transport runs: the launch's tick, the tempo map, and the Clip's length in ticks, as Bungee's clock lock does. With the transport stopped they follow the tempo ratio instead.
 
-**Unlike Bungee, Fill, Chop and Grain are not one voice.** Each lane has its own engine, so any number of pads can use them, and a choke group behaves as stock. Up to 8 lanes render at once; a 9th plays stock grains.
+**Unlike Bungee, Fill, Chop, Grain and Deluge are not one voice.** Each lane has its own engine, so any number of pads can use them, and a choke group behaves as stock. Up to 8 lanes render at once; a 9th plays stock grains.
 
 **Around the engines** they behave like a stock lane (`tools/stretch/bungee/lane.h`):
 - the pad's Level, with velocity and mods, and pan;
@@ -56,9 +58,31 @@ Fill, Chop and Grain follow the clock while the transport runs: the launch's tic
 - the pad view's playing feedback and playhead;
 - STOP, mute, release, and Loop off / Trigger ending at the end of the file.
 
-If bank 2 isn't running (`Bungee!` on the list), Fill, Chop, Grain and Stutter on slices play stock grains.
+If bank 2 isn't running (`Bungee!` on the list), Fill, Chop, Grain, Deluge and Stutter on slices play stock grains.
 
 **Chop** was called Slice in the first 3.1.T build. Its Warp value is still 3, so presets keep it.
+
+### Deluge
+
+A middle road between Fill and Bungee: better than stock Stretch and Fill on full mixes and sustained sounds, and much lighter than Bungee.
+
+- **Source:** a C port of the Deluge's `TimeStretcher` (`hopEnd()`) and its percussiveness map (`Sample::fillPercCache`), from [DelugeFirmware](https://github.com/SynthstromAudible/DelugeFirmware) (`src/deluge/dsp/timestretch/`).
+  - **Licence:** GPL-3.0; the port is `tools/stretch/deluge.c` / `deluge.h`.
+  - **Changes from the original:** 48 kHz (the hop and crossfade tables scaled from 44.1 kHz), float instead of fixed point, and the Clip loops by wrapping reads.
+  - It's the Warp Lab's algorithm 9 (`tools/lab`), as heard there.
+- **How it works:**
+  - **Hops:** each hop is W output frames. W is chosen between a minimum and a maximum (tables by tempo ratio, up to ~12k frames) to cover the most "percussiveness", so hops tend to land on hits.
+  - **Alignment:** the new head is slid by up to ±10 ms so that three short moving averages line up with the old head's.
+  - **Crossfade:** a linear one (length from the tables).
+  - **At exactly 1x** it doesn't hop, as on the Deluge. If the clock moves it more than ~5 ms away from the head, it hops at once.
+- **Percussiveness on the device:** the Lab builds one byte per 128 frames for the whole file up front. That would be ~110 KB for a 5-minute clip, and the whole file read off the card. Here each lane keeps a 256-byte window that moves with the play position, from 16 pixels behind it to 112 ahead (the hop search reads ~95 ahead at most). It is computed as the play position moves on, with the same smoothing (`DELUGE_PERC_RING`).
+  - **Accuracy:** from the file's start it is byte-for-byte the Lab's map. After a jump (a relaunch elsewhere, a clock locate) the window starts again after 4096 frames of smoothing, and is within 2/255 of it.
+  - **After a jump:** it catches up at up to 2048 frames (16 pixels) per block, so the first hop after a launch or a jump may see only part of its window.
+- **Cost:** two cached read heads and a crossfade per frame, about Fill's. The bench measures (instructions per 256-frame block, emulator):
+  - **Median:** ~71k at 0.69x and ~52k at 1.3x, against Fill's ~103k.
+  - **Hop blocks:** up to ~280–340k, against Fill's ~137k. That's the hop-length and phase search, once every 3k–12k frames, with running sums instead of the Lab's direct ones (`DELUGE_FAST_SEARCH`, ~10x cheaper; the offset it picks can differ by rounding).
+  - **Memory:** ~0.9 KB per lane plus a 5 KB shared scratch.
+- **Clip Deck:** it plays the same virtual file as Fill / Chop (below). The next unit is decided ~6000 frames ahead, because Deluge's head runs ahead of the play position at faster tempos.
 
 ## Fixed after the first test on the unit
 
@@ -90,13 +114,13 @@ Measured on the bench at 90 BPM on a 130 BPM Clip (0.69x), with a click at every
 Clip Deck works as on 3.1.E (`../../3.1.9-clip-deck/README.md`), on **every** Warp mode, wherever the Clip is on a note-value Sync grid (as on 3.1.E: not with Sync None or Sync = Slice).
 
 - **Stutter and Repitch** are stock's grains, so Clip Deck steers them as it does on 3.1.E.
-- **Fill, Chop, Grain and Bungee** render in bank 2, without stock's lane render. A sequencer (`tools/stretch/bungee/lane.h`, `DeckSeq`) calls Clip Deck's own `deck_limit` / `deck_wrap_unit` at each unit, as the lane render does. It covers:
+- **Fill, Chop, Grain, Deluge and Bungee** render in bank 2, without stock's lane render. A sequencer (`tools/stretch/bungee/lane.h`, `DeckSeq`) calls Clip Deck's own `deck_limit` / `deck_wrap_unit` at each unit, as the lane render does. It covers:
   - Start, or a cue launch;
   - Loop End → Loop Start;
   - End with Loop off / Trigger;
   - a pending cue jump on the next Quant boundary;
   - the grid offset.
-- **Fill / Chop:** they play a virtual file of the next few units, so their segments, pre-roll and tail loop land on the right audio after a wrap or a jump. The next unit is decided ~320 frames (~7 ms) before it starts, for the pre-roll, so a cue pressed in those last ms takes the next Quant boundary.
+- **Fill / Chop / Deluge:** they play a virtual file of the next few units, so their segments, pre-roll and tail loop land on the right audio after a wrap or a jump. The next unit is decided ~320 frames (~7 ms) before it starts, for the pre-roll, so a cue pressed in those last ms takes the next Quant boundary.
 - **Grain:** the playhead follows the sequence.
 - **Bungee:** a loop wrap or a jump re-launches at the target on the unit it happens, the instant way a locate does: the raw Clip first, then Bungee 43 ms later. The file's own wrap (last unit → first) is straight on.
   - Fixed on the way, in 3.1.B too: after a re-launch to an earlier frame, Bungee's first output chunk still came from before the reset. It was taken for the new launch, and a second re-launch followed.
@@ -142,9 +166,9 @@ Each Song scene can send Clip pads to a hot cue when it starts. Design and the s
 
 ## Memory
 
-- **SDRAM pool:** Fill, Chop and Grain keep their state there, about 41 KB. `rb_pair` takes it from stock's SDRAM allocator once at boot, while the app is built (`RbExt.pool_bytes` in `tools/stretch/rubber/rubber.h`). It holds:
+- **SDRAM pool:** Fill, Chop, Grain and Deluge keep their state there, about 47 KB. `rb_pair` takes it from stock's SDRAM allocator once at boot, while the app is built (`RbExt.pool_bytes` in `tools/stretch/rubber/rubber.h`). It holds:
   - 8 lane engines;
-  - the loop-match scratch;
+  - the loop-match scratch and Deluge's search scratch;
   - the segment table.
 - **Bank 2's internal RAM:** unchanged from 3.1.B (+8 bytes). Bungee's heap still fits.
 - **Granular's tables:** on the device it reads stock's Hann table (`0x080D26AC`) and computes its pan gains.
@@ -165,10 +189,13 @@ Each Song scene can send Clip pads to a hot cue when it starts. Design and the s
 - Fill through a jittery clock at a slow tempo, and its CPU per block;
 - Level, loop off;
 - Stutter on slices (run-on), and on a grid left to stock;
+- Deluge at 0.69x and 1.3x (no gaps; the audio it plays is the clock's unit; no repeating buzz, also under a jittery clock), at 1x after a clock jump, and its CPU per block next to Fill's;
+- Deluge's rolling percussiveness against the Lab's whole-file one (`tools/stretch/deluge_ring_test.c`, built natively);
+- Fill, Grain, Deluge and Bungee through a Clip Deck loop;
 - Bungee's Pitch and Level.
 
 The `Song cues:` cases run the real scene template, Engine_PostParam, the song player at a scene start (`FUN_0805CDA0`) and the Song screen built by the real GUI constructor, with taps through its vtable.
 
 ## Not done yet
 
-- **Pitch on Fill / Chop / Grain:** the Pitch knob doesn't change them; their heads play at 1x.
+- **Pitch on Fill / Chop / Grain / Deluge:** the Pitch knob doesn't change them; their heads play at 1x.

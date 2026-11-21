@@ -38,14 +38,16 @@
 .ifdef WARP_RUBBER
 .ifdef WARP_LINEUP
 @ 3.1.T (3.1.9-mix-bungee --lineup): Stutter (stock Stretch) / Fill / Repitch / Chop / Grain /
-@ Bungee. Fill, Chop and Grain render each lane in bank 2 (tools/stretch/bungee/lanes.cpp, rb_lanes),
-@ and Stutter with Sync = Slice (on a grid rb_lanes declines: stock grains); Bungee is the one-voice
-@ leaf, last, so warp_count can leave it off a pad's list.
+@ Deluge / Bungee. Fill, Chop, Grain and Deluge render each lane in bank 2 (tools/stretch/bungee/
+@ lanes.cpp, rb_lanes), and Stutter with Sync = Slice (on a grid rb_lanes declines: stock grains);
+@ Bungee is the one-voice leaf, last, so warp_count can leave it off a pad's list. (Deluge came in
+@ at 5 before Bungee: a pad saved with Bungee at 5 loads as Deluge.)
 .equ WARP_FILL_V, 1
 .equ WARP_REPITCH_V, 2
 .equ WARP_CHOP_V, 3
 .equ WARP_GRAIN_V, 4
-.equ WARP_RUBBER_V, 5
+.equ WARP_DELUGE_V, 5
+.equ WARP_RUBBER_V, 6
 .else
 .ifdef WARP_KEEP_REPITCH
 .equ WARP_RUBBER_V, 2               @ Stretch / Repitch / leaf (the Bungee build with --with-repitch)
@@ -94,7 +96,7 @@ hook_register:
     adr     r3, labels_repitch
 .ifdef WARP_RUBBER
 .ifdef WARP_LINEUP
-    movs    r4, #6                  @ Stutter, Fill, Repitch, Chop, Grain, Bungee
+    movs    r4, #7                  @ Stutter, Fill, Repitch, Chop, Grain, Deluge, Bungee
 .else
 .ifdef WARP_KEEP_REPITCH
     movs    r4, #3                  @ Stretch, Repitch, leaf
@@ -363,7 +365,7 @@ hook_rate:
     bl      go_stock_rate
 .ifdef WARP_LINEUP
     @ Every Warp gets the tempo ratio: Repitch scales its grain rate by it, Fill / Chop / Grain /
-    @ Bungee render from it in bank 2, and so does Stutter on slices (stock grains ignore it).
+    @ Deluge / Bungee render from it in bank 2, and so does Stutter on slices (stock grains ignore it).
     ldrb    r0, [r4, #CLIP_FLAG]
     cmp     r0, #0
     bne     2f
@@ -603,8 +605,8 @@ hook_lane:
     ldr     r4, [sp]
     ldrb.w  r0, [r4, #CLIP_FLAG]
 .ifdef WARP_LINEUP
-    @ Stutter / Fill / Chop / Grain on a Clip: each lane renders itself in bank 2 (rb_lanes, 1 =
-    @ done; Stutter only on slices); a Slicer, or bank 2 not running, plays stock grains.
+    @ Stutter / Fill / Chop / Grain / Deluge on a Clip: each lane renders itself in bank 2 (rb_lanes,
+    @ 1 = done; Stutter only on slices); a Slicer, or bank 2 not running, plays stock grains.
     cmp     r0, #0
     beq     20f
     cmp     r0, #WARP_FILL_V
@@ -612,6 +614,8 @@ hook_lane:
     cmp     r0, #WARP_CHOP_V
     beq     20f
     cmp     r0, #WARP_GRAIN_V
+    beq     20f
+    cmp     r0, #WARP_DELUGE_V
     bne     21f
 20:
     ldrb.w  r0, [r4, #0x254]
@@ -867,6 +871,9 @@ str_fill:
 .align 2
 str_chop:
     .asciz  "Chop"
+.align 2
+str_deluge:
+    .asciz  "Deluge"
 .endif
 .align 2
 labels_repitch:
@@ -876,6 +883,7 @@ labels_repitch:
     .word   str_repitch
     .word   str_chop
     .word   str_grain
+    .word   str_deluge
 .else
     .word   str_stretch
 .endif

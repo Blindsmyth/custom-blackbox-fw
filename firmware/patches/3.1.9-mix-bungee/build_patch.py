@@ -11,7 +11,7 @@ the cave, pairing, card loader (RBTAKE.TXT / RBFREE.TXT), diag, CPU guard and th
 (tools/stretch/rubber/rubber.h) are shared.
 
 --lineup builds 3.1.T instead (lineup/BLACKBOX.BIN + lineup/BBWARP.BIN): Warp Stutter / Fill /
-Repitch / Slice / Grain / Bungee, with Fill, Slice and Grain rendering each lane in bank 2
+Repitch / Chop / Grain / Deluge / Bungee, with Fill, Chop, Grain and Deluge rendering each lane in bank 2
 (tools/stretch/bungee/lanes.cpp). Its own build directory, so it never shares objects with 3.1.B. Needs the Arm GNU Toolchain with newlib/libstdc++
 (ARM_GNU, default ~/.local/arm-gnu-15.3/bin), clang for the cave asm, and
 tools/stretch/bungee/fetch_bungee.sh run once.
@@ -128,12 +128,14 @@ CMSIS_SRC = [CMSIS / "Source" / "TransformFunctions" / f for f in (
     [CMSIS / "Source" / "CommonTables" / f for f in ("arm_common_tables.c", "arm_const_structs.c")]
 B2_SOURCES = [RUBBER / "rubber.h"] + [BUNGEE / f for f in ("bungee.cpp", "lane.h", "rt.c", "Fourier_cmsis.cpp",
                                                          "bungee-blackbox.patch")]
-# 3.1.T's per-lane modes: the Warp Lab's C, built for one voice per lane (beats.h, granular.c).
-LANE_SRC = [STRETCH / "beats.c", STRETCH / "granular.c"]
+# 3.1.T's per-lane modes: the Warp Lab's C, built for one voice per lane (beats.h, granular.c, deluge.h).
+LANE_SRC = [STRETCH / "beats.c", STRETCH / "granular.c", STRETCH / "deluge.c"]
 LANE_DEFS = ["-DBEATS_NO_CLOUD", "-DBEATS_SHARED_SCRATCH", "-DBEATS_CACHE=32", "-DGRAN_FW_HANN", "-DGRAN_SRC=256",
-             "-DGRAN_NO_TABLES", "-DBEATS_LOOP_GROW=24000"]
+             "-DGRAN_NO_TABLES", "-DBEATS_LOOP_GROW=24000",
+             "-DDELUGE_PERC_RING=256", "-DDELUGE_SHARED_SCRATCH", "-DDELUGE_CACHE=32", "-DDELUGE_FAST_SEARCH", "-DDELUGE_RESYNC=8192",
+             "-DDELUGE_RESYNC_1X=256"]
 if LINEUP:
-    B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", *LANE_SRC,
+    B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", STRETCH / "deluge.h", *LANE_SRC,
                    *MC_SRC, MC / "src" / "dsp" / "mc_dsp.h", MC / "fw" / "mc_fw.h"]
 BANK1_DEFS = ['-DRB_LABEL="Bungee"', f'-DRB_PAYLOAD_FILE="{PAYLOAD}.BIN"']
 BUNGEE_CXX = ["-std=c++20", "-fwrapv", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
