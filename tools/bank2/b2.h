@@ -65,6 +65,10 @@ extern const volatile uint32_t rb_expect_sum;
 #define FLASH_ECC   ((1u << 25) | (1u << 26))  /* SNECCERR2 | DBECCERR2 */
 
 void rb_bkp_enable(void);
+/* Bank 2's RbExt word at byte offset `off`, or 0 when the pairing check has not found bank 2 intact
+ * (RbVoice.state PAIRED, READY, SLOW or BROKEN). For bank-2 code that runs before the Warp engine boots. */
+uint32_t rb_ext_word(unsigned off);
+#define RB_EXT_FN(field) rb_ext_word((unsigned)__builtin_offsetof(RbExt, field))
 void rb_bkp_put(uint32_t at, uint32_t value);
 uint32_t rb_bkp_get(uint32_t at);
 

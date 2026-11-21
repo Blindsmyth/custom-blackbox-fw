@@ -129,6 +129,16 @@ master_find:
 @ object (each clamped to its registered range, times to at least one sample), then runs stock.
 .thumb_func
 master_comp:
+.ifdef WITH_SONG_DJ
+    @ 3.1.T master chain (song-dj/mixer.c): with the chain on, the stock compressor and its limiter
+    @ are skipped; mx_master runs the chain on bus 0 instead.
+    push    {r0, r1, r2, lr}
+    bl      mc_comp_skip
+    cmp     r0, #0
+    pop     {r0, r1, r2, lr}
+    it      ne
+    bxne    lr
+.endif
     push    {r0, r1, r4, r5, r6, lr}
     mov     r4, r0
     adr     r5, m_fields

@@ -14,6 +14,8 @@
 .equ PADS_TICK,   0x080B476D
 .equ PADS_PANEL_A, 0x2110               @ VEL fader
 .equ PADS_PANEL_B, 0x21F0               @ CUT / COPY / PSTE / CLR
+.equ PADS_PANEL_RECT_A, 0x080B870B      @ setRect of the VEL panel
+.equ PADS_PANEL_RECT_B, 0x080B811D      @ setRect of the CUT/COPY/PSTE/CLR panel
 .equ MX_PADS_PANEL, 44                  @ MX_STATE: 1 while the edit panel is shown
 
 .global pads_child_event
@@ -119,12 +121,53 @@ hold_panel:
 9:
     pop     {r4, r5, r6, r7, pc}
 
-@ tick(pads, flags): stock, then the edit panel while PADS is held.
+@ r0 = Pads, r1 = flags. Once per widget: the shared pad grid (place_cells) and the side
+@ panels as one pad-wide strip at x=259 (stock: x=0x101, 62 px).
+.thumb_func
+pads_layout:
+    push    {r4, r5, lr}
+    sub     sp, #16
+    mov     r4, r0
+    mov     r5, r1
+    ldr     r0, [r4, #0x38]         @ first cell's x: stock 1, ours 14
+    cmp     r0, #14
+    beq     9f
+    mov     r0, r4
+    movs    r1, #0x34
+    movw    r2, #0x820
+    bl      place_cells
+    movw    r0, #259
+    str     r0, [sp]
+    movs    r0, #1
+    str     r0, [sp, #4]
+    movs    r0, #60
+    str     r0, [sp, #8]
+    movs    r0, #0xDB
+    str     r0, [sp, #12]
+    movw    r0, #PADS_PANEL_A
+    add     r0, r4
+    mov     r1, sp
+    call    PADS_PANEL_RECT_A
+    movw    r0, #PADS_PANEL_B
+    add     r0, r4
+    mov     r1, sp
+    call    PADS_PANEL_RECT_B
+    movs    r0, #1
+    strb    r0, [r5]
+    strb    r0, [r5, #1]
+9:
+    add     sp, #16
+    pop     {r4, r5, pc}
+
+@ tick(pads, flags): our layout, stock, then the edit panel while PADS is held.
 .thumb_func
 pads_tick:
     push    {r4, r5, r6, lr}
     mov     r4, r0
     mov     r5, r1
+    bl      pads_layout
+    mov     r0, r4
+    mov     r1, r5
     call    PADS_TICK
     movw    r0, #PADS_PANEL_B
     movw    r1, #PADS_PANEL_A

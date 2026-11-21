@@ -21,6 +21,8 @@ typedef int (*rb_boot_fn)(void);   /* 1 = started, 0 = not (out of memory) */
 typedef void (*rb_mix_fn)(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);
 typedef void (*rb_work_fn)(void);  /* the leaf's background task body, one wake (Bungee) */
 typedef int (*rb_lanes_fn)(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);   /* 1 = rendered */
+typedef void (*rb_master_fn)(unsigned op, unsigned l, unsigned r, unsigned n);   /* master chain stage */
+typedef unsigned (*rb_ui_fn)(unsigned op, unsigned a, unsigned b, unsigned c);   /* master chain UI */
 
 /* The first 32 bytes of bank 2 (one flash word). The loader writes it last. */
 typedef struct RbHeader {
@@ -40,6 +42,19 @@ typedef struct RbHeader {
 typedef struct RbExt {
     uint32_t lanes;       /* rb_lanes_fn | 1: render one lane of a Fill / Slice / Grain Clip */
     uint32_t pool_bytes;  /* SDRAM to allocate at boot (stock FUN_0804436C), 0 = none */
+    uint32_t master;      /* rb_master_fn | 1: one master chain stage on bus 0 (docs/master-chain.md),
+                             0 = none. Pairing by id keeps bank 1 and bank 2 on the same layout. */
+    uint32_t ui;          /* rb_ui_fn | 1: its drawing, called from the UI task directly, 0 = none */
+    /* 3.1.U Seq MIDI out (firmware/patches/3.1.9-mpe-out/mpe_b2.c), called by bank 1's stubs once bank 2
+       is paired, 0 = none: */
+    uint32_t mpe_param;   /* mpe_param_fn | 1: the player's param switch (audio task) */
+    uint32_t mpe_out;     /* mpe_out_fn | 1: the MIDI send (pcmStreamer) */
+    uint32_t mpe_msg;     /* mpe_msg_fn | 1: the MIDI queue's start / layer messages (pcmStreamer) */
+    /* 3.1.UD USB MIDI device (firmware/patches/3.1.9-usbdev/usbdev.c), 0 = not in this build: */
+    uint32_t usb_poll;    /* void (*)(void) | 1: once per audio block (audio task) */
+    uint32_t usb_out;     /* void (*)(uint8_t *queue) | 1: the "to USB" queue to the computer (audio task) */
+    /* 3.1.U Song DJ screens (firmware/patches/3.1.9-song-dj/djui.c), 0 = none: */
+    uint32_t dj_ui;       /* const uint32_t[DJ_UI_N]: dj.c's screen entries, built in bank 2 */
 } RbExt;
 
 /* Voice header, SRAM4 (free on main; Capi used the same slot on warp-capi). */

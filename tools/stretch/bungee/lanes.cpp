@@ -96,8 +96,24 @@ struct Pool {
 struct RbExtInit {
     rb_lanes_fn lanes;
     uint32_t pool_bytes;
+    rb_master_fn master;  /* tools/master_chain/fw/mc_b2.c */
+    rb_ui_fn ui;          /* tools/master_chain/fw/mc_ui.c */
+    const void *mpe_param, *mpe_out, *mpe_msg;   /* firmware/patches/3.1.9-mpe-out/mpe_b2.c */
+    const void *usb_poll, *usb_out;              /* firmware/patches/3.1.9-usbdev/usbdev.c (--usbdev) */
+    const void *dj_ui;                           /* firmware/patches/3.1.9-song-dj/djui_b2.c */
 };
-extern "C" __attribute__((used)) const RbExtInit rb_ext = { rubber_lanes, sizeof(Pool) };
+extern "C" void mc_b2_run(unsigned op, unsigned l, unsigned r, unsigned n);
+extern "C" unsigned mc_b2_ui(unsigned op, unsigned a, unsigned b, unsigned c);
+/* Weak: a build without them (no --usbdev) has 0 there, and bank 1 then does without. */
+extern "C" __attribute__((weak)) int mpe_b2_param(unsigned char *, void *, const unsigned *);
+extern "C" __attribute__((weak)) void mpe_b2_out(void *, unsigned char *, int, int, const unsigned char *);
+extern "C" __attribute__((weak)) void mpe_b2_msg(const unsigned char *, const unsigned char *);
+extern "C" __attribute__((weak)) void usbdev_b2_poll(void);
+extern "C" __attribute__((weak)) void usbdev_b2_out(uint8_t *);
+extern "C" __attribute__((weak)) const uint32_t dj_ui_b2[];
+extern "C" __attribute__((used)) const RbExtInit rb_ext = { rubber_lanes, sizeof(Pool), mc_b2_run, mc_b2_ui,
+    (const void *)mpe_b2_param, (const void *)mpe_b2_out, (const void *)mpe_b2_msg,
+    (const void *)usbdev_b2_poll, (const void *)usbdev_b2_out, (const void *)dj_ui_b2 };
 
 static Pool *pool()
 {

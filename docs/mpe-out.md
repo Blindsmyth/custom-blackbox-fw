@@ -148,9 +148,22 @@ The design changed from the plan: there are no hooks in `Player_NoteOn` / `Off` 
 
 The plan's `0x38004930`–`0x38005000` is not free on this line: it is Clip Deck's `DkState`. `mpe.c` asserts the range at build time.
 
-**Flash:** about 3.2 KB in bank 1, 0.9 KB of it the `---` / 1–128 labels. Bank 1 has 3.6 KB left after the lineup cave.
+**Flash: most of it is in bank 2.** Merging `feature/song-dj-lineup-build` (master chain) left bank 1 too small for both, so the work moved to bank 2 (`mpe_b2.c`, about 1.7 KB):
+- the param switch's work;
+- the channel choice at the send;
+- the MPE setup;
+- the program change.
+
+Bank 1 keeps about 1.2 KB in `mpe.c`: registration, templates, the start count, Loop, and one stub per entry.
+- **How the stubs reach bank 2:** through `RbExt.mpe_param` / `mpe_out` / `mpe_msg`, as soon as `rb_pair` has found bank 2 intact (`rb_ext_word`, `tools/bank2/b2pair.c`). That is before the Warp engine boots, so the boot preset's settings are seen.
+- **Why the bank-2 half needs no setup:** it uses no RAM of its own and calls no library function (built `-ffreestanding`; `build_patch.py`'s `b2_plain_check` refuses an object with any other undefined symbol).
+- **Without a paired bank 2** (no `BBWARP.BIN`, or it is being written), sequence MIDI is stock's.
+- **Why registration stays in bank 1:** `Param_RegisterAll` registers the ids before `rb_pair` runs (`hook_register` → `state_init`, at its end).
+- **The labels:** the `---` / 1–128 labels (0.9 KB) are built at boot in backup SRAM (`0x38800100`–`0x3880049C`), not stored in flash.
 
 ## Bench
+
+The `Seq MIDI out:` cases run with bank 2 paired: the emu `BBWARP` written into flash and the real `rb_pair` (`with_b2` in `run_tests.py`).
 
 `tools/bench/run_tests.py --image tools/stretch/bungee/build-lineup/BLACKBOX_emu.BIN`, the `Seq MIDI out:` cases:
 - **sites:** every hook decodes to its symbol, the page 0 rows, the layer-0 masks, the layer pages untouched, and letter U.

@@ -252,6 +252,14 @@ The cases call `mixer.c` with a fake engine clock and a saw on L:
 
 **Not covered:** the taps inside a real render, the real FX, and drawing.
 
+## Bank 2 (3.1.U)
+
+Bank 1 filled up when the master chain and Seq MIDI out came together. So the Song DJ **screens** run from bank 2, and the audio stays in bank 1:
+- **Bank 1:** `dj.c` builds with `-DDJ_UI_IN_B2`, without its ten screen entries: `dj_song_key`, and the Song / DJ FX / Tools tick, child and event. The compiler then drops the drawing helpers only they use, about 4 KB.
+- **Bank 2:** builds the whole of `dj.c` again. `build_patch.py` (`djui_b2`) makes every global of that copy local except the ten, which become `*_b2`; `djui_b2.c` lists them for `RbExt.dj_ui`.
+- **The stubs:** `djui.c` holds the ten stubs the sites and vtable slots point at. Each calls its bank-2 copy once `rb_pair` has found bank 2 intact, else stock's own handler. Without `BBWARP.BIN` the Song, DJ FX and Tools screens are stock's: no DJ row, deck, master row or Song cues pad grid.
+- **State:** both copies work on the same SRAM4 / SDRAM state. No vtable is compared by address: `place()` only installs them.
+
 ## Memory
 
 The mixer's `MxState` follows it at `0x38007A60`–`0x38007C84` (fits below `0x38008000`). The crossfader and the deck's state (`DjXf`) are at `0x38006F00`–`0x38006FE4`, and the deck's own widgets, peaks and FX buffers (`DjDeck`, ~35 KB) come from the bottom SDRAM allocator at boot, between Song cues' `SgState` and RbVoice. The ring and its anchors live in 131 borrowed sample-cache entries, only while a loop is on (the entry indices are in `MxState.ent`).

@@ -45,4 +45,9 @@ blackbox-mod shipped this in JOEBOX 1, the release it put **on hold** (2026-10-1
 
 The model is a reading of the core, not the core. That the power jack reaches PB14 / PB15, the real controller and a real host are for the unit.
 
-Flash: about 2.2 KB. Bank 1 has 1.4 KB left in this variant.
+**Where it runs.** The driver runs from bank 2 (`usbdev_b2_poll`, `usbdev_b2_out`, through `RbExt.usb_poll` / `usb_out`); bank 1 only has the two stubs in `../3.1.9-mpe-out/mpe.c`.
+- **When:** as soon as `rb_pair` has found bank 2 intact.
+- **What it needs:** no RAM of its own, no library calls.
+- **Without a paired bank 2** (no `BBWARP.BIN`, or the install boot) there is no USB device.
+
+Bank 1 has about 5.3 KB left in this variant.

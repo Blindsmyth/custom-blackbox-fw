@@ -150,6 +150,11 @@ static double anchor_tick;     /* the clock tick at the launch's first frame */
 static double lock_i;          /* the clock lock's integral term (removes a steady offset) */
 static bool anchored;
 static float xf_l[XF], xf_r[XF];
+/* A relaunch: the old position's next frames, faded out. In the handoff's buffers: bank 2's heap
+ * has no KB to spare, and the handoff comes START frames after a launch, long after the fade. */
+#define fo_l xf_l
+#define fo_r xf_r
+static int fo_n, fo_i;
 static LaneGain gain;          /* the pad's Level and pan ramps (lane.h) */
 #ifdef WARP_DECK_SEQ
 static DeckSeq dseq;           /* Clip Deck's unit sequence for the voice's note (lane.h) */
@@ -504,7 +509,7 @@ static unsigned pick_lane(unsigned clip)
 }
 
 // One block's Bungee audio, n frames into l/r.
-static void play(float *l, float *r, int n)
+static void play_raw(float *l, float *r, int n)
 {
     int i, m;
     if (launching) {
@@ -596,6 +601,17 @@ static void play(float *l, float *r, int n)
     r_frames = keep > 0u ? keep - 1u : 0u;   // the frame before is still read (cubic)
 }
 
+// play_raw, with a relaunch's fade-out of the old position over its first XF frames.
+static void play(float *l, float *r, int n)
+{
+    play_raw(l, r, n);
+    for (int i = 0; i < n && fo_i < fo_n; i++, fo_i++) {
+        float a = (fo_i + 0.5f) / fo_n;
+        l[i] = a * l[i] + (1.f - a) * fo_l[fo_i];
+        r[i] = a * r[i] + (1.f - a) * fo_r[fo_i];
+    }
+}
+
 // The source frame (unwrapped) of the frame the audio side plays next.
 static double src_pos()
 {
@@ -655,6 +671,14 @@ static void launch_pitched(void *sample, int length, int stereo, int base)
 // the clock from the first unit at 55, 90 and 120 BPM on a 130 BPM Clip.)
 static void launch_at(void *sample, int length, int stereo, int base, float ratio)
 {
+    // A relaunch while playing (DJ loop wrap, cue jump, clock lock, retrigger): the old position's
+    // next XF frames fade out under the new start. A hard switch clicked, and the Song DJ ring
+    // recorded the click into the captured loop (2026-11-17, on the unit).
+    fo_i = fo_n = 0;
+    if (playing && sample == a_sample) {   /* the same file: its old reads are still valid */
+        play_raw(fo_l, fo_r, XF);    /* its state is reset by the launch below */
+        fo_n = XF;
+    }
     if (a_pitch == 1.f)
         launch_voice(sample, length, stereo, base, (int)((float)START * (1.f - ratio)));
     else

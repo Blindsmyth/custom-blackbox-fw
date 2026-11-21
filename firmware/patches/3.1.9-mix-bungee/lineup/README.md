@@ -1,5 +1,12 @@
 # 3.1.U: Warp lineup + Clip Deck + Seq MIDI out
 
+**`BBWARP.BIN` is required.** Bank 1 is full, so these run from bank 2:
+- the Song DJ screens;
+- Seq MIDI out's MPE / Port / program change;
+- the USB device.
+
+Without a matching `BBWARP.BIN` they fall back to stock (`docs/song-dj.md` "Bank 2", `docs/mpe-out.md`).
+
 One image with everything on this line:
 - **The base:** 3.1.Q: folders, the Mix screen, Seq Rec, the looper, Tools → Master.
 - **Bungee** in flash bank 2 (3.1.B, `..`).

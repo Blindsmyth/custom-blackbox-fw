@@ -1,6 +1,12 @@
 /* Song DJ row (3.1.T): Beatjump << / >> and Autoloop for every playing Clip, pad sequence and the
  * song, from the Song screen. Design and as built: docs/song-dj.md.
  *
+ * Two copies (3.1.U, bank 1 is full): bank 1 builds this file with -DDJ_UI_IN_B2, without the ten screen
+ * entries (dj_song_key, the Song / DJ FX / Tools tick, child and event), and the compiler drops the drawing
+ * helpers only they use. Bank 2 builds all of it, its globals made local except those ten, renamed *_b2
+ * (build_patch.py djui_b2); djui.c's stubs call them once bank 2 is paired, else stock's handler. Both
+ * copies work on the same SRAM4 / SDRAM state.
+ *
  * SONG on the Song screen shows a row at the bottom: << | >> | Loop. Bottom-left knob: the jump size
  * (1/4 bar .. 64 bars, default 16), bottom-right: the loop size (1/16 .. 16 bars, default 1).
  *
@@ -224,6 +230,9 @@ typedef struct {
     unsigned char lane[2][160];                /* columns being drawn */
     unsigned fxr[N_FXR][0x28];                 /* DJ FX screen: the Proj / Loop toggles */
     unsigned mrow[4][0x28];                    /* Master page: the FX row (A, B, EQ, Master) */
+    unsigned rrow[3][0x28];                    /* FX row on the Return page: CLR CMP MAX (fxret.S) */
+    unsigned erow[3][0x28];                    /* ... and on the EQ page */
+    unsigned mbar[0x28], mtxt[0x28];           /* CMP / MAX: the gain reduction bar and its text */
     float fx[6][FX_N];                         /* mixer.c's FX buffers (audio task) */
 } DjDeck;
 
@@ -245,6 +254,12 @@ typedef struct {
     char line[32];             /* +0xC0 scene line text */
     void *fx_scr;              /* +0xE0 the DJ FX screen our toggles were built on */
     void *tools;               /* +0xE4 the Tools screen the Master page's FX row was built on */
+    void *ret_page;            /* +0xE8 the Return page the FX row's CLR / CMP / MAX were added to */
+    void *eq_page;             /* +0xEC the EQ page likewise */
+    unsigned char mc_page;     /* +0xF0 master chain page on the Return page: 0 none, 1 CLR, 2 CMP, 3 MAX */
+    unsigned char mc_type;     /* +0xF1 CMP's Type the knobs were built for */
+    unsigned char mc_side;     /* +0xF2 the knob grid's side (0 left four, 1 right) to keep over rebuilds */
+    unsigned char mc_txt;      /* +0xF3 ticks since the meter's text was last set */
 } DjXf;
 typedef char xf_fits[(XF_BASE + sizeof(DjXf) <= XF_END) ? 1 : -1];
 #define X ((DjXf *)XF_BASE)
@@ -1291,6 +1306,7 @@ static void ui_update(void *song)
 }
 
 /* App_HandleInput, SONG (0x080A329E): on the Song screen it shows / hides the deck instead. */
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 void dj_song_key(void *app, unsigned screen, unsigned a, unsigned b)
 {
     if (live() && u8(app, APP_SCREEN) == SCR_SONG) {
@@ -1299,6 +1315,7 @@ void dj_song_key(void *app, unsigned screen, unsigned a, unsigned b)
     }
     SET_SCREEN(app, screen, a, b);       /* Song comes back as it was left: DJ mode or not */
 }
+#endif
 
 /* Song vtable +0x00. */
 /* Our widgets changed: ask the GUI for the pass(es). */
@@ -1312,6 +1329,7 @@ static void ask_passes(void *flags)
     }
 }
 
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 void dj_song_tick(void *song, void *flags, void *a, void *b)
 {
     if (live())
@@ -1319,6 +1337,7 @@ void dj_song_tick(void *song, void *flags, void *a, void *b)
     SONG_TICK(song, flags, a, b);
     ask_passes(flags);
 }
+#endif
 
 static void request_jump(int dir)
 {
@@ -1352,6 +1371,7 @@ static void scene_step(void *song, int dir)
 
 /* Song vtable +0x30: our buttons act on the press (as a DJ deck), the release is swallowed; the
  * deck's other widgets take nothing further. */
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 unsigned dj_song_child(void *song, const void *ev)
 {
     unsigned type = u16(ev, 0), id = u32(ev, 0xC);
@@ -1374,6 +1394,7 @@ unsigned dj_song_child(void *song, const void *ev)
     }
     return 0;
 }
+#endif
 
 static int steps_of(unsigned which, int delta)
 {
@@ -1427,9 +1448,13 @@ static int back_press(void)
 
 /* App_HandleInput type 7 (hardware BACK, any screen; hook_type7 in ../3.1.9-folders-repitch/cave.S):
  * on the Song screen BACK captures. 0 = taken, anything else = stock's BACK. */
+int mc_back(void *app);
+
 unsigned dj_back_key(void *app)
 {
     if (live() && u8(app, APP_SCREEN) == SCR_SONG && back_press())
+        return 0;
+    if (live() && mc_back(app))
         return 0;
     return 1;
 }
@@ -1446,6 +1471,7 @@ static void filter_knob(unsigned side, int delta)
 /* Song vtable +0x34: with the deck shown the knobs follow the screen: top-left the jump size, top-right
  * the loop size (x2 / /2 per step), bottom-left the loop filter, bottom-right the project filter.
  * Leaving the screen (0xD3) hides the deck. */
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 void dj_song_event(void *song, const void *ev)
 {
     unsigned type = u16(ev, 0);
@@ -1480,6 +1506,7 @@ void dj_song_event(void *song, const void *ev)
     }
     SONG_EVENT(song, ev);
 }
+#endif
 
 /* ---- DJ FX screen (UI task) ---- */
 
@@ -1510,6 +1537,7 @@ static void fx_build(void *scr)
 static unsigned fx_bit(unsigned i) { return i & 1 ? R_LOOP : R_PROJ; }
 
 /* DJ FX vtable +0x00: the toggles lit as the mixer routes. */
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 void dj_fx_tick(void *scr, void *flags, void *a, void *b)
 {
     unsigned i;
@@ -1522,8 +1550,10 @@ void dj_fx_tick(void *scr, void *flags, void *a, void *b)
     FX_TICK(scr, flags, a, b);
     ask_passes(flags);
 }
+#endif
 
 /* DJ FX vtable +0x30: a toggle flips on the press; its release is swallowed. */
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 unsigned dj_fx_child(void *scr, const void *ev)
 {
     unsigned type = u16(ev, 0), id = u32(ev, 0xC) - ID_FXR;
@@ -1533,9 +1563,11 @@ unsigned dj_fx_child(void *scr, const void *ev)
         mx_set_route(id >> 1, mx_route(id >> 1) ^ fx_bit(id));
     return 0;
 }
+#endif
 
 /* DJ FX vtable +0x34: the bottom knobs are the loop (left) and project (right) filters, as on the
  * deck, and the top ones rest; with INFO held all four are stock's (the right ones swap FX A / B). */
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 void dj_fx_event(void *scr, const void *ev)
 {
     if (live() && u16(ev, 0) == 0x32 && INFO_LEVEL) {
@@ -1546,6 +1578,7 @@ void dj_fx_event(void *scr, const void *ev)
     }
     FX_EVENT(scr, ev);
 }
+#endif
 
 /* ---- Master in the FX row (UI task) ---- */
 
@@ -1590,6 +1623,7 @@ static void master_row(void *tools)
 /* Tools vtable +0x34: stock, then the bottom row as the page wants it. On 0xD4 (shown) the page
  * follows the screen first: Master for 0x29 (the FX row's Master), and Main for any other Tools
  * screen that finds Master left over (it has no tab of its own). Stock then builds that page. */
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 void dj_tools_event(void *tools, const void *ev)
 {
     if (live() && u16(ev, 0) == 0xD4) {
@@ -1603,8 +1637,10 @@ void dj_tools_event(void *tools, const void *ev)
     if (live())
         master_row(tools);
 }
+#endif
 
 /* Tools vtable +0x00: again every tick, whatever order the page byte and the show come in. */
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 void dj_tools_tick(void *tools, void *flags, void *a, void *b)
 {
     if (live())
@@ -1612,8 +1648,10 @@ void dj_tools_tick(void *tools, void *flags, void *a, void *b)
     FX_TICK(tools, flags, a, b);
     ask_passes(flags);
 }
+#endif
 
 /* Tools vtable +0x30: the FX row's A / B / EQ go there as on the Return page; Master is shown. */
+#ifndef DJ_UI_IN_B2           /* bank 1: in bank 2 (djui.c calls it), see build_patch.py */
 unsigned dj_tools_child(void *tools, const void *ev)
 {
     unsigned type = u16(ev, 0), id = u32(ev, 0xC) - FXR_ID;
@@ -1622,4 +1660,235 @@ unsigned dj_tools_child(void *tools, const void *ev)
     if (type == 1 && id < 3)
         return fxret_child_event(tools, ev);
     return 0;
+}
+#endif
+
+/* ---- the FX row and the master chain pages (docs/master-chain.md) ----
+ *
+ * The row is DLY RVB AUX EQ CLR CMP MAX (fxret.S fx_row_button: labels, edges). The Return and EQ
+ * pages own four widgets for it; the last three are stock frame buttons from DjDeck, added once.
+ * CLR / CMP / MAX are the Return page (0x23) with FX key 0x330 (FX slot 3, nothing in stock): after
+ * stock's rebuild (0x66 / 0x67) its knob grid gets the master chain's parameters, bound to key 0x40,
+ * the global bag (App_SetParam -> Param_Set + settings.tml), two sides of four as stock's. */
+
+#define APP_FXKEY   0x28
+#define KEY_DLY     0x300
+#define KEY_RVB     0x310
+#define KEY_MASTER  0x330
+#define KEY_GLOBAL  0x40
+#define POS_AUX     2
+#define POS_EQ      3
+#define POS_CLR     4
+#define N_FXROW     7
+#define EQ_ROW_BTNS 0x38005400u            /* fxret.S EQ_BTNS: the EQ page's four */
+#define MC_GBAG     ((void *)0x24028D18u)  /* App+0x8C90 */
+#define RET_GRID    0x450                  /* Return page: the 8-knob grid (FUN_080A8428) */
+#define GRID_KEY    0x38
+#define GRID_SIDE   0x3C                   /* int: 0 the left four knobs, 1 the right four */
+typedef void (*model_init_fn)(void *);
+typedef void (*model_add_fn)(void *, unsigned, int);
+typedef void (*grid_build_fn)(void *, void *);
+typedef void (*grid_codes_fn)(void *, const void *, int);
+typedef void (*grid_side_fn)(void *, int);
+#define GRID_SET_SIDE ((grid_side_fn)0x080A83F3u)  /* (grid, side): stores it and moves the frame */
+#define MODEL_INIT  ((model_init_fn)0x080A4F9Du)
+#define MODEL_ADD   ((model_add_fn)0x080A5039u)   /* (model, id, value) */
+#define GRID_BUILD  ((grid_build_fn)0x080A87B7u)  /* (grid, model): the cells, bound to the grid's key */
+#define GRID_CODES  ((grid_codes_fn)0x080A8599u)
+#define GRID_CODE_LIST ((const void *)0x080F07F4u)   /* the 5 event codes stock passes after a build */
+#define RET_TICK    ((tick_fn)0x080AEB45u)          /* Return page vtable +0x00 (generic) */
+/* mixer.c's ids (MC_*) and master.S's compressor ids */
+#define ID_MC_CHAIN 0x13D
+#define ID_MC_TYPE  0x13E
+
+static const unsigned short ret_row_off[4] = {0x70 + 2 * 0xA0, 0x70 + 0xA0, 0x70, 0x3AC};
+static const unsigned short mc_ids_clr[] = {0x13F, 0x140, 0x141, 0x143, 0x142, 0x144, 0};  /* Sidepass Glue Scope Girth | Skronk Drive */
+static const unsigned short mc_ids_sq[] = {ID_MC_TYPE, 0x145, 0x146, 0x147, 0x148, 0};     /* Type Squish BassBlm Output | Dry/Wet */
+static const unsigned short mc_ids_stock[] = {ID_MC_TYPE, 0x131, 0x132, 0x12F, 0x130, 0x13A, 0}; /* Type Thresh Ratio Atk Rel | Gain */
+static const unsigned short mc_ids_max[] = {0x149, 0x14A, ID_MC_CHAIN, 0x14C, 0};           /* Maximize Rel x Chain Values */
+
+static unsigned row_lit(unsigned pos, unsigned key, int eq)
+{
+    if (eq)
+        return pos == POS_EQ;
+    if (pos == 0)
+        return key == KEY_DLY;
+    if (pos == 1)
+        return key == KEY_RVB;
+    return pos >= POS_CLR && key == KEY_MASTER && X->mc_page == pos - (POS_CLR - 1);
+}
+
+static void mc_fill_grid(void *page)
+{
+    unsigned model[0x260 / 4];
+    const unsigned short *ids;
+    unsigned type = PARAM_GET(MC_GBAG, ID_MC_TYPE) ? 1 : 0;
+    void *grid = at(page, RET_GRID);
+    if (X->mc_page == 1)
+        ids = mc_ids_clr;
+    else if (X->mc_page == 2)
+        ids = type ? mc_ids_stock : mc_ids_sq;
+    else
+        ids = mc_ids_max;
+    unsigned n = 0;
+    MODEL_INIT(model);
+    for (; *ids; ids++, n++)
+        MODEL_ADD(model, *ids, PARAM_GET(MC_GBAG, *ids));
+    *(unsigned short *)at(grid, GRID_KEY) = KEY_GLOBAL;
+    GRID_BUILD(grid, model);
+    GRID_CODES(grid, GRID_CODE_LIST, 5);
+    /* A knob turn rebuilds the page (stock's 0x66), which puts the grid back on the left: keep the
+     * side the knobs were on (mc_ret_tick follows it). */
+    GRID_SET_SIDE(grid, X->mc_side && n > 4 ? 1 : 0);
+    X->mc_type = (unsigned char)type;
+    X->ask |= 3;
+}
+
+static void place_row(void *page, void *const four[4], unsigned (*three)[0x28], void **owner, int eq)
+{
+    unsigned i, key = u16((void *)APP, APP_FXKEY);
+    if (*owner != page) {
+        *owner = page;
+        for (i = 0; i < 3; i++) {
+            BTN_CTOR(three[i]);
+            add_oldest(page, three[i]);
+        }
+    }
+    for (i = 0; i < N_FXROW; i++)
+        fx_row_button(i < 4 ? four[i] : three[i - 4], i, row_lit(i, key, eq));
+}
+
+/* ---- CMP / MAX: the gain reduction meter (drawn in bank 2, mc_ui.c) ---- */
+
+#include "mc_fw.h"
+typedef unsigned (*mc_ui_call)(unsigned, unsigned, unsigned, unsigned);
+unsigned mc_ui_fn(void);
+void mc_hold_reset(void);
+int mc_values_tick(void);
+#define ID_MC_BAR   0x7B0
+#define ID_MC_TXT   0x7B1
+#define MC_BAR_Y    205                     /* 205-219: below stock's header (222-240), y counts up */
+#define MC_TXT_Y    182                     /* 182-204, above the knob grid (40-180) */
+
+static unsigned meter_kind(void) { return X->mc_page == 2 ? MC_KIND_CMP : MC_KIND_MAX; }
+
+static void mc_meter_draw(void *w, const void *ctx)
+{
+    unsigned f = mc_ui_fn();
+    int r[4];
+    if (f && ((mc_ui_call)f)(MC_UI_METER, (unsigned)w, (unsigned)ctx, meter_kind()))
+        return;
+    rect(r, wx(w), wy(w), ww(w), wh(w));
+    FILL_RECT(r, PAL_BG, canvas(ctx));
+}
+/* A touch on the meter (bar or text) clears the holds, as BACK does. */
+static void mc_meter_touch(void *w, const int *pt)
+{
+    (void)w;
+    (void)pt;
+    mc_hold_reset();
+}
+static const void *const meter_vt[16] = VT(mc_meter_draw, mc_meter_touch, no_touch, no_up);
+static const void *const meter_txt_vt[16] = VT(BTN_DRAW, mc_meter_touch, no_touch, no_up);
+
+static int meter_page(void)
+{
+    return u16((void *)APP, APP_FXKEY) == KEY_MASTER && (X->mc_page == 2 || X->mc_page == 3) && mc_ui_fn();
+}
+
+/* Shown on CMP / MAX only; the bar repaints every tick, its text a few times a second. */
+static void mc_meter_tick(void)
+{
+    DjDeck *d = X->deck;
+    unsigned show, f;
+    char t[32];
+    if (!d || u32(d->mbar, 0x2C) != (unsigned)X->ret_page)
+        return;
+    show = meter_page();
+    if (u8(d->mbar, W_HIDDEN) == show) {
+        HIDE(d->mbar, !show);
+        HIDE(d->mtxt, !show);
+        X->ask |= 3;
+    }
+    if (!show)
+        return;
+    dirty(d->mbar);
+    f = mc_ui_fn();
+    if (f && ++X->mc_txt >= 4 && ((mc_ui_call)f)(MC_UI_TEXT, (unsigned)t, meter_kind(), 0)) {
+        X->mc_txt = 0;
+        keep_text(d->mtxt, t);
+    }
+}
+
+/* App_HandleInput type 7 (dj_back_key): BACK on CMP / MAX clears the holds. 1 = taken. */
+int mc_back(void *app)
+{
+    if (u8(app, APP_SCREEN) != 0x23 || !meter_page())
+        return 0;
+    mc_hold_reset();
+    return 1;
+}
+
+/* fxret.S fxret_on_event (lineup), after stock's 0x66 / 0x67: the row, and the master chain's knobs. */
+void mc_ret_row(void *page)
+{
+    DjDeck *d = X->deck;
+    void *four[4];
+    unsigned i;
+    if (!live() || !d)
+        return;
+    for (i = 0; i < 4; i++)
+        four[i] = at(page, ret_row_off[i]);
+    place_row(page, four, d->rrow, &X->ret_page, 0);
+    if (u32(d->mbar, 0x2C) != (unsigned)page) {
+        place(page, d->mbar, meter_vt, ID_MC_BAR, 8, MC_BAR_Y, 304, 14);
+        place(page, d->mtxt, meter_txt_vt, ID_MC_TXT, 8, MC_TXT_Y, 304, 22);
+    }
+    if (u16((void *)APP, APP_FXKEY) == KEY_MASTER && X->mc_page)
+        mc_fill_grid(page);
+    mc_meter_tick();
+}
+
+/* fxret.S eq_graph_rect (lineup): the same row on the EQ page, EQ lit. */
+void mc_eq_row(void *page)
+{
+    DjDeck *d = X->deck;
+    void *four[4];
+    unsigned i;
+    if (!live() || !d)
+        return;
+    for (i = 0; i < 4; i++)
+        four[i] = (void *)(EQ_ROW_BTNS + 0xA0 * i);
+    place_row(page, four, d->erow, &X->eq_page, 1);
+}
+
+/* fxret.S fxret_child_event (lineup): CLR / CMP / MAX pressed. */
+void mc_row_press(unsigned pos)
+{
+    if (!live() || pos < POS_CLR || pos >= N_FXROW)
+        return;
+    X->mc_page = (unsigned char)(pos - (POS_CLR - 1));
+    X->mc_side = 0;                       /* another page starts on its left four */
+    *(unsigned short *)at((void *)APP, APP_FXKEY) = KEY_MASTER;
+    SET_SCREEN((void *)APP, 0x23, 0, 0);
+}
+
+/* Return page vtable +0x00: CMP's Type changed (its knob): build the other knob set. */
+void mc_ret_tick(void *page, void *flags, void *a, void *b)
+{
+    if (live() && X->ret_page == page && X->mc_page && u16((void *)APP, APP_FXKEY) == KEY_MASTER) {
+        X->mc_side = *(int *)at(page, RET_GRID + GRID_SIDE) ? 1 : 0;   /* the side a touch picked */
+        if (X->mc_page == 2 && (PARAM_GET(MC_GBAG, ID_MC_TYPE) ? 1u : 0u) != X->mc_type) {
+            X->mc_type ^= 1;
+            X->mc_side = 0;                   /* the other set starts on its left four */
+            SET_SCREEN((void *)APP, 0x23, 0, 0);
+        }
+    }
+    if (live() && X->ret_page == page) {
+        mc_meter_tick();
+        if (mc_values_tick() && X->mc_page && u16((void *)APP, APP_FXKEY) == KEY_MASTER)
+            SET_SCREEN((void *)APP, 0x23, 0, 0);   /* Values switched: the knobs show the new set */
+    }
+    RET_TICK(page, flags, a, b);
+    ask_passes(flags);
 }

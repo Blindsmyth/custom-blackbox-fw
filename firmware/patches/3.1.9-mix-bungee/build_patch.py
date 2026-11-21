@@ -58,6 +58,12 @@ DECK_ID_BASE = 0x1B0
 DJ_DIR = HERE.parent / "3.1.9-song-dj"
 # And Seq MIDI out (../3.1.9-mpe-out: MPE channel spread and Port per sequence layer, docs/mpe-out.md).
 MPE_DIR = HERE.parent / "3.1.9-mpe-out"
+# And the master chain (docs/master-chain.md): its DSP links into bank 2 (RbExt.master), mixer.c
+# reaches it from the master render.
+MC = ROOT / "tools" / "master_chain"
+MC_SRC = [MC / "src" / "dsp" / f for f in ("mc_dsp.c", "mc_clr.c", "mc_cmp.c", "mc_max.c")] + \
+    [MC / "fw" / "mc_b2.c", MC / "fw" / "mc_ui.c"]
+MC_INC = ["-I", MC / "src" / "dsp", "-I", MC / "fw"]
 T = Path(os.environ.get("ARM_GNU", Path.home() / ".local" / "arm-gnu-15.3" / "bin"))
 GCC, GXX = T / "arm-none-eabi-gcc", T / "arm-none-eabi-g++"
 
@@ -81,9 +87,27 @@ if REPITCH:
 # --mx-safe (with --lineup): the Song DJ mixer without its audio taps (mx_comp_tap, mx_bus_tap, mx_eq_thunk), for
 # finding faults on the unit. The BPM setting and the Song screen stay. Images go to lineup/mx-safe/.
 MX_SAFE = LINEUP and "--mx-safe" in sys.argv
-MX_TAPS = {"mx_comp_tap", "mx_bus_tap", "mx_eq_thunk"}
+MX_TAPS = {"mx_comp_tap", "mx_bus_tap", "mx_eq_thunk", "mx_master"}
 if MX_SAFE:
     _sub = "mx-safe"
+    BUILD = BUNGEE / f"build-lineup-{_sub}"
+    ELF = BUILD / "bungee.elf"
+    OUT, OUT_B2, SYMS = (OUT.parent / _sub / OUT.name, OUT_B2.parent / _sub / OUT_B2.name,
+                         SYMS.parent / _sub / SYMS.name)
+    OUT.parent.mkdir(exist_ok=True)
+# --stock-cache (with --lineup): stock's 615 cache entries (no room for saving big presets), for A/B tests
+# on the unit. Images go to lineup/cache-stock/.
+STOCK_CACHE = LINEUP and "--stock-cache" in sys.argv
+# --no-mc-audio (with --lineup): everything of the master chain but its audio (stock compressor, EQ and the
+# Song DJ taps as before it), for A/B tests on the unit. Images go to lineup/mc-noaudio/.
+NO_MC_AUDIO = LINEUP and "--no-mc-audio" in sys.argv
+# --mc-nodsp: the master chain's hooks without bank 2's DSP calls; --mc-comp: the stock compressor not
+# skipped. A/B builds for the unit, in lineup/mc-nodsp/ and lineup/mc-comp/.
+MC_NODSP = LINEUP and "--mc-nodsp" in sys.argv
+MC_COMP = LINEUP and "--mc-comp" in sys.argv
+if STOCK_CACHE or NO_MC_AUDIO or MC_NODSP or MC_COMP:
+    _sub = ("cache-stock" if STOCK_CACHE else "mc-noaudio" if NO_MC_AUDIO else
+            "mc-nodsp" if MC_NODSP else "mc-comp")
     BUILD = BUNGEE / f"build-lineup-{_sub}"
     ELF = BUILD / "bungee.elf"
     OUT, OUT_B2, SYMS = (OUT.parent / _sub / OUT.name, OUT_B2.parent / _sub / OUT_B2.name,
@@ -101,10 +125,14 @@ if USBDEV:
     else:
         OUT, OUT_B2, SYMS = (HERE / "lineup" / "usbdev" / n for n in ("BLACKBOX.BIN", f"{PAYLOAD}.BIN", "BLACKBOX.sym.json"))
         OUT.parent.mkdir(exist_ok=True)
+B2_PLAIN = [MPE_DIR / "mpe_b2.c"] + ([USBDEV_DIR / "usbdev.c"] if USBDEV else [])
+BANK1_OBJS = 11 if LINEUP else 4               # compile_all: the cave asm, then the bank-1 C
 LETTER = ("UD" if USBDEV else "U") if LINEUP else "B"   # 3.1.U: 3.1.T + Seq MIDI out; 3.1.UD: + USB device
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
 CPU = ["-mthumb", "-mcpu=cortex-m7", "-mfloat-abi=hard"]
+B2_PLAIN_C = CPU + ["-mfpu=fpv5-d16", "-Os", "-ffreestanding", "-fno-builtin", "-nostdlib",
+                    "-fno-tree-loop-distribute-patterns", "-ffunction-sections", "-Wall", "-Wextra"]
 BANK1_C = CPU + ["-mfpu=fpv5-sp-d16", "-Os", "-ffreestanding", "-fno-builtin", "-nostdlib",
                  "-fno-tree-loop-distribute-patterns", "-ffunction-sections", "-Wall", "-Wextra"]
 # --emu: bank 2 for the single-precision FPU (doubles in software) because Unicorn's Cortex-M7
@@ -123,7 +151,9 @@ LANE_SRC = [STRETCH / "beats.c", STRETCH / "granular.c"]
 LANE_DEFS = ["-DBEATS_NO_CLOUD", "-DBEATS_SHARED_SCRATCH", "-DBEATS_CACHE=32", "-DGRAN_FW_HANN", "-DGRAN_SRC=256",
              "-DGRAN_NO_TABLES", "-DBEATS_LOOP_GROW=24000"]
 if LINEUP:
-    B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", *LANE_SRC]
+    B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", *LANE_SRC,
+                   *MC_SRC, MC / "src" / "dsp" / "mc_dsp.h", MC / "fw" / "mc_fw.h", *B2_PLAIN, MPE_DIR / "mpe.h",
+                   DJ_DIR / "dj.c", DJ_DIR / "djui_b2.c"]
 BANK1_DEFS = ['-DRB_LABEL="Bungee"', f'-DRB_PAYLOAD_FILE="{PAYLOAD}.BIN"']
 BUNGEE_CXX = ["-std=c++20", "-fwrapv", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
               "-DBUNGEE_VISIBILITY=", "-DBUNGEE_SELF_TEST=0", "-DBUNGEE_NO_LOG", "-DBUNGEE_FIXED_PITCH",
@@ -156,13 +186,17 @@ def compile_all(rb_id):
          HERE / "bungee_cave.S"])
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \
-        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c", MPE_DIR / "mpe.c", BANK2 / "b2msg.c"] if LINEUP else []) + \
-        ([USBDEV_DIR / "usbdev.c"] if USBDEV else [])
+        ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c", MPE_DIR / "mpe.c", BANK2 / "b2msg.c",
+          DJ_DIR / "djui.c"] if LINEUP else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
         run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DSONG_CUES", "-DWITH_SONG_DJ"] if LINEUP else []),
+             *(["-DDJ_UI_IN_B2", "-Wno-unused-function"] if src.name == "dj.c" else []),
+             *(["-DMX_CACHE_N=615u"] if STOCK_CACHE else []),
+             *(["-DMC_NO_AUDIO"] if NO_MC_AUDIO else []),
+             *(["-DMC_NO_DSP"] if MC_NODSP else []), *(["-DMC_KEEP_COMP"] if MC_COMP else []),
              *(["-DWITH_USBDEV"] if USBDEV else []),
-             "-I", BANK2, "-I", RUBBER, "-c", "-o", o, src])
+             "-I", BANK2, "-I", RUBBER, *(MC_INC if LINEUP else []), "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]
     inc = ["-I", RUBBER, "-I", BG, "-I", BG / "submodules" / "eigen", "-I", CMSIS / "Include", "-I", STRETCH]
@@ -175,6 +209,24 @@ def compile_all(rb_id):
         o = BUILD / ("ln_" + src.stem + ".o")
         run([GCC, *BANK2_FLAGS, *LANE_DEFS, "-I", STRETCH, "-c", "-o", o, src])
         objs.append(o)
+    # Bank-2 halves of bank-1 features (Seq MIDI out, the USB device, the Song DJ screens): plain C that bank
+    # 1 calls through RbExt as soon as bank 2 is paired, before the Warp engine has booted (ITCM, where
+    # memcpy lives, not yet loaded): built freestanding, calling nothing but bank 1 and each other
+    # (b2_plain_check).
+    plain = []
+    for src in B2_PLAIN if LINEUP else []:
+        o = BUILD / ("b2p_" + src.stem + ".o")
+        run([GCC, *B2_PLAIN_C, *(["-DWITH_USBDEV"] if USBDEV else []), "-I", MPE_DIR, "-I", BANK2, "-I", RUBBER,
+             "-c", "-o", o, src])
+        plain.append(o)
+    if LINEUP:
+        plain.extend(djui_b2(objs[0]))
+    b2_plain_check(plain, objs[:BANK1_OBJS])
+    objs.extend(plain)
+    for src in MC_SRC if LINEUP else []:
+        o = BUILD / ("mc_" + src.stem + ".o")
+        run([GCC, *BANK2_FLAGS, "-std=c11", "-Wall", *MC_INC, "-c", "-o", o, src])
+        objs.append(o)
     o = BUILD / "rt.o"
     run([GCC, *BANK2_FLAGS, "-c", "-o", o, BUNGEE / "rt.c"])
     objs.append(o)
@@ -186,9 +238,50 @@ def compile_all(rb_id):
     return objs
 
 
+def defined_globals(o):
+    out = subprocess.check_output([str(T / "arm-none-eabi-nm"), "--defined-only", "-g", str(o)], text=True)
+    return {line.split()[2] for line in out.splitlines() if len(line.split()) == 3}
+
+
+def b2_plain_check(plain, bank1):
+    """Bank-2 halves bank 1 calls before the Warp engine boots: no library call (only bank 1 and each other),
+    no RAM of their own."""
+    ours = set().union(*(defined_globals(o) for o in [*bank1, *plain]))
+    for o in plain:
+        und = {line.split()[-1] for line in subprocess.check_output([str(T / "arm-none-eabi-nm"), "-u", str(o)],
+                                                                    text=True).splitlines() if line.strip()} - ours
+        if und:
+            raise SystemExit(f"{o.name}: calls {sorted(und)}; it may run before bank 2 has booted")
+        out = subprocess.check_output([str(T / "arm-none-eabi-size"), "-A", str(o)], text=True)
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].startswith((".data", ".bss")) and int(parts[1]) > 0:
+                raise SystemExit(f"{o.name}: {parts[0]} is {parts[1]} bytes; it runs before bank 2's RAM is set up")
+
+
+DJ_UI = ("dj_song_key", "dj_song_tick", "dj_song_child", "dj_song_event", "dj_fx_tick", "dj_fx_child", "dj_fx_event",
+         "dj_tools_tick", "dj_tools_child", "dj_tools_event")
+
+
+def djui_b2(cave_o):
+    """dj.c's bank-2 copy (its screen entries, which bank 1 leaves out, with all they use) and the table of them
+    (djui_b2.c, RbExt.dj_ui). In the copy every global but the ten entries is made local, so it never clashes with
+    bank 1's dj.c; the entries become *_b2 (djui.c in bank 1 calls them by the table)."""
+    o = BUILD / "b2p_djb2.o"
+    run([GCC, *B2_PLAIN_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", "-DSONG_CUES", "-DWITH_SONG_DJ",
+         "-I", BANK2, "-I", RUBBER, *MC_INC, "-c", "-o", o, DJ_DIR / "dj.c"])
+    args = []
+    for name in sorted(defined_globals(o)):
+        args += [f"--redefine-sym={name}={name}_b2"] if name in DJ_UI else [f"--localize-symbol={name}"]
+    run([T / "arm-none-eabi-objcopy", *args, o])
+    t = BUILD / "b2p_djui_b2.o"
+    run([GCC, *B2_PLAIN_C, "-c", "-o", t, DJ_DIR / "djui_b2.c"])
+    return [o, t]
+
+
 def bank1_has_no_ram(objs):
     """Cave code has nowhere to keep .data/.bss: they would land in bank 2's SRAM1 block."""
-    for o in objs[:(10 if USBDEV else 9) if LINEUP else 4]:   # the cave asm, then the bank-1 C (compile_all)
+    for o in objs[:BANK1_OBJS]:   # the cave asm, then the bank-1 C (compile_all)
         out = subprocess.check_output([str(T / "arm-none-eabi-size"), "-A", str(o)], text=True)
         for line in out.splitlines():
             parts = line.split()
@@ -314,6 +407,8 @@ def add_rubber_sites(stock):
         mix.SITES.extend(sites)
         mix.VTABLE.extend(vtable)
         mix.BYTES.extend(dj.BYTES)
+        if not STOCK_CACHE:
+            mix.BYTES.extend(dj.cache_bytes(stock))
         # Master moves from the Tools tabs to the FX row (fxret.S, dj.c): Tools keeps its 4 tabs.
         mix.WORDS[:] = [w for w in mix.WORDS if w[0] != 0x080EEE90]
         mix.SITES.extend(SONG_SITES)

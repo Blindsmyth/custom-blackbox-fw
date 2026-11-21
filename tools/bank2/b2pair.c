@@ -18,6 +18,17 @@ typedef void *(*sdram_alloc_fn)(uint32_t);
 #define PWR_CR1     (*(volatile uint32_t *)0x58024800u)
 #define DCCMVAC     (*(volatile uint32_t *)0xe000ef68u)
 
+uint32_t rb_ext_word(unsigned off)
+{
+    const volatile RbVoice *v = (const volatile RbVoice *)RB_VOICE;
+    const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
+    unsigned st = v->state & 0xffu;
+    if (v->magic != RB_VOICE_MAGIC ||
+        (st != RB_ST_PAIRED && st != RB_ST_READY && st != RB_ST_SLOW && st != RB_ST_BROKEN) || !h->ext)
+        return 0;
+    return *(const volatile uint32_t *)(h->ext + off);
+}
+
 void rb_bkp_enable(void)
 {
     PWR_CR1 |= 1u << 8;          /* DBP: backup domain writable */

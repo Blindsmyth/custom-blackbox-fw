@@ -11,7 +11,11 @@
  * are never set up. The power jack's data lines go to those two pins (blackbox-mod's 3.1.K enumerated on a Mac), so
  * the computer feeding the power jack sees a full-speed, class-compliant MIDI device, "Blackbox", one port each way.
  *
- * usbdev_poll runs from the audio task's wait (diag.c cpu_wait), once per audio block, starts the controller ~2 s
+ * Bank 2 (no room in bank 1): bank 1's stubs usbdev_poll / usbdev_midi_out (../3.1.9-mpe-out/mpe.c) call
+ * usbdev_b2_poll / usbdev_b2_out through RbExt once the pairing check found bank 2 intact; without it there is no
+ * USB device. Plain code on backup-SRAM state, no library calls, so it runs before the Warp engine boots.
+ *
+ * usbdev_b2_poll runs from the audio task's wait (diag.c cpu_wait), once per audio block, starts the controller ~2 s
  * after stock has started its own USB, and then answers enumeration and moves MIDI.
  *   in:  FUN_08044708(manager, events, bytes) queues events exactly as if they came from the USB-A jack, so MIDI In /
  *        Clock settings for USB apply to this port too.
@@ -106,9 +110,7 @@
 #define TXFIFO_1  (1u << 22)
 
 typedef void (*midi_in_fn)(void *manager, const uint8_t *events, unsigned bytes);
-typedef int (*midi_pack_fn)(void *manager, uint8_t *queue, uint8_t *out, unsigned max, unsigned *len);
 #define fw_midi_usb_in ((midi_in_fn)(0x08044708u | 1u))
-#define fw_midi_pack   ((midi_pack_fn)(0x08044896u | 1u))
 #define MIDI_MANAGER   ((void *)0x24002e88u)
 #define Q_READ   0x500           /* a message queue: 256 x 5 bytes (up to 4 of message, then its length), two counters */
 #define Q_WRITE  0x504
@@ -400,12 +402,12 @@ unsigned usbdev_event_code(unsigned status, uint8_t *last)
 }
 
 /*
- * Replaces the call that packs the "to USB" queue for the host jack (bl FUN_08044896 at 0x08044B08, audio task, once
- * per block). The queue's messages go to the computer first, from out_at, at most 64 a block; then stock packs and
- * consumes them as before. Stock's read counter does not matter here: a message stays in its slot until 256 newer
- * ones are written. If the computer has not taken the previous packet yet, they wait for the next block.
+ * From the call that packs the "to USB" queue for the host jack (bl FUN_08044896 at 0x08044B08, audio task, once per
+ * block; bank 1's usbdev_midi_out in mpe.c, which then runs stock's packer). The queue's messages go to the computer,
+ * from out_at, at most 64 a block. Stock's read counter does not matter here: a message stays in its slot until 256
+ * newer ones are written. If the computer has not taken the previous packet yet, they wait for the next block.
  */
-int usbdev_midi_out(void *manager, uint8_t *queue, uint8_t *out, unsigned max, unsigned *len)
+void usbdev_b2_out(uint8_t *queue)
 {
     if ((RCC_AHB1ENR & OTGHSEN) && S->phase == RUNNING && S->config && !(DIEPCTL1 & EPENA)) {
         uint32_t write = *(uint32_t *)(queue + Q_WRITE), read = S->out_at, waiting, events = 0, i;
@@ -434,11 +436,10 @@ int usbdev_midi_out(void *manager, uint8_t *queue, uint8_t *out, unsigned max, u
             }
         }
     }
-    return fw_midi_pack(manager, queue, out, max, len);
 }
 
-/* Once per audio block, from cpu_wait. */
-void usbdev_poll(void)
+/* Once per audio block, from cpu_wait (bank 1's usbdev_poll in mpe.c, once bank 2 is paired). */
+void usbdev_b2_poll(void)
 {
     bkp_enable();
     if (!(RCC_AHB1ENR & OTGHSEN)) {                          /* first calls after a reset: the clock is still off */

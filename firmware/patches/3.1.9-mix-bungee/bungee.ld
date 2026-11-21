@@ -30,7 +30,7 @@ SECTIONS {
     KEEP(*mixer.o(.text .text.* .rodata .rodata.*))  /* 3.1.T: Song DJ mixer */
     KEEP(*mpe.o(.text .text.* .rodata .rodata.*))    /* 3.1.U: Seq MIDI out, MPE and Port */
     KEEP(*b2msg.o(.text .text.* .rodata .rodata.*))  /* 3.1.U: "Installing" while bank 2 is written */
-    KEEP(*usbdev.o(.text .text.* .rodata .rodata.*)) /* 3.1.UD: USB MIDI device (--usbdev) */
+    KEEP(*djui.o(.text .text.* .rodata .rodata.*))   /* 3.1.U: Song DJ screens' stubs (the rest in bank 2) */
   } > CAVE
 
   .b2head : { KEEP(*(.b2head)) } > BANK2
