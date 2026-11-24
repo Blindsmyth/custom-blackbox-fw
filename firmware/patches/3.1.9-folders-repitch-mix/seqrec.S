@@ -196,6 +196,11 @@ seqrec_set_layer:
     movw    r0, #SR_SET
     cmp     r5, r0
     beq     2f
+.ifdef WARP_MPE
+    subw    r0, r5, #0x1EF          @ 3.1.U: Loop, MPE, Last Ch, PB Rng (../3.1.9-mpe-out)
+    cmp     r0, #3
+    bls     2f
+.endif
     pop     {r0}
     jmp     0x0809FE3D              @ active layer (stock)
 2:
@@ -216,6 +221,11 @@ seqrec_get_layer:
     movw    r0, #SR_SET
     cmp     r8, r0
     beq     2f
+.ifdef WARP_MPE
+    subw    r0, r8, #0x1EF          @ 3.1.U: Loop, MPE, Last Ch, PB Rng (../3.1.9-mpe-out)
+    cmp     r0, #3
+    bls     2f
+.endif
     pop     {r0}
     jmp     0x08099649
 2:

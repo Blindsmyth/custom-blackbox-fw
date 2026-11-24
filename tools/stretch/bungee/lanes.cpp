@@ -108,10 +108,15 @@ struct RbExtInit {
     uint32_t pool_bytes;
     rb_master_fn master;  /* tools/master_chain/fw/mc_b2.c */
     rb_ui_fn ui;          /* tools/master_chain/fw/mc_ui.c */
+    void (*mixer)(float *, float *, int);   /* firmware/patches/3.1.9-song-dj/mixer.c, its .b2mixer part */
+    void (*mixer_master)(void *, void *, unsigned);
 };
 extern "C" void mc_b2_run(unsigned op, unsigned l, unsigned r, unsigned n);
 extern "C" unsigned mc_b2_ui(unsigned op, unsigned a, unsigned b, unsigned c);
-extern "C" __attribute__((used)) const RbExtInit rb_ext = { rubber_lanes, sizeof(Pool), mc_b2_run, mc_b2_ui };
+extern "C" void mx_block_dsp(float *l, float *r, int n);
+extern "C" void mx_master_dsp(void *dst, void *bus, unsigned fn);
+extern "C" __attribute__((used)) const RbExtInit rb_ext = { rubber_lanes, sizeof(Pool), mc_b2_run, mc_b2_ui,
+                                                            mx_block_dsp, mx_master_dsp };
 
 static Pool *pool()
 {

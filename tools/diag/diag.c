@@ -114,6 +114,12 @@ int cpu_wait(void *queue, void *item, uint32_t ticks, int peek)
     idle_from = DWT_CYCCNT;
     busy = idle_from - m->woke;
     got = fw_receive(queue, item, ticks, peek);
+#ifdef WITH_USBDEV
+    {
+        void usbdev_poll(void);  /* firmware/patches/3.1.9-usbdev: the USB MIDI device on the power jack */
+        usbdev_poll();
+    }
+#endif
     now = DWT_CYCCNT;
     period = now - m->woke;
     if (got != 1) {

@@ -46,9 +46,6 @@ typedef int (*f_close_fn)(void *file);
 #define SPINS_ERASE 400000000u
 #define SPINS_WORD  20000000u
 
-/* RbVoice.state bit: the loader has had its one go this boot. */
-#define RB_ST_LOOKED 0x100u
-
 #ifndef RB_PAYLOAD_FILE
 #define RB_PAYLOAD_FILE "BBRUBBER.BIN"   /* the Bungee build: "BBBUNGEE.BIN" */
 #endif
@@ -325,11 +322,11 @@ static uint32_t tries_key(void)
 
 /* b2load_thunk calls this from pcmStreamer before each file-command step. It also starts a
  * paired bank 2 (rb_start): here the unit is fully up, and this task may take its time. */
+static void look(RbVoice *v);
+
 void rb_load_poll(void)
 {
     RbVoice *v = (RbVoice *)RB_VOICE;
-    uint32_t n;
-    int own;
     if (v->magic != RB_VOICE_MAGIC)
         return;
     if ((v->state & 0xffu) == RB_ST_PAIRED) {
@@ -341,6 +338,15 @@ void rb_load_poll(void)
     if ((v->state & 0xffu) == RB_ST_UNKNOWN)
         return;                       /* pairing has not run yet: ask again next step */
     v->state |= RB_ST_LOOKED;         /* before anything else: one go per boot */
+    look(v);                          /* a verified write restarts the unit and never comes back */
+    v->writing = 0;                   /* anything else: the install message comes down (b2msg.c) */
+}
+
+/* The one look per boot: release bank 2 (RBFREE.TXT), or write it from the card. */
+static void look(RbVoice *v)
+{
+    uint32_t n;
+    int own;
     if (release(v))
         return;
     if ((v->state & 0xffu) == RB_ST_ABSENT)
@@ -368,6 +374,7 @@ void rb_load_poll(void)
     }
     rb_bkp_put(RB_BKP_TRIES_ID, tries_key());
     rb_bkp_put(RB_BKP_TRIES_N, n + 1u);   /* before the write: one that kills the boot counts */
+    v->writing = 1;                       /* the screen says so until the restart (b2msg.c) */
     if (!claim(own)) {
         rb_note('e');
         return;

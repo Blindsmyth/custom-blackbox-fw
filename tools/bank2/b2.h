@@ -22,6 +22,9 @@ extern const volatile uint32_t rb_expect_id;
 extern const volatile uint32_t rb_expect_sum;
 
 /* Backup SRAM (survives reset). Stock never enables it; nothing else of ours uses it. */
+/* RbVoice.state bit: the loader has had its one go this boot (b2load.c; b2msg.c reads it). */
+#define RB_ST_LOOKED    0x100u
+
 #define RB_BKP          0x38800000u
 #define RB_BKP_MAGIC    0x4b424252u   /* "RBBK" */
 #define RB_BKP_MARK     (RB_BKP + 4u) /* RB_MARK_SCAN while a read of bank 2 is in flight */

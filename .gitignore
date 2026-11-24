@@ -52,3 +52,4 @@ firmware/patches/3.1.9-mix-bungee/lineup/*/
 tools/stretch/bungee/build-lineup*/
 # presets copied from the unit's card
 presets/
+firmware/patches/3.1.9-mix-bungee/lineup/*/BLACKBOX.BIN

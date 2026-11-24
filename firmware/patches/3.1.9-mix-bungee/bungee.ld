@@ -28,6 +28,9 @@ SECTIONS {
     KEEP(*deck.o(.text .text.* .rodata .rodata.*))   /* 3.1.T: Clip Deck */
     KEEP(*dj.o(.text .text.* .rodata .rodata.*))     /* 3.1.T: Song DJ row */
     KEEP(*mixer.o(.text .text.* .rodata .rodata.*))  /* 3.1.T: Song DJ mixer */
+    KEEP(*mpe.o(.text .text.* .rodata .rodata.*))    /* 3.1.U: Seq MIDI out, MPE and Port */
+    KEEP(*b2msg.o(.text .text.* .rodata .rodata.*))  /* 3.1.U: "Installing" while bank 2 is written */
+    KEEP(*usbdev.o(.text .text.* .rodata .rodata.*)) /* 3.1.UD: USB MIDI device (--usbdev) */
   } > CAVE
 
   .b2head : { KEEP(*(.b2head)) } > BANK2
@@ -57,6 +60,7 @@ SECTIONS {
   } > ITCM AT > BANK2
   __itcm_load = LOADADDR(.itcm);
   .b2text : {
+    *(.b2mixer)          /* 3.1.U: the Song DJ mixer's block (mixer.c MX_B2), out of the cave */
     *(.text .text.*)
     *(.rodata .rodata.*)
     . = ALIGN(4);

@@ -315,3 +315,10 @@ address,name,comment
 0x08093E6A,Param_BagAlloc,(bag; n rows) allocates n*8 once; capacity at +0xC; 3.1.E hook_bag_size 64->96
 0x080C6338,Wave_Draw,(wave; ctx) waveform widget draw; vtable 0x080F1968; 3.1.E deck_wave_draw
 0x080C6C34,Wave_Tick,waveform widget tick: scroll/playhead follow; applies zoom target wave+0x24C
+0x0805CEF4,Player_StepNoteOn,(player, note, vel, offset, flags, router): msg 0x50 with +0x68/+0x69
+0x0805D070,Player_StepNoteOff,(player, note, offset, flags, router): msg 0x51
+0x0805D56C,Player_AllOff,(player, offset, router, 1): offs for the held list +0x70
+0x0805E58C,Player_Events,vt+0xC; param switch for msg 0x39 at 0x0805EBDA
+0x0805E364,Player_SetLayer,(player, transport, layer): param 0xC0
+0x08044A0E,Midi_Send,(mgr, packet, din, usb): DIN to UARTs +0x630 and +0x2648, USB ring
+0x080449CC,Midi_SendPort,(mgr, packet, port): 0 both UARTs, 1 / 2 one
