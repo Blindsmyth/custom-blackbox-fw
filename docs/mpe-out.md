@@ -68,7 +68,7 @@ They are posted to the router's MIDI queue (`router + 0x15238`) from six places,
 | `Player_NoteOn` / `Player_NoteOff` `0x0805C810` / `0x0805C970` | live notes through the sequence; held in `player+0xC28[note]` |
 | `0x0805E0F8` | all-off for those live notes |
 
-pcmStreamer's `Pcm_PollMidi` (`FUN_0804CB1C`) builds the bytes for `0x50`–`0x53` (the jump table at `0x0804D02C`; nothing else reaches the call) and sends them all from one call, `bl FUN_08044A0E` at **`0x0804D004`**. The message is at sp + `0x48` there.
+The audio task's `Pcm_PollMidi` (`FUN_0804CB1C`) builds the bytes for `0x50`–`0x53` (the jump table at `0x0804D02C`; nothing else reaches the call) and sends them all from one call, `bl FUN_08044A0E` at **`0x0804D004`**. The message is at sp + `0x48` there.
 
 - `FUN_08044A0E(mgr, packet, din, usb)`. The packet is 3 bytes plus a length byte at +4.
 - Notes take DIN from `pcm+0xA68B` and USB from `pcm+0xA68D` (USB Dev Out). Clock messages take `+0xA68C` / `+0xA68E`.
@@ -104,7 +104,7 @@ pcmStreamer's `Pcm_PollMidi` (`FUN_0804CB1C`) builds the bytes for `0x50`–`0x5
 ### Answers to the plan's open questions
 
 - **A player's index from its pointer:** from its key (`player+0x18`, `0x1RRCC`), as row × 4 + column. The player array is engine `+0x127D0` (count `+0x128D0`), but the key is enough and survives graph rebuilds.
-- **Is `Player_NoteOn` the only seq note path?** No. There are six senders (table above), and `Player_NoteOn` is only the live one. `FUN_08061E60` is the key-`0x400` node's. So the channel is chosen at the one send in pcmStreamer, not at the senders.
+- **Is `Player_NoteOn` the only seq note path?** No. There are six senders (table above), and `Player_NoteOn` is only the live one. `FUN_08061E60` is the key-`0x400` node's. So the channel is chosen at the one send in Pcm_PollMidi (audio task), not at the senders.
 - **Layer-bag params and layer changes:** they reach the player's switch with their layer index (above). The patch keeps all four layers' values per player and follows `0xC0`. A layer queued by stock (`+0xC24`) takes over at its boundary, while ours applies at once. Notes still playing from the old layer end on their own channels.
 - **Rows:** first planned on the layer pages (six of up to 47); moved to the sequence's page 0 (nine rows) after the first look, one setting per sequence.
 - **The second UART:** see above. It is kept together with the first.
@@ -130,12 +130,12 @@ The design changed from the plan: there are no hooks in `Player_NoteOn` / `Off` 
 | `0x0809443C` | bl | `bl Param_Add` (case `0x48`, `0x86`) | `mpe_tpl_layer`: stock's add, then Bank / Sub / Pgm (`mpe_tpl` adds them to `0x47` too, for layer A). |
 | `0x0804D018` | b.w | `ldrb.w r3, [sp, #0x48]` | `mpe_msg_thunk` → `mpe_msg(msg, r7)`: in `Pcm_PollMidi`'s loop, every message popped from the MIDI queue. The player posts its pass start `0x4E` (`+8` key, `+0xC` layer = `c20+0x40`) and layer takeover `0x69` (same) from `Player_Tick` (`0x0805E004`, `0x0805DBA6`), and stopped `0x4F`, all to `router + 0x15238`, in order with its notes; stock's switch skips them (type < `0x50`, or the default case). `mpe_msg` sends the layer's Bank / Sub / Pgm when the layer differs from the one last sent (none after `0x4F`). `r7` = `pcm + 0xA000` from the function's entry: `+0x68B` DIN, `+0x68D` USB Dev Out, as for notes. |
 | `0x080EEE9C` | bytes | `0000…` | layer page rows `1EC 1ED 1EE`. |
-| `0x0805E9D2`, `0x0805EA1A`, `0x0805ED04`, `0x0805EEDC` | bl | `bl Player_Start` | `mpe_player_start`: stock's, then a start counted (backup SRAM `0x38800600`: `starts[16]` audio task, `seen[16]` pcmStreamer). |
+| `0x0805E9D2`, `0x0805EA1A`, `0x0805ED04`, `0x0805EEDC` | bl | `bl Player_Start` | `mpe_player_start`: stock's, then a start counted (backup SRAM `0x38800600`: `starts[16]` audio task, `seen[16]` the send, audio task). |
 | `0x0805E004` | bl | `bl FUN_0804F504` (a pass's `0x4E`) | `mpe_pass_thunk` → `mpe_pass(fp)`: Loop Off sets the player's stop request `+0x32`, so `Player_Tick` stops at the next pass start (`0x4F`, `FUN_0805D56C`) as for a quantised stop. |
 
 **Tasks:**
 - `cfg`, `pc`, `outch` (MIDI Out, mirrored from stock's `0x6B` case) and `gen` are written only by the audio task (the param switch).
-- The channel table and `sent` (setup `gen` and the program change's layer) are written only by pcmStreamer.
+- The channel table and `sent` (setup `gen` and the program change's layer) are written only by the send (audio task, `Pcm_PollMidi`); the param switch runs in the audio task too.
 - `gen` / `sent` replace a dirty flag: a change during a send is not lost.
 
 **Memory:** `MpState` at SRAM4 **`0x38007148`–`0x380073FC`** (692 bytes), between RbVoice + diag (to `0x38007148`) and the Song DJ row's `DjState` (`0x38007400`). It holds a magic word, then per player 43 bytes (packed: odd players' halfwords are unaligned, which LDRH / STRH take on the M7):

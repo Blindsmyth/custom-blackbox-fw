@@ -35,7 +35,7 @@ mpe_param_thunk:
     str     r0, [sp, #4]
     pop     {r0, pc}
 
-@ 0x0804D004 in Pcm_PollMidi (FUN_0804CB1C, pcmStreamer): `bl FUN_08044A0E` (mgr, packet, DIN,
+@ 0x0804D004 in Pcm_PollMidi (FUN_0804CB1C, audio task): `bl FUN_08044A0E` (mgr, packet, DIN,
 @ USB) for engine messages 0x50-0x53. The message is at the caller's sp + 0x48 (+0 type, +8 port
 @ byte = player+0x68, +0xC channel, +0x10 note). Stock reloads every register it needs after it.
 .thumb_func
@@ -48,7 +48,7 @@ mpe_out_thunk:
     add     sp, #8
     pop     {r4, pc}
 
-@ 0x0804D018 in Pcm_PollMidi's loop (pcmStreamer) replaces `ldrb.w r3, [sp, #0x48]` (b.w), the type
+@ 0x0804D018 in Pcm_PollMidi's loop (audio task) replaces `ldrb.w r3, [sp, #0x48]` (b.w), the type
 @ of the message just popped from the MIDI queue into sp + 0x48. mpe_msg(msg, r7) sends a layer's
 @ program change on the player's own start / layer messages. Every register is kept, including the
 @ caller-saved VFP ones; `adds r5, #1; subs r3, #0x50` next set the flags.

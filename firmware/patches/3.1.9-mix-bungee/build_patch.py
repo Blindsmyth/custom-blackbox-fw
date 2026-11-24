@@ -58,6 +58,8 @@ DECK_ID_BASE = 0x1B0
 DJ_DIR = HERE.parent / "3.1.9-song-dj"
 # And Seq MIDI out (../3.1.9-mpe-out: MPE channel spread and Port per sequence layer, docs/mpe-out.md).
 MPE_DIR = HERE.parent / "3.1.9-mpe-out"
+# And the Program Change launcher (../3.1.9-pc-launcher: PSET again on the Presets screen, docs/pc-launcher.md).
+PCL_DIR = HERE.parent / "3.1.9-pc-launcher"
 # And the master chain (docs/master-chain.md): its DSP links into bank 2 (RbExt.master), mixer.c
 # reaches it from the master render.
 MC = ROOT / "tools" / "master_chain"
@@ -125,8 +127,8 @@ if USBDEV:
     else:
         OUT, OUT_B2, SYMS = (HERE / "lineup" / "usbdev" / n for n in ("BLACKBOX.BIN", f"{PAYLOAD}.BIN", "BLACKBOX.sym.json"))
         OUT.parent.mkdir(exist_ok=True)
-B2_PLAIN = [MPE_DIR / "mpe_b2.c"] + ([USBDEV_DIR / "usbdev.c"] if USBDEV else [])
-BANK1_OBJS = 11 if LINEUP else 4               # compile_all: the cave asm, then the bank-1 C
+B2_PLAIN = [MPE_DIR / "mpe_b2.c", PCL_DIR / "pcl_b2.c"] + ([USBDEV_DIR / "usbdev.c"] if USBDEV else [])
+BANK1_OBJS = 12 if LINEUP else 4               # compile_all: the cave asm, then the bank-1 C
 LETTER = ("UD" if USBDEV else "U") if LINEUP else "B"   # 3.1.U: 3.1.T + Seq MIDI out; 3.1.UD: + USB device
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
@@ -152,7 +154,7 @@ LANE_DEFS = ["-DBEATS_NO_CLOUD", "-DBEATS_SHARED_SCRATCH", "-DBEATS_CACHE=32", "
              "-DGRAN_NO_TABLES", "-DBEATS_LOOP_GROW=24000"]
 if LINEUP:
     B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", *LANE_SRC,
-                   *MC_SRC, MC / "src" / "dsp" / "mc_dsp.h", MC / "fw" / "mc_fw.h", *B2_PLAIN, MPE_DIR / "mpe.h",
+                   *MC_SRC, MC / "src" / "dsp" / "mc_dsp.h", MC / "fw" / "mc_fw.h", *B2_PLAIN, MPE_DIR / "mpe.h", PCL_DIR / "pcl.h",
                    DJ_DIR / "dj.c", DJ_DIR / "djui_b2.c"]
 BANK1_DEFS = ['-DRB_LABEL="Bungee"', f'-DRB_PAYLOAD_FILE="{PAYLOAD}.BIN"']
 BUNGEE_CXX = ["-std=c++20", "-fwrapv", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
@@ -187,7 +189,7 @@ def compile_all(rb_id):
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \
         ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c", MPE_DIR / "mpe.c", BANK2 / "b2msg.c",
-          DJ_DIR / "djui.c"] if LINEUP else [])
+          DJ_DIR / "djui.c", PCL_DIR / "pcl.c"] if LINEUP else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
         run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DSONG_CUES", "-DWITH_SONG_DJ"] if LINEUP else []),
@@ -196,7 +198,7 @@ def compile_all(rb_id):
              *(["-DMC_NO_AUDIO"] if NO_MC_AUDIO else []),
              *(["-DMC_NO_DSP"] if MC_NODSP else []), *(["-DMC_KEEP_COMP"] if MC_COMP else []),
              *(["-DWITH_USBDEV"] if USBDEV else []),
-             "-I", BANK2, "-I", RUBBER, *(MC_INC if LINEUP else []), "-c", "-o", o, src])
+             "-I", BANK2, "-I", RUBBER, "-I", PCL_DIR, *(MC_INC if LINEUP else []), "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]
     inc = ["-I", RUBBER, "-I", BG, "-I", BG / "submodules" / "eigen", "-I", CMSIS / "Include", "-I", STRETCH]
@@ -216,7 +218,7 @@ def compile_all(rb_id):
     plain = []
     for src in B2_PLAIN if LINEUP else []:
         o = BUILD / ("b2p_" + src.stem + ".o")
-        run([GCC, *B2_PLAIN_C, *(["-DWITH_USBDEV"] if USBDEV else []), "-I", MPE_DIR, "-I", BANK2, "-I", RUBBER,
+        run([GCC, *B2_PLAIN_C, *(["-DWITH_USBDEV"] if USBDEV else []), "-I", MPE_DIR, "-I", PCL_DIR, "-I", BANK2, "-I", RUBBER,
              "-c", "-o", o, src])
         plain.append(o)
     if LINEUP:
@@ -418,6 +420,15 @@ def add_rubber_sites(stock):
         spec.loader.exec_module(mpe)
         mix.SITES.extend(mpe.parts(stock, stock_bl))
         mix.BYTES.extend(mpe.BYTES)
+    if LINEUP:      # the Program Change launcher (../3.1.9-pc-launcher/sites.py)
+        spec = importlib.util.spec_from_file_location("pcl_sites", PCL_DIR / "sites.py")
+        pcl = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pcl)
+        sites, vtable = pcl.parts(stock, stock_bl)
+        mix.SITES.extend(sites)
+        mix.VTABLE.extend(vtable)
+        # Presets +0x34: pcl_event in front of the Mix line's pset_on_event (which pcl_event calls on).
+        mix.VTABLE[:] = [(va, "pcl_event" if va == pcl.VTABLE_EVENT else sym, orig) for va, sym, orig in mix.VTABLE]
     if LINEUP:      # "Installing" on screen while the card loader writes bank 2 (tools/bank2/b2msg.c)
         mix.SITES.append((0x0808B664, "b2msg_update", True, stock_bl(stock, 0x0808B664, 0x080A2258)))
         mix.VTABLE.append((0x080F19D8, "b2msg_event", 0x080C7025))   # message screen (screen 1) onEvent

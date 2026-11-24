@@ -55,6 +55,8 @@ typedef struct RbExt {
     uint32_t usb_out;     /* void (*)(uint8_t *queue) | 1: the "to USB" queue to the computer (audio task) */
     /* 3.1.U Song DJ screens (firmware/patches/3.1.9-song-dj/djui.c), 0 = none: */
     uint32_t dj_ui;       /* const uint32_t[DJ_UI_N]: dj.c's screen entries, built in bank 2 */
+    /* 3.1.U Program Change launcher (firmware/patches/3.1.9-pc-launcher/pcl_b2.c), 0 = none: */
+    uint32_t pcl_ui;      /* const uint32_t[PCL_UI_N]: the Presets screen's layer (tick, child, event) */
 } RbExt;
 
 /* Voice header, SRAM4 (free on main; Capi used the same slot on warp-capi). */

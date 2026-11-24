@@ -70,7 +70,7 @@ int mpe_b2_param(unsigned char *pl, void *router, const unsigned *msg)
     return handled;
 }
 
-/* ---- pcmStreamer: the send at 0x0804D004 */
+/* ---- the send (audio task, Pcm_PollMidi) at 0x0804D004 */
 
 /* Note channels (0-based mask): first (MIDI Out) to last, either way round, without the master. */
 static unsigned members(unsigned mode, unsigned first, unsigned last)
@@ -149,7 +149,7 @@ static void setup(void *mgr, unsigned mode, unsigned m, unsigned bend, int din, 
         rpn(mgr, master, 0, 2, din, usb);
 }
 
-/* `bl FUN_08044A0E` at 0x0804D004 (pcmStreamer), for engine messages 0x50-0x53: (mgr, packet, DIN,
+/* `bl FUN_08044A0E` at 0x0804D004 (audio task), for engine messages 0x50-0x53: (mgr, packet, DIN,
  * USB) as stock, plus the message (+0 type, +8 tag, +0xC MIDI Out channel, +0x10 note). */
 void mpe_b2_out(void *mgr, unsigned char *pk, int din, int usb, const unsigned char *msg)
 {
@@ -216,7 +216,7 @@ void mpe_b2_out(void *mgr, unsigned char *pk, int din, int usb, const unsigned c
         MIDI_SEND(mgr, pk, din, usb);
 }
 
-/* Pcm_PollMidi's dispatch (0x0804D018, pcmStreamer), for every message in the MIDI queue, in order
+/* Pcm_PollMidi's dispatch (0x0804D018, audio task), for every message in the MIDI queue, in order
  * with the notes: msg +0 type, +8 key, +0xC layer (0x4E a pass starts, 0x69 a layer takes over, 0x4F
  * stopped). pcm = Pcm_PollMidi's r7 (pcm + 0xA000): +0x68B DIN, +0x68D USB Dev Out, as for notes. */
 void mpe_b2_msg(const unsigned char *msg, const unsigned char *pcm)

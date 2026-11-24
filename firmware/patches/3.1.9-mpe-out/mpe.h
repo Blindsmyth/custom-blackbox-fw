@@ -54,7 +54,7 @@ typedef struct __attribute__((packed)) {
     unsigned char gen;             /* bumped when the settings are posted (audio task) */
     unsigned char outch;           /* MIDI Out (0x6B): 0 off, else channel 1..16 (audio task) */
     unsigned char sent;            /* gen & 15 whose MPE setup went out | the layer whose program
-                                      change went out << 4, PC_NONE after a stop (pcmStreamer) */
+                                      change went out << 4, PC_NONE after a stop (the send, audio task) */
 } MpPlayer;
 
 typedef struct {
@@ -71,7 +71,7 @@ typedef char mp_after_diag[(MP_BASE >= 0x38007148u) ? 1 : -1];
 typedef struct {
     unsigned magic;
     unsigned char starts[N_PL];    /* Player_Start calls (audio task) */
-    unsigned char seen[N_PL];      /* starts whose program change went out (pcmStreamer) */
+    unsigned char seen[N_PL];      /* starts whose program change went out (the send, audio task) */
 } MpBkp;
 #define B ((volatile MpBkp *)MP_BKP)
 void rb_bkp_enable(void);          /* tools/bank2/b2pair.c: backup SRAM clock and writes */

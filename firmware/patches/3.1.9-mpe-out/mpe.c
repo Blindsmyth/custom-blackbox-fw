@@ -4,11 +4,11 @@
  * Every note a sequence sends out goes through one engine message (0x50 on, 0x51 off) whose byte +8
  * is the player's +0x68 (stock's dormant `midiport`) and +0xC its +0x69 (the MIDI Out channel).
  * Stock posts them from six places (the step's notes, their offs, all-off, the layer switch, live
- * notes and their all-off) and sends them all from one call in pcmStreamer, `bl FUN_08044A0E` at
+ * notes and their all-off) and sends them all from one call in the audio task (Pcm_PollMidi), `bl FUN_08044A0E` at
  * 0x0804D004. So:
  *   - the audio task keeps player+0x68 = a tag: which of the 16 sequence players it is, and the
  *     sequence's Port and MPE mode (mpe_param, from the player's own param switch);
- *   - pcmStreamer, at the send, reads the tag back from the message and picks the channel
+ *   - the send (audio task, Pcm_PollMidi) reads the tag back from the message and picks the channel
  *     (mpe_out): least recently used member channel, the oldest note stolen when all are busy, and
  *     a note-off on the channel its note-on went out on. Off is stock's bytes.
  * A tag change (Port or mode) runs stock's own all-off first, as stock does when the channel or
@@ -27,7 +27,7 @@
  *   0x1ED "Sub:"     --- / 1..128   CC 32
  *   0x1EE "Pgm:"     --- / 1..128   program change
  * They go out when the sequence starts and when a layer takes over, right before its first note:
- * pcmStreamer sees the player's own pass (0x4E, every pass) and layer (0x69) messages in the same
+ * The send sees the player's own pass (0x4E, every pass) and layer (0x69) messages in the same
  * queue as its notes (mpe_msg), and sends a layer's set on the first pass after each Player_Start
  * (counted by mpe_player_start in backup SRAM, as there are stop paths that post no 0x4F) and when
  * another layer takes over. Channel: MIDI Out, or the MPE master (Lower 1, Upper 16).
@@ -164,7 +164,7 @@ int mpe_param(unsigned char *pl, void *router, const unsigned *msg)
     return f && mp_live() ? f(pl, router, msg) : 0;
 }
 
-/* The send at 0x0804D004 (pcmStreamer): bank 2's mpe_b2_out, else stock's FUN_08044A0E. */
+/* The send at 0x0804D004 (audio task): bank 2's mpe_b2_out, else stock's FUN_08044A0E. */
 void mpe_out(void *mgr, unsigned char *pk, int din, int usb, const unsigned char *msg)
 {
     mpe_out_fn f = (mpe_out_fn)B2_FN(mpe_out);
@@ -174,7 +174,7 @@ void mpe_out(void *mgr, unsigned char *pk, int din, int usb, const unsigned char
         MIDI_SEND(mgr, pk, din, usb);
 }
 
-/* Pcm_PollMidi's dispatch (0x0804D018, pcmStreamer): bank 2's mpe_b2_msg (the program change). */
+/* Pcm_PollMidi's dispatch (0x0804D018, audio task): bank 2's mpe_b2_msg (the program change). */
 void mpe_msg(const unsigned char *msg, const unsigned char *pcm)
 {
     mpe_msg_fn f = (mpe_msg_fn)B2_FN(mpe_msg);

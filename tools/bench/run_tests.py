@@ -2238,6 +2238,8 @@ def t_seqrec_templates(bench, res):
                                                          -4000, 4, 10, 250, -4000))]          # the global set kept aside
         mixer += [(0x13F, 300), (0x140, 300), (0x141, 500), (0x142, 500),
                   (0x143, 500), (0x144, 500), (0x145, 400), (0x146, 300), (0x147, 1000), (0x148, 1000), (0x149, 650)]
+    if "pcl_global_tpl" in bench.sym:                                 # 3.1.U: PC launcher, button n = Pgm n, Ch 1
+        mixer += [(0x1E8 + i, i + 1) for i in range(4)]
     res.check(adds == [(0x19B, 0), (SR_DEF, 4), (0x1A0, 2), (0x1A1, 1)] + mixer,
               f"global template adds Seq Default = 1 bar, Loop BPM 80-160, Dbl Copy On {adds}")
     for glob, want in ((4, 4), (0, 0), (6, 6), (99, 4)):
@@ -8726,7 +8728,7 @@ def t_mpe_registry(bench, res):
     res.check(got == ["Off", "On"] and n and b.cstr(n) == "seqloop" and t and b.cstr(t) == "Loop:", f"Loop: {got}")
     res.check(b.u32(MP_BKP) == 0x3150504D and bytes(b.mu.mem_read(MP_BKP + 4, 32)) == b"\x00" * 32,
               "backup SRAM start counters cleared at boot")
-    for pid in (0x73, 0x75, 0x1E6, 0x1EB, 0x1F3):
+    for pid in (0x73, 0x75, 0x1E6, 0x1D9, 0x1F3):   # 0x1E8-0x1EB: the PC launcher
         t = b.call(PARAM_TITLE, pid)
         res.check(pid in (0x73, 0x75) and t != 0 or pid not in (0x73, 0x75) and t == 0,
                   f"{pid:#x} left as it was ({t and b.cstr(t)!r})")
@@ -9434,6 +9436,169 @@ def t_b2msg(bench, res):
     for a in (0x080A2258, 0x0809EAEC, 0x080B5758, 0x080C3B98, 0x080C7024):
         b.unstub(a)
 
+# ---- Program Change launcher (3.1.U): PSET again on the Presets screen, docs/pc-launcher.md ----------------------
+
+PCL_ST = 0x38800624             # PclState (pcl.h): magic, blk, want, shown, mode, info_prev, changed, seq, sent, ch, pgm
+PCL_ID0 = 0x1E8
+PCL_BTN0 = 0x1D4
+PCL_SCR = 0xC0B00000            # a fake Presets screen widget, with two stock buttons of its own as children
+PCL_GLOBAL = 0x24028D18
+
+
+def _pcl_ev(b, kind, a, c=0):
+    b.mu.mem_write(DJ_EV, b"\x00" * 0x20)
+    b.mu.mem_write(DJ_EV, kind.to_bytes(2, "little"))
+    b.w32(DJ_EV + 0xC, a)
+    b.mu.mem_write(DJ_EV + 0x10, (c & 0xFFFF).to_bytes(2, "little"))
+    return DJ_EV
+
+
+def t_pcl_sites(bench, res):
+    b, sym = bench.b, bench.sym
+    img = b.image
+    for va, name in ((0x080A32EA, "pcl_pset_key"), (0x0804CED8, "pcl_pump")):
+        got = _bl_target(img, va)
+        res.check(got == sym[name], f"{va:#x} -> {got and hex(got)} ({name})")
+    for slot, name in ((0x080F1498, "pcl_tick"), (0x080F14C8, "pcl_child"), (0x080F14CC, "pcl_event")):
+        res.check(b.img_u32(slot) == sym[name] | 1, f"Presets vtable {slot:#x} -> {name}")
+    b.call(PARAM_REGISTER_ALL, 0)
+    for i in range(4):
+        n = b.call(PARAM_XML_NAME, PCL_ID0 + i)
+        res.check(n and b.cstr(n) == f"pcl{i + 1}", f"{PCL_ID0 + i:#x} registered as pcl{i + 1}")
+    res.check(b.u32(PCL_ST) == 0x314C4350 and b.u32(PCL_ST + 4) != 0, "boot: state live, the buttons' SDRAM taken")
+    adds = []
+    b.stub(BAG_ADD, lambda board: adds.append((board.arg(1), board.arg(2))))
+    b.call(sym["mx_global_tpl"], BAG_SCRATCH)
+    b.unstub(BAG_ADD)
+    res.check([a for a in adds if PCL_ID0 <= a[0] < PCL_ID0 + 4] == [(PCL_ID0 + i, i + 1) for i in range(4)],
+              f"global template: slot n = program n, channel 1 {adds[-4:]}")
+
+
+def t_pcl_layer(bench, res):
+    """The real launcher code on a fake Presets screen: PSET again, the 2x2 layer, encoders, INFO, a press, the pump,
+    leaving the screen."""
+    b, sym = bench.b, bench.sym
+    b.call(PARAM_REGISTER_ALL, 0)
+    rows = 0x2001CA00                           # the bench builds no app: a global bag with the template's four
+    b.mu.mem_write(PCL_GLOBAL, b"\x00" * 0x40)
+    b.mu.mem_write(rows, b"\x00" * 0x200)
+    b.w32(PCL_GLOBAL + 4, rows)
+    b.mu.mem_write(PCL_GLOBAL + 10, b"\x00\x00\x40\x00")
+    for i in range(4):
+        b.call(BAG_ADD, PCL_GLOBAL, PCL_ID0 + i, i + 1)
+    res.check([b.call(PARAM_GET, PCL_GLOBAL, PCL_ID0 + i) for i in range(4)] == [1, 2, 3, 4], "global bag holds the four")
+    b.mu.mem_write(DJ_APP, b"\x00" * 0x9000)
+    b.mu.mem_write(DJ_APP + 0x8CA4, bytes([2]))
+    bench.screen.clear()
+    b.call(sym["pcl_pset_key"], DJ_APP, 7, 0, 0)
+    res.check(bench.screen == [(DJ_APP, 7)] and b.u8(PCL_ST + 8) == 0, "PSET elsewhere: stock opens Presets")
+    b.mu.mem_write(DJ_APP + 0x8CA4, bytes([7]))
+    b.call(sym["pcl_pset_key"], DJ_APP, 7, 0, 0)
+    res.check(b.u8(PCL_ST + 8) == 1 and bench.screen == [(DJ_APP, 7)], "PSET on Presets: the layer, no screen switch")
+    b.w32(RB_VOICE + 8, 2)                      # bank 2 not paired: stock
+    b.call(sym["pcl_pset_key"], DJ_APP, 7, 0, 0)
+    res.check(b.u8(PCL_ST + 8) == 1 and bench.screen[-1] == (DJ_APP, 7) and len(bench.screen) == 2,
+              "without bank 2 PSET is stock's")
+    b.w32(RB_VOICE + 8, 3)
+
+    stock = []
+    b.stub(0x080BE594, lambda bd_: stock.append("tick"))
+    b.stub(0x080BD928, lambda bd_: stock.append(("child", bd_.u16(bd_.arg(1)))) or 7)
+    b.stub(sym["pset_on_event"], lambda bd_: stock.append(("event", bd_.u16(bd_.arg(1)))))
+    saves = []
+    b.stub(0x08090CBC, lambda bd_: saves.append(bd_.arg(2)))
+    b.mu.mem_write(PCL_SCR, b"\x00" * 0x1000)
+    kids = (PCL_SCR + 0x200, PCL_SCR + 0x300)
+    for k in kids:
+        b.call(0x080A3D34, k)                   # stock buttons as the screen's own widgets
+    b.w32(PCL_SCR + 0x18, kids[0])
+    b.w32(PCL_SCR + 0x1C, kids[1])
+    b.w32(kids[0] + 0x20, kids[1])
+    b.w32(kids[1] + 0x24, kids[0])
+    for k in kids:
+        b.w32(k + 0x2C, PCL_SCR)
+    b.mu.mem_write(kids[1] + 0x30, b"\x01")      # one of stock's was hidden already
+    flags = PCL_SCR + 0x800
+    b.mu.mem_write(flags, b"\x00\x00")
+    b.mu.mem_write(0x24009BDE, b"\x01")          # INFO up
+    _dj_ms(b, 1000)
+    tick = lambda: b.call(sym["pcl_tick"], PCL_SCR, flags, 0, 0)
+    tick()
+    blk = b.u32(PCL_ST + 4)
+    btn = [blk + i * 0xA0 for i in range(4)]
+    rects = [tuple(b.u32(x + o) for o in (4, 8, 0xC, 0x10)) for x in btn]
+    res.check(stock[:1] == ["tick"] and b.u8(PCL_ST + 9) == 1, "stock tick, then the layer is up")
+    res.check(rects == [(0, 111, 159, 110), (0, 0, 159, 110), (160, 111, 159, 110), (160, 0, 159, 110)],
+              f"2x2 as the encoders: TL, BL, TR, BR {rects}")
+    res.check(b.u32(PCL_SCR + 0x18) == btn[3] and [b.u8(x + 0x30) for x in btn] == [0] * 4,
+              "ours are the screen's oldest children, shown")
+    res.check([b.u8(k + 0x30) for k in kids] == [1, 1], "stock's widgets hidden under the layer")
+    texts = [b.cstr(x + 0x65) for x in btn]
+    res.check(texts == [f"[Pgm {i + 1}]  Ch 1" for i in range(4)], f"labels: program edited {texts}")
+    res.check(b.u8(flags) == 1 and b.u8(flags + 1) == 1, "the GUI is asked for both passes")
+    stock.clear()
+    ev = sym["pcl_event"]
+    b.call(ev, PCL_SCR, _pcl_ev(b, 0x32, 0, 400))
+    b.call(ev, PCL_SCR, _pcl_ev(b, 0x32, 0, 300))
+    b.call(ev, PCL_SCR, _pcl_ev(b, 0x32, 0, 100))
+    res.check(b.call(PARAM_GET, PCL_GLOBAL, PCL_ID0) == 3 and stock == [], "TL encoder: slot 1 program 1 -> 3 (400 a step), not the list")
+    b.call(ev, PCL_SCR, _pcl_ev(b, 0x32, 0, -400 * 5))
+    res.check(b.call(PARAM_GET, PCL_GLOBAL, PCL_ID0) == 1, "program stops at 1")
+    for _ in range(40):                         # real turns are small: the delta is a 16-bit field
+        b.call(ev, PCL_SCR, _pcl_ev(b, 0x32, 2, 400 * 4))
+    res.check(b.call(PARAM_GET, PCL_GLOBAL, PCL_ID0 + 2) == 128, "TR encoder: slot 3, stops at 128")
+    b.mu.mem_write(0x24009BDE, b"\x00")           # INFO pressed
+    tick()
+    texts = [b.cstr(x + 0x65) for x in btn]
+    res.check(b.u8(PCL_ST + 10) == 1 and texts[2] == "Pgm 128  [Ch 1]", f"INFO: the encoders edit the channel {texts}")
+    tick()
+    res.check(b.u8(PCL_ST + 10) == 1, "held INFO toggles once")
+    b.call(ev, PCL_SCR, _pcl_ev(b, 0x32, 3, 400 * 3))
+    for _ in range(10):
+        b.call(ev, PCL_SCR, _pcl_ev(b, 0x32, 1, 400 * 4))
+    res.check(b.call(PARAM_GET, PCL_GLOBAL, PCL_ID0 + 3) == (4 | 3 << 8) and
+              b.call(PARAM_GET, PCL_GLOBAL, PCL_ID0 + 1) == (2 | 15 << 8), "BR: channel 4, BL: channel stops at 16")
+    stock.clear()
+    child = sym["pcl_child"]
+    seq = b.u8(PCL_ST + 13)
+    r = b.call(child, PCL_SCR, _pcl_ev(b, 1, PCL_BTN0 + 3))
+    res.check(r == 0 and b.u8(PCL_ST + 13) == (seq + 1) & 0xFF and b.u8(PCL_ST + 15) == 3 and b.u8(PCL_ST + 16) == 3
+              and stock == [], "BR press: program 4 on channel 4 in the mailbox, taken")
+    res.check(b.u8(btn[3] + 0x96) == 1, "the pressed button lights")
+    b.call(child, PCL_SCR, _pcl_ev(b, 2, PCL_BTN0 + 3))
+    res.check(stock == [], "its release swallowed")
+    b.call(child, PCL_SCR, _pcl_ev(b, 2, 0x18))
+    res.check(stock == [("child", 2)], "stock's own widgets' events go to stock")
+    sent = []
+    pumped = []
+    b.stub(0x08044A0E, lambda bd_: sent.append((bytes(bd_.mu.mem_read(bd_.arg(1), 5)).hex(), bd_.arg(2), bd_.arg(3))))
+    b.stub(0x08044AD8, lambda bd_: pumped.append(bd_.arg(0)))
+    b.mu.mem_write(0x2401504B, b"\x01\x00\x01")
+    b.call(sym["pcl_pump"], 0x24002E88)
+    res.check(sent == [("c303000002", 1, 1)] and pumped == [0x24002E88],
+              f"pump (audio task): C3 03, two bytes, DIN and USB, then stock's pump {sent}")
+    b.call(sym["pcl_pump"], 0x24002E88)
+    res.check(len(sent) == 1 and len(pumped) == 2, "once per press")
+    b.mu.mem_write(0x2401504D, b"\x00")
+    b.call(child, PCL_SCR, _pcl_ev(b, 1, PCL_BTN0))
+    b.call(sym["pcl_pump"], 0x24002E88)
+    res.check(sent[-1] == ("c000000002", 1, 0), f"USB Dev Out off: DIN only {sent[-1]}")
+    _dj_ms(b, 1300)
+    tick()
+    res.check(b.u8(btn[3] + 0x96) == 0, "unlit after ~150 ms")
+    stock.clear()
+    b.call(ev, PCL_SCR, _pcl_ev(b, 0xD3, 0))
+    res.check([b.u8(x + 0x30) for x in btn] == [1] * 4 and [b.u8(k + 0x30) for k in kids] == [0, 1]
+              and b.u8(PCL_ST + 9) == 0 and b.u8(PCL_ST + 8) == 1,
+              "leaving: ours hidden, stock's back as they were, the layer still wanted")
+    res.check(saves == [PCL_GLOBAL] and stock == [("event", 0xD3)], f"settings saved once; stock's leave runs {saves}")
+    tick()
+    b.call(sym["pcl_pset_key"], DJ_APP, 7, 0, 0)
+    tick()
+    res.check(b.u8(PCL_ST + 9) == 0 and len(saves) == 1, "open and closed again without a change: no save")
+    for a in (0x080BE594, 0x080BD928, sym["pset_on_event"], 0x08090CBC, 0x08044A0E, 0x08044AD8):
+        b.unstub(a)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -9634,6 +9799,9 @@ def main():
         ]
     if "b2msg_update" in sym:
         cases += [("Install message while bank 2 is written", t_b2msg)]
+    if "pcl_pump" in sym:
+        cases += [("PC launcher: sites, params, global template", t_pcl_sites),
+                  ("PC launcher: PSET again, layer, encoders, INFO, press, pump, leave", t_pcl_layer)]
     if "usbdev_poll" in sym:
         kind = kind + "+usbdev"
         cases += [
@@ -9736,7 +9904,8 @@ def main():
             ("real GUI: Tools -> Master tab", t_master_gui),
         ]
     if "rb_ext_word" in sym:     # 3.1.U: these features call into bank 2 once it is paired
-        b2_groups = ("Seq MIDI out", "USB device", "Song DJ", "Song cues: pad grid", "Master", "real GUI: Tools")
+        b2_groups = ("Seq MIDI out", "USB device", "Song DJ", "Song cues: pad grid", "Master", "real GUI: Tools",
+                     "PC launcher")
         cases = [(n, with_b2(f) if n.startswith(b2_groups) else f) for n, f in cases]
     if args.only:
         cases = [c for c in cases if args.only in c[0]]

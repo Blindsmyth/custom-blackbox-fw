@@ -101,6 +101,7 @@ struct RbExtInit {
     const void *mpe_param, *mpe_out, *mpe_msg;   /* firmware/patches/3.1.9-mpe-out/mpe_b2.c */
     const void *usb_poll, *usb_out;              /* firmware/patches/3.1.9-usbdev/usbdev.c (--usbdev) */
     const void *dj_ui;                           /* firmware/patches/3.1.9-song-dj/djui_b2.c */
+    const void *pcl_ui;                          /* firmware/patches/3.1.9-pc-launcher/pcl_b2.c */
 };
 extern "C" void mc_b2_run(unsigned op, unsigned l, unsigned r, unsigned n);
 extern "C" unsigned mc_b2_ui(unsigned op, unsigned a, unsigned b, unsigned c);
@@ -111,9 +112,11 @@ extern "C" __attribute__((weak)) void mpe_b2_msg(const unsigned char *, const un
 extern "C" __attribute__((weak)) void usbdev_b2_poll(void);
 extern "C" __attribute__((weak)) void usbdev_b2_out(uint8_t *);
 extern "C" __attribute__((weak)) const uint32_t dj_ui_b2[];
+extern "C" __attribute__((weak)) const uint32_t pcl_ui_b2[];
 extern "C" __attribute__((used)) const RbExtInit rb_ext = { rubber_lanes, sizeof(Pool), mc_b2_run, mc_b2_ui,
     (const void *)mpe_b2_param, (const void *)mpe_b2_out, (const void *)mpe_b2_msg,
-    (const void *)usbdev_b2_poll, (const void *)usbdev_b2_out, (const void *)dj_ui_b2 };
+    (const void *)usbdev_b2_poll, (const void *)usbdev_b2_out, (const void *)dj_ui_b2,
+    (const void *)pcl_ui_b2 };
 
 static Pool *pool()
 {

@@ -22,7 +22,7 @@ How it behaves:
 - **Presets:** saved as `midiport`, `mpemode`, `mpelast`, `mpebend`. Older presets get the defaults.
 
 Files:
-- `mpe.c`: registration, templates, the per-sequence state and tag (audio task), and the channel choice at the send (pcmStreamer).
+- `mpe.c`: registration, templates, the per-sequence state and tag (audio task), and the channel choice at the send (the send, audio task).
 - `mpe.S`: the three stubs.
 - `sites.py`: the hook sites with their stock bytes, the page rows and the layer-0 id mask.
 

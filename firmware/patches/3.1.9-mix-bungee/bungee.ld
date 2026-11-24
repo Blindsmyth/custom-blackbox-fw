@@ -31,6 +31,7 @@ SECTIONS {
     KEEP(*mpe.o(.text .text.* .rodata .rodata.*))    /* 3.1.U: Seq MIDI out, MPE and Port */
     KEEP(*b2msg.o(.text .text.* .rodata .rodata.*))  /* 3.1.U: "Installing" while bank 2 is written */
     KEEP(*djui.o(.text .text.* .rodata .rodata.*))   /* 3.1.U: Song DJ screens' stubs (the rest in bank 2) */
+    KEEP(*pcl.o(.text .text.* .rodata .rodata.*))    /* 3.1.U: Program Change launcher (the screen in bank 2) */
   } > CAVE
 
   .b2head : { KEEP(*(.b2head)) } > BANK2

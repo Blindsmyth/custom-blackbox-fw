@@ -339,10 +339,14 @@ void mc_global_tpl(void *bag);
 
 /* Param_RegisterAll tail (deck_register): Tools -> Clock "BPM: Project / Global", and the master
  * chain's parameters. */
+void pcl_register(void *reg);       /* ../3.1.9-pc-launcher/pcl.c: the Program Change launcher's four */
+void pcl_global_tpl(void *bag);
+
 void mx_register(void *reg)
 {
     PARAM_ENUM(reg, ID_BPMG, t_bpmg, bpmg_names, 2, x_bpmg);
     mc_register(reg);
+    pcl_register(reg);
 }
 
 /* Global bag template, last add (seqrec_global_tpl): default Project. Saved in settings.tml. */
@@ -350,6 +354,7 @@ void mx_global_tpl(void *bag)
 {
     PARAM_ADD(bag, ID_BPMG, 0);
     mc_global_tpl(bag);
+    pcl_global_tpl(bag);
 }
 
 /* SessionMgr_LoadBank 0x0809E258 (msg 0x36, first thing a load does): the held loop stops
