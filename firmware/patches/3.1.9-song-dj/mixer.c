@@ -925,8 +925,16 @@ static void fx_run(unsigned char *se, float *l, float *r, float *ll, float *lr, 
         proc(next, se);
 }
 
-/* One master block, in place: the audio task's blocks are 256 frames, the ring's 128. */
-void mx_block(float *l, float *r, int n)
+/* One master block, in place: the audio task's blocks are 256 frames, the ring's 128.
+ * In the lineup build (MX_B2) this, with what it inlines (part, fx_run), sits in bank 2's flash
+ * (bungee.ld .b2mixer): the cave has no room for it next to Seq MIDI out. The cave reaches it
+ * through RbExt.mixer while bank 2 runs (mx_block below); the code and its stack are the same. */
+#ifdef MX_B2
+#define MX_B2FN __attribute__((section(".b2mixer"), used, noinline))
+#else
+#define MX_B2FN
+#endif
+MX_B2FN void mx_block_dsp(float *l, float *r, int n)
 {
     unsigned char *se = SE;
     float *ll = 0, *lr = 0;
@@ -953,6 +961,29 @@ void mx_block(float *l, float *r, int n)
     else if (fx)
         proc(se + SE_FX, se);
 }
+
+#ifdef MX_B2
+typedef void (*mx_block_fn)(float *, float *, int);
+static unsigned mx_b2_fn(void);
+
+/* With bank 2 not running (no payload, not booted): no loop and no recording, the DJ FX as stock. */
+void mx_block(float *l, float *r, int n)
+{
+    unsigned fn = mx_b2_fn();
+    if (fn) {
+        ((mx_block_fn)fn)(l, r, n);
+        return;
+    }
+    if (live()) {
+        int fx = M->fx_due;
+        M->fx_due = 0;
+        if (fx && SE)
+            proc(SE + SE_FX, SE);
+    }
+}
+#else
+void mx_block(float *l, float *r, int n) { mx_block_dsp(l, r, n); }
+#endif
 
 /* 0x0804EE9A in FUN_0804EDDC (compressor on): the compressor's gain, then ours, before the limiter. */
 void mx_comp_tap(void *ramp, float *l, float *r, int n)
@@ -1332,6 +1363,25 @@ static unsigned mc_fn(void)
     return ((const volatile RbExt *)h->ext)->master;
 }
 
+#ifdef MX_B2
+/* bank 2's mx_block_dsp / mx_master_dsp, 0 = not running */
+static unsigned mx_b2_fn(void)
+{
+    const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
+    if (!rb_ready() || !h->ext)
+        return 0;
+    return ((const volatile RbExt *)h->ext)->mixer;
+}
+
+static unsigned mx_b2_master_fn(void)
+{
+    const volatile RbHeader *h = (const volatile RbHeader *)RB_B2_BASE;
+    if (!rb_ready() || !h->ext)
+        return 0;
+    return ((const volatile RbExt *)h->ext)->mixer_master;
+}
+#endif
+
 /* Neutral values until the first read of the bag: the chain off, the stock settings. */
 static void mc_shared_init(McShared *s)
 {
@@ -1432,13 +1482,9 @@ int mc_chain_off(void)
  * no drive; the stock block limiter hard-clipped the loop + project's overs: clicks). The DJ loop is
  * recorded from the mastered project and played back round the chain, so it is not mastered twice;
  * the DJ filters and FX sit there too, as on a DJ mixer after the master. Only the safety limiter follows. */
-void mx_master(void *dst, void *bus)
+MX_B2FN void mx_master_dsp(void *dst, void *bus, unsigned fn)
 {
     McShared *s = MC_SHARED;
-    unsigned fn = mc_fn();
-#ifdef MC_NO_AUDIO
-    fn = 0;                                       /* build_patch.py --no-mc-audio: the copy only */
-#endif
     if (fn) {
         if (s->magic != MC_SHARED_MAGIC)
             mc_shared_init(s);
@@ -1460,7 +1506,7 @@ void mx_master(void *dst, void *bus)
                 dst = 0;
                 MC_DSP(fn, MC_OP_MAX, (unsigned)l, (unsigned)r, (unsigned)n);
                 if (live() && !M->done) {         /* not run in the compressor already */
-                    mx_block(l, r, n);            /* records the mastered project; the loop and the */
+                    mx_block_dsp(l, r, n);            /* records the mastered project; the loop and the */
                     M->done = 1;                  /* DJ FX go round the chain (mx_bus_tap: done) */
                 }
                 MC_DSP(fn, MC_OP_LIMIT, (unsigned)l, (unsigned)r, (unsigned)n);
@@ -1477,7 +1523,7 @@ void mx_master(void *dst, void *bus)
                 BUS_COPY(dst, bus);
                 dst = 0;
                 if (live() && !M->done) {         /* not run in the compressor already */
-                    mx_block(l, r, n);
+                    mx_block_dsp(l, r, n);
                     M->done = 1;
                 }
                 MC_DSP(fn, MC_OP_LIMIT, (unsigned)l, (unsigned)r, (unsigned)n);
@@ -1486,6 +1532,29 @@ void mx_master(void *dst, void *bus)
     }
     if (dst)
         BUS_COPY(dst, bus);
+}
+
+/* mx_master_dsp sits in bank 2 with mx_block_dsp in the lineup build (MX_B2); bank 2 not running, it
+ * would only copy the bus. */
+void mx_master(void *dst, void *bus)
+{
+    unsigned fn = mc_fn();
+#ifdef MC_NO_AUDIO
+    fn = 0;                                       /* build_patch.py --no-mc-audio: the copy only */
+#endif
+#ifdef MX_B2
+    {
+        unsigned g = fn ? mx_b2_master_fn() : 0;
+        if (g) {
+            ((void (*)(void *, void *, unsigned))g)(dst, bus, fn);
+            return;
+        }
+    }
+    if (dst)
+        BUS_COPY(dst, bus);
+#else
+    mx_master_dsp(dst, bus, fn);
+#endif
 }
 
 /* ---- Values: Global / Preset ----

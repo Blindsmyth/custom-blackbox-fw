@@ -1,8 +1,8 @@
-// Warp Fill / Chop / Grain, and Stutter on slices (3.1.T): the Warp Lab's segment player and
-// synced Granular, rendering a Clip's lanes in flash bank 2.
+// Warp Fill / Chop / Grain / Deluge, and Stutter on slices (3.1.T): the Warp Lab's segment player,
+// synced Granular and the Deluge's stretcher, rendering a Clip's lanes in flash bank 2.
 //
 // repitch.S hook_lane calls rubber_lanes (through b2pair.c rb_lanes) in the audio task for every
-// lane of a Stutter, Fill, Chop or Grain Clip, in place of stock's lane render (Stutter only with
+// lane of a Stutter, Fill, Chop, Grain or Deluge Clip, in place of stock's lane render (Stutter only with
 // Sync = Slice: on a grid it declines, and stock's grains play). Unlike Bungee there is no
 // single voice: each lane has its own engine (LANE_SLOTS at once), so any number of pads can use
 // these modes, a relaunch can release on one lane while the new note starts on the other, and a
@@ -19,6 +19,12 @@
 //          scans at the tempo ratio, locked to the clock. Fixed settings, the Warp Lab's for pads
 //          and melodic material: Size 200, Density 1000, Scatter 9, Window 100, Pan Rnd 300.
 //          With Sync on, the playhead lands on each segment's start as the clock reaches it.
+//   Deluge tools/stretch/deluge.c, a port of the Synthstrom Deluge's time stretcher (GPL-3.0): hops
+//          of 3-12k frames whose length is picked to cover the most percussiveness (so hops land on
+//          hits), each new play head slid up to 10 ms to line up with the old one, then a crossfade.
+//          Its percussiveness is a window that moves with the play position (deluge.h
+//          DELUGE_PERC_RING), not the whole file's. Sync and the segments don't apply: the play
+//          position follows the clock and the hops follow it.
 //
 // Segment timing follows the clock while the transport runs (the launch's tick, the tempo map,
 // the Clip's length in ticks, as Bungee's clock lock), and the tempo ratio when it is stopped.
@@ -30,6 +36,7 @@
 extern "C" {
 #include "beats.h"
 #include "granular.h"
+#include "deluge.h"
 int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx);
 void lanes_boot(void);
 }
@@ -42,6 +49,7 @@ void lanes_boot(void);
 #define WARP_FILL   1
 #define WARP_CHOP   3
 #define WARP_GRAIN  4
+#define WARP_DELUGE 5
 #define LANE_SLOTS  8           /* lanes rendering at once; a ninth plays stock grains */
 #define STARTS_MAX  2048        /* segment starts per Clip (longer grids are thinned) */
 #define MAX_N       2048        /* frames per call at most */
@@ -66,6 +74,7 @@ struct Slot {
     union {
         BeatsVoice b;
         GranVoice g;
+        DelugeVoice d;
     } e;
 };
 
@@ -73,6 +82,7 @@ struct Slot {
 struct Pool {
     uint32_t magic;
     float scratch[BEATS_SCRATCH];   /* Fill's loop match, shared: used inside one call only */
+    float dl_scratch[DELUGE_SCRATCH_ALL];   /* Deluge's phase search and window reads, likewise */
     float gran_src[2 * SUB];        /* Grain's reads (granular.c gran_src_buf), shared likewise */
     float mono_r[SUB];              /* the right channel of a mono buffer, dropped */
     int32_t starts[STARTS_MAX];     /* segment starts of the Clip `key_clip` */
@@ -80,7 +90,7 @@ struct Pool {
     unsigned key_clip;
     uint32_t key[4];
 #ifdef WARP_DECK_SEQ
-    struct Virt {               /* Fill / Chop under Clip Deck: the virtual file the player reads */
+    struct Virt {               /* Fill / Chop / Deluge under Clip Deck: the virtual file the player reads */
         void *sample;
         int length;
         unsigned clip;
@@ -98,6 +108,8 @@ struct RbExtInit {
     uint32_t pool_bytes;
     rb_master_fn master;  /* tools/master_chain/fw/mc_b2.c */
     rb_ui_fn ui;          /* tools/master_chain/fw/mc_ui.c */
+    void (*mixer)(float *, float *, int);   /* firmware/patches/3.1.9-song-dj/mixer.c, its .b2mixer part */
+    void (*mixer_master)(void *, void *, unsigned);
     const void *mpe_param, *mpe_out, *mpe_msg;   /* firmware/patches/3.1.9-mpe-out/mpe_b2.c */
     const void *usb_poll, *usb_out;              /* firmware/patches/3.1.9-usbdev/usbdev.c (--usbdev) */
     const void *dj_ui;                           /* firmware/patches/3.1.9-song-dj/djui_b2.c */
@@ -105,6 +117,8 @@ struct RbExtInit {
 };
 extern "C" void mc_b2_run(unsigned op, unsigned l, unsigned r, unsigned n);
 extern "C" unsigned mc_b2_ui(unsigned op, unsigned a, unsigned b, unsigned c);
+extern "C" void mx_block_dsp(float *l, float *r, int n);
+extern "C" void mx_master_dsp(void *dst, void *bus, unsigned fn);
 /* Weak: a build without them (no --usbdev) has 0 there, and bank 1 then does without. */
 extern "C" __attribute__((weak)) int mpe_b2_param(unsigned char *, void *, const unsigned *);
 extern "C" __attribute__((weak)) void mpe_b2_out(void *, unsigned char *, int, int, const unsigned char *);
@@ -114,6 +128,7 @@ extern "C" __attribute__((weak)) void usbdev_b2_out(uint8_t *);
 extern "C" __attribute__((weak)) const uint32_t dj_ui_b2[];
 extern "C" __attribute__((weak)) const uint32_t pcl_ui_b2[];
 extern "C" __attribute__((used)) const RbExtInit rb_ext = { rubber_lanes, sizeof(Pool), mc_b2_run, mc_b2_ui,
+    mx_block_dsp, mx_master_dsp,
     (const void *)mpe_b2_param, (const void *)mpe_b2_out, (const void *)mpe_b2_msg,
     (const void *)usbdev_b2_poll, (const void *)usbdev_b2_out, (const void *)dj_ui_b2,
     (const void *)pcl_ui_b2 };
@@ -144,10 +159,11 @@ static bool sync_slices(unsigned clip)
     return L8(clip, 0x1F5) && L32(clip, 0x220) == SYNC_SLICE && L32(clip, 0x224) == 0 && L32(clip, 0x250) > 0;
 }
 
-// The Clip renders here: Fill, Chop, Grain, and Stutter on slices.
+// The Clip renders here: Fill, Chop, Grain, Deluge, and Stutter on slices.
 static bool lane_mode(unsigned clip, int m)
 {
-    return m == WARP_FILL || m == WARP_CHOP || m == WARP_GRAIN || (m == WARP_STUTTER && sync_slices(clip));
+    return m == WARP_FILL || m == WARP_CHOP || m == WARP_GRAIN || m == WARP_DELUGE ||
+           (m == WARP_STUTTER && sync_slices(clip));
 }
 
 // This lane's slot, or a free one: never used, its lane off, or its Clip no longer on these modes.
@@ -220,11 +236,12 @@ static int seg_of(const int32_t *starts, int n, double pos)
 }
 
 #ifdef WARP_DECK_SEQ
-// Under Clip Deck, Fill and Chop play a virtual file of SEQ_RING units: virtual unit j is the sequence
+// Under Clip Deck, Fill, Chop and Deluge play a virtual file of SEQ_RING units: virtual unit j is the sequence
 // index i with i % SEQ_RING == j, whatever unit deck.c chose for it. The player's segments, pre-roll
 // and tail loop then land on the right audio after a loop wrap or a cue jump, with the timeline still
 // running straight on. Reads map back to the file here.
 #define SEQ_LEAD (256 + 64)     /* frames ahead the next unit is decided: Beats' pre-roll and a margin */
+#define DL_LEAD  6000           /* Deluge's play head runs ahead of the play position (up to ~4.6k at 4x) */
 
 static int virt_read(void *ctx, float *dest, int count, int pos, int chan)
 {
@@ -258,9 +275,10 @@ static int virt_read(void *ctx, float *dest, int count, int pos, int chan)
 // The segment clock into Beats (h in [0, len)), only once it is off by more than HOST_SLACK frames
 // the short way round: Beats runs its own position on at the ratio, so a clock that steps back a
 // few frames (the tempo map's rounding, an external clock) leaves it be instead of moving it back.
+// Deluge's play position likewise (its hops centre on it).
 #define HOST_SLACK 64
 
-static void host_sync(BeatsVoice *b, double h, int len)
+template <class V> static void host_sync(V *b, double h, int len)
 {
     double e = wrap_err(h - ((double)b->host_i + (double)b->host_f), len);
     if (e > HOST_SLACK || e < -HOST_SLACK) {
@@ -286,6 +304,9 @@ static void start_note(Slot *s, Pool *p, unsigned clip, unsigned lane, int mode,
     if (mode == WARP_GRAIN) {
         gran_init(&s->e.g);
         gran_set(&s->e.g, 200, 1000, 9, 100, 1000, 300, 0, 1);
+    } else if (mode == WARP_DELUGE) {
+        s->e.d.scratch = p->dl_scratch;
+        deluge_init(&s->e.d);
     } else {
         s->e.b.scratch = p->scratch;
         beats_init(&s->e.b);            /* the Lab's defaults, but the fill */
@@ -352,9 +373,10 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
             u = ticks / q->ut;
         if (u < 0.)
             u = 0.;
-        seq_advance(q, clip, s->anchor, u, (double)(n + SEQ_LEAD) * ratio / q->spu);
+        double lead = ((double)(n + SEQ_LEAD) * ratio + (s->mode == WARP_DELUGE ? DL_LEAD : 0)) / q->spu;
+        seq_advance(q, clip, s->anchor, u, lead);
         if (seq_cue_late(q, clip, s->anchor, u, SEQ_CUE_LATE * ratio / q->spu) >= 0)   // a late cue note
-            seq_advance(q, clip, s->anchor, u, (double)(n + SEQ_LEAD) * ratio / q->spu);
+            seq_advance(q, clip, s->anchor, u, lead);
         if (seq_ended(q, u)) {
             lane_end(clip, lane, 1);    // End with Loop off / Trigger, as deck_limit stops stock
             s->lane = 0;
@@ -389,17 +411,27 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
             for (int j = 0; j < SEQ_RING; j++)
                 v->starts[j] = (int32_t)((float)j * q->spu);
             v->vlen = (int)((float)SEQ_RING * q->spu);
-            BeatsVoice *b = &s->e.b;
-            if (!first) {
-                double h = __builtin_fmod(u, (double)SEQ_RING) * q->spu;
-                if (h >= v->vlen)
-                    h -= v->vlen;
-                host_sync(b, h, v->vlen);
-            }
-            for (int i = from; i < n; i += SUB) {
-                int k = n - i < SUB ? n - i : SUB;
-                beats_process(b, v, v->vlen, stereo, virt_read, v->starts, SEQ_RING, dl + i,
-                              dr ? dr + i : mono_r, k, ratio, first && i == from);
+            double h = __builtin_fmod(u, (double)SEQ_RING) * q->spu;
+            if (h >= v->vlen)
+                h -= v->vlen;
+            if (s->mode == WARP_DELUGE) {
+                DelugeVoice *dv = &s->e.d;
+                if (!first)
+                    host_sync(dv, h, v->vlen);
+                for (int i = from; i < n; i += SUB) {
+                    int k = n - i < SUB ? n - i : SUB;
+                    deluge_process(dv, v, v->vlen, stereo, virt_read, nullptr, 0, dl + i, dr ? dr + i : mono_r, k,
+                                   ratio, first && i == from);
+                }
+            } else {
+                BeatsVoice *b = &s->e.b;
+                if (!first)
+                    host_sync(b, h, v->vlen);
+                for (int i = from; i < n; i += SUB) {
+                    int k = n - i < SUB ? n - i : SUB;
+                    beats_process(b, v, v->vlen, stereo, virt_read, v->starts, SEQ_RING, dl + i,
+                                  dr ? dr + i : mono_r, k, ratio, first && i == from);
+                }
             }
         }
         if (from < n)
@@ -465,6 +497,15 @@ int rubber_lanes(unsigned clip, unsigned lane, unsigned mix, unsigned ctx)
             int k = n - i < SUB ? n - i : SUB;
             gran_process(g, sample, length, stereo, (GranReadFn)FW_PCM_READ, dl + i, dr ? dr + i : mono_r, k,
                          ratio, first && i == from);
+        }
+    } else if (s->mode == WARP_DELUGE) {
+        DelugeVoice *dv = &s->e.d;
+        if (!first)
+            host_sync(dv, at, length);  // the play position the hops centre on
+        for (int i = from; i < n; i += SUB) {
+            int k = n - i < SUB ? n - i : SUB;
+            deluge_process(dv, sample, length, stereo, (DelugeReadFn)FW_PCM_READ, nullptr, 0, dl + i,
+                           dr ? dr + i : mono_r, k, ratio, first && i == from);
         }
     } else {
         BeatsVoice *b = &s->e.b;

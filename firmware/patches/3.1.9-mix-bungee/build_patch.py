@@ -11,7 +11,7 @@ the cave, pairing, card loader (RBTAKE.TXT / RBFREE.TXT), diag, CPU guard and th
 (tools/stretch/rubber/rubber.h) are shared.
 
 --lineup builds 3.1.T instead (lineup/BLACKBOX.BIN + lineup/BBWARP.BIN): Warp Stutter / Fill /
-Repitch / Slice / Grain / Bungee, with Fill, Slice and Grain rendering each lane in bank 2
+Repitch / Chop / Grain / Deluge / Bungee, with Fill, Chop, Grain and Deluge rendering each lane in bank 2
 (tools/stretch/bungee/lanes.cpp). Its own build directory, so it never shares objects with 3.1.B. Needs the Arm GNU Toolchain with newlib/libstdc++
 (ARM_GNU, default ~/.local/arm-gnu-15.3/bin), clang for the cave asm, and
 tools/stretch/bungee/fetch_bungee.sh run once.
@@ -148,20 +148,35 @@ CMSIS_SRC = [CMSIS / "Source" / "TransformFunctions" / f for f in (
     [CMSIS / "Source" / "CommonTables" / f for f in ("arm_common_tables.c", "arm_const_structs.c")]
 B2_SOURCES = [RUBBER / "rubber.h"] + [BUNGEE / f for f in ("bungee.cpp", "lane.h", "rt.c", "Fourier_cmsis.cpp",
                                                          "bungee-blackbox.patch")]
-# 3.1.T's per-lane modes: the Warp Lab's C, built for one voice per lane (beats.h, granular.c).
-LANE_SRC = [STRETCH / "beats.c", STRETCH / "granular.c"]
+# 3.1.T's per-lane modes: the Warp Lab's C, built for one voice per lane (beats.h, granular.c, deluge.h).
+LANE_SRC = [STRETCH / "beats.c", STRETCH / "granular.c", STRETCH / "deluge.c"]
 LANE_DEFS = ["-DBEATS_NO_CLOUD", "-DBEATS_SHARED_SCRATCH", "-DBEATS_CACHE=32", "-DGRAN_FW_HANN", "-DGRAN_SRC=256",
-             "-DGRAN_NO_TABLES", "-DBEATS_LOOP_GROW=24000"]
+             "-DGRAN_NO_TABLES", "-DBEATS_LOOP_GROW=24000",
+             "-DDELUGE_PERC_RING=256", "-DDELUGE_SHARED_SCRATCH", "-DDELUGE_CACHE=32", "-DDELUGE_FAST_SEARCH", "-DDELUGE_RESYNC=8192",
+             "-DDELUGE_RESYNC_1X=256"]
 if LINEUP:
-    B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", *LANE_SRC,
+    B2_SOURCES += [BUNGEE / "lanes.cpp", STRETCH / "beats.h", STRETCH / "granular.h", STRETCH / "deluge.h", *LANE_SRC,
                    *MC_SRC, MC / "src" / "dsp" / "mc_dsp.h", MC / "fw" / "mc_fw.h", *B2_PLAIN, MPE_DIR / "mpe.h", PCL_DIR / "pcl.h",
-                   DJ_DIR / "dj.c", DJ_DIR / "djui_b2.c"]
+                   DJ_DIR / "dj.c", DJ_DIR / "djui_b2.c",
+                   DJ_DIR / "mixer.c"]   # its mx_block_dsp links into bank 2 (MX_B2)
 BANK1_DEFS = ['-DRB_LABEL="Bungee"', f'-DRB_PAYLOAD_FILE="{PAYLOAD}.BIN"']
 BUNGEE_CXX = ["-std=c++20", "-fwrapv", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
               "-DBUNGEE_VISIBILITY=", "-DBUNGEE_SELF_TEST=0", "-DBUNGEE_NO_LOG", "-DBUNGEE_FIXED_PITCH",
               *([] if os.environ.get("BG_EXACT_PHASE") else ["-DBUNGEE_FAST_PHASE"]),
               "-Deigen_assert=BUNGEE_ASSERT1", "-DEIGEN_DONT_PARALLELIZE=1", "-DEIGEN_NO_IO",
               '-DBUNGEE_VERSION="b2"']
+# 3.1.U (as tested on the unit with Bungee, the master chain and a preset of long stems, 2026-11-25):
+#  - DIAG_STREAM: the Tools bar shows the stream counters (S misses, Q pending, C free cache entries) in
+#    place of M, and Bungee's Warp label its lock state and task CPU (bungee.cpp BG_DIAG_STATE).
+#    DIAG_STREAM=0 builds without them.
+#  - Bungee's 256-frame hop (BG_HOP_ADJUST -1): the same CPU on average as the 512 hop, but flat instead of a
+#    ~92 % grain every other block, so its task (priority 5) leaves pcmStreamer a turn and the stems stream.
+DIAG_STREAM = LINEUP and os.environ.get("DIAG_STREAM", "1") != "0"
+if DIAG_STREAM:
+    BUNGEE_CXX.append("-DBG_DIAG_STATE=1")
+BG_HOP = int(os.environ.get("BG_HOP", "-1" if LINEUP else "0"))
+if BG_HOP:
+    BUNGEE_CXX.append(f"-DBG_HOP_ADJUST={BG_HOP}")
 
 
 def run(cmd):
@@ -197,7 +212,8 @@ def compile_all(rb_id):
              *(["-DMX_CACHE_N=615u"] if STOCK_CACHE else []),
              *(["-DMC_NO_AUDIO"] if NO_MC_AUDIO else []),
              *(["-DMC_NO_DSP"] if MC_NODSP else []), *(["-DMC_KEEP_COMP"] if MC_COMP else []),
-             *(["-DWITH_USBDEV"] if USBDEV else []),
+             *(["-DWITH_USBDEV"] if USBDEV else []), *(["-DMX_B2"] if LINEUP else []),
+             *([f"-DDIAG_STREAM={567 if not STOCK_CACHE else 615}u"] if DIAG_STREAM else []),
              "-I", BANK2, "-I", RUBBER, "-I", PCL_DIR, *(MC_INC if LINEUP else []), "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]

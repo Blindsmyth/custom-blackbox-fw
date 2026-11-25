@@ -45,6 +45,9 @@ typedef struct RbExt {
     uint32_t master;      /* rb_master_fn | 1: one master chain stage on bus 0 (docs/master-chain.md),
                              0 = none. Pairing by id keeps bank 1 and bank 2 on the same layout. */
     uint32_t ui;          /* rb_ui_fn | 1: its drawing, called from the UI task directly, 0 = none */
+    uint32_t mixer;       /* Song DJ mixer's block (mixer.c mx_block_dsp) | 1, 0 = none: its code sits
+                             in bank 2 for room in the cave (3.1.U) */
+    uint32_t mixer_master; /* mixer.c mx_master_dsp | 1, 0 = none: the master chain's glue, likewise */
     /* 3.1.U Seq MIDI out (firmware/patches/3.1.9-mpe-out/mpe_b2.c), called by bank 1's stubs once bank 2
        is paired, 0 = none: */
     uint32_t mpe_param;   /* mpe_param_fn | 1: the player's param switch (audio task) */
@@ -111,7 +114,10 @@ typedef struct RbVoice {
 /* A leaf with a background task (Bungee): rubber_boot and the audio-side mix use the top part,
  * the task the bottom part, so the audio task preempting the leaf task never shares a stack. */
 #define RB_TASK_STACK_TOP  0x30047000u   /* 0x30045000-0x30047000: 8 KB for the task */
-#define RB_TASK_PRIO       5u            /* FreeRTOS: UI and disk 3, USB host 4, audio 6 */
+/* FreeRTOS: UI and disk (pcmStreamer) 3, USB host 4, audio 6. At 3 (tried, 3.1.U) the leaf task got
+ * no CPU at all on the unit (the UI and pcmStreamer never leave it a turn): Bungee never handed over
+ * from the raw Clip. It stays above them; bungee.cpp WAKE_GRAINS and the hop bound each turn. */
+#define RB_TASK_PRIO       5u
 #define RB_TASK_WORDS      128u          /* its FreeRTOS stack: the switch to its own stack only */
 
 #endif

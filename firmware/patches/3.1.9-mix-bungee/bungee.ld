@@ -61,6 +61,7 @@ SECTIONS {
   } > ITCM AT > BANK2
   __itcm_load = LOADADDR(.itcm);
   .b2text : {
+    *(.b2mixer)          /* 3.1.U: the Song DJ mixer's block (mixer.c MX_B2), out of the cave */
     *(.text .text.*)
     *(.rodata .rodata.*)
     . = ALIGN(4);
