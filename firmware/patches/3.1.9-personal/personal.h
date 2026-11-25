@@ -14,7 +14,8 @@
 typedef struct {
     uint8_t count;                 /* half clock ticks since the last tap (< 194) */
     uint8_t due;                   /* the next tick taps (after Start, or when turned on) */
-    uint8_t pad[2];
+    uint8_t high;                  /* the CC is at TAP_VAL: 0 goes out half a note value after the tap */
+    uint8_t pad;
 } TapState;
 #define TAP ((volatile TapState *)0x38800638u)
 

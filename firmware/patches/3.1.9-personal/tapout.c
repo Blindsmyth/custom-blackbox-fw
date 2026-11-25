@@ -6,6 +6,8 @@
  *   Tap Ch (under it): the tap's MIDI channel, 1-16, global ("tapch"), default 1.
  *   Counted from the engine's clock ticks (message 0x56, 24 PPQ) as Pcm_PollMidi pops them (audio task, through
  *   mpe_msg's hook at 0x0804D018); Start (0x57) puts the next tick on a tap, so taps sit on the beat.
+ *   A tap is a press and a release, as a footswitch: CC = TAP_VAL on the note value, CC = 0 half a note value
+ *   later (1/16: high on the 16ths, low on the 32nds between). Stop, or Tap Out turned Off, sends the 0 too.
  *   The ticks are counted whatever Tools -> Clock's MIDI clock send is: that only picks where F8 goes.
  */
 #include <stdint.h>
@@ -28,6 +30,7 @@ typedef void (*send_fn)(void *, const unsigned char *, int, int);
 
 #define MSG_TICK    0x56    /* engine -> MIDI queue: clock tick (F8), 24 PPQ */
 #define MSG_START   0x57    /* Start (FA) */
+#define MSG_STOP    0x58    /* Stop (FC) */
 
 static const char t_tap[] = "Tap Out:";
 static const char x_tap[] = "tapout";
@@ -50,6 +53,7 @@ void personal_register(void *reg)
     rb_bkp_enable();
     TAP->count = 0;
     TAP->due = 1;
+    TAP->high = 0;
     PARAM_ENUM(reg, ID_TAPOUT, t_tap, tap_names, TAP_N, x_tap);
     PARAM_NUMBER(reg, ID_TAPCH, 1, t_ch, 1, 16, x_ch);   /* type 1 as stock's MIDI channels (0x28) */
 }
@@ -58,6 +62,15 @@ void personal_global_tpl(void *bag)
 {
     PARAM_ADD(bag, ID_TAPOUT, 0);
     PARAM_ADD(bag, ID_TAPCH, 1);
+}
+
+/* CC TAP_CC = v on DIN, on Tap Ch (audio task) */
+static void cc(unsigned v)
+{
+    unsigned ch = (unsigned)PARAM_GET(GLOBAL_BAG, ID_TAPCH);
+    unsigned char pk[8] = {(unsigned char)(0xB0 | ((ch >= 1 && ch <= 16 ? ch : 1) - 1)), TAP_CC, (unsigned char)v, 0, 3};
+    MIDI_SEND(MIDI_MGR, pk, 1, 0);
+    TAP->high = v != 0;
 }
 
 /* Pcm_PollMidi's dispatch (audio task), every message popped from the MIDI queue. */
@@ -69,12 +82,19 @@ void personal_msg(const unsigned char *msg)
         t->due = 1;
         return;
     }
+    if (msg[0] == MSG_STOP) {
+        if (t->high)
+            cc(0);
+        return;
+    }
     if (msg[0] != MSG_TICK)
         return;
     set = (unsigned)PARAM_GET(GLOBAL_BAG, ID_TAPOUT);
     period = set < TAP_N ? tap_half[set] : 0;
     if (!period) {
         t->due = 1;                      /* turned on later: taps at once */
+        if (t->high)
+            cc(0);
         return;
     }
     n = t->count + 2u;                   /* half ticks since the last tap */
@@ -82,11 +102,13 @@ void personal_msg(const unsigned char *msg)
         t->due = 0;
         n = period;
     }
-    if (n >= period) {
-        unsigned ch = (unsigned)PARAM_GET(GLOBAL_BAG, ID_TAPCH);
-        unsigned char pk[8] = {(unsigned char)(0xB0 | ((ch >= 1 && ch <= 16 ? ch : 1) - 1)), TAP_CC, TAP_VAL, 0, 3};
-        MIDI_SEND(MIDI_MGR, pk, 1, 0);
+    if (n >= period) {                   /* a tap: release first if still pressed (1/64), then press */
+        if (t->high)
+            cc(0);
+        cc(TAP_VAL);
         n -= period;
+    } else if (t->high && 2u * n >= period) {
+        cc(0);                           /* half a note value after the tap */
     }
     t->count = (uint8_t)n;
 }

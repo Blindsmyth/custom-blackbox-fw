@@ -9825,12 +9825,25 @@ def t_tapout(bench, res):
             b.mu.mem_write(msg, bytes([ty]) + b"\0" * 0x1F)
             b.call(sym["mpe_msg"], msg, 0x2400A9C0)
 
+    presses = lambda: [s for s in sent if s[0][4:6] == "7f"]
+
     def taps(setting, *types):
         _set_bag(b, [(TAP_ID, setting)])
         sent.clear()
         pop(*types)
-        return list(sent)
+        return presses()
     tap = ("b00f7f0003", 1, 0)
+
+    def trace(setting, ticks):
+        """(tick, CC value) from Start, after a Stop (released)"""
+        _set_bag(b, [(TAP_ID, setting)])
+        pop(0x58, 0x57)
+        out = []
+        for k in range(ticks):
+            sent.clear()
+            pop(0x56)
+            out += [(k, int(s[0][4:6], 16)) for s in sent]
+        return out
 
     def at(setting, ticks, start=True):
         """the ticks (0 = the first after Start) that tap"""
@@ -9841,7 +9854,7 @@ def t_tapout(bench, res):
         for k in range(ticks):
             sent.clear()
             pop(0x56)
-            if sent:
+            if presses():
                 out.append(k)
         return out
     res.check(taps(0, 0x57, *[0x56] * 96) == [], "Off: nothing")
@@ -9866,11 +9879,28 @@ def t_tapout(bench, res):
     g = at(9, 25, start=False)
     res.check(g == [0, 24], f"turned on while playing: taps at once {g}")
     res.check(taps(9, 0x50, 0x51, 0x4E, 0x58) == [], "notes, a pass, Stop: no tap")
+    g = trace(3, 13)
+    res.check(g == [(0, 127), (3, 0), (6, 127), (9, 0), (12, 127)], f"1/16: high on the 16ths, low on the 32nds between {g}")
+    g = trace(1, 6)
+    res.check(g == [(0, 127), (1, 0), (2, 127), (3, 0), (3, 127), (4, 0), (5, 127)],
+              f"1/64: always a release before the next press {g}")
+    g = trace(12, 97)
+    res.check(g == [(0, 127), (48, 0), (96, 127)], f"1 bar: low after half a bar {g}")
+    g = trace(9, 1)
+    sent.clear()
+    pop(0x58)
+    res.check(g == [(0, 127)] and [s[0] for s in sent] == ["b00f000003"], f"Stop while pressed: released {sent}")
+    trace(9, 1)
+    _set_bag(b, [(TAP_ID, 0)])
+    sent.clear()
+    pop(0x56, 0x56)
+    res.check([s[0] for s in sent] == ["b00f000003"], f"turned Off while pressed: released once {sent}")
     for ch, want_st in ((10, 0xB9), (16, 0xBF), (0, 0xB0), (17, 0xB0)):
         _set_bag(b, [(TAP_ID, 9), (TAP_CH_ID, ch)])
         sent.clear()
-        pop(0x57, 0x56)
-        res.check(sent and sent[0][0] == f"{want_st:02x}0f7f0003", f"Tap Ch {ch}: {sent[:1]}")
+        pop(0x57, *[0x56] * 13)
+        res.check([s[0] for s in sent] == [f"{want_st:02x}0f7f0003", f"{want_st:02x}0f000003"],
+                  f"Tap Ch {ch}: press, release on the channel {[s[0] for s in sent]}")
     b.unstub(0x08044A0E)
 
 
