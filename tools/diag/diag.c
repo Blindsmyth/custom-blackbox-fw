@@ -238,6 +238,7 @@ static void compose(char *buf)
         *p++ = '/';
         p = put_uint(p, m->sd_failed);
     }
+#ifndef DIAG_STREAM      /* the stream counters below take its place on the bar */
     {   /* " M812": SDRAM free between the sample stack (top, 0x24000088) and the bottom allocator
          * (0x2400008C), in KB. Saving builds the whole XML document there; when it runs out, stock
          * spins at 0x0808A37C until the watchdog resets (docs/map-319.md). */
@@ -246,6 +247,27 @@ static void compose(char *buf)
         *p++ = 'M';
         p = put_uint(p, top > bot ? (top - bot) >> 10 : 0u);
     }
+#endif
+#ifdef DIAG_STREAM
+    {   /* " S12 Q3 C140": pcmStreamer's manager (docs/map-319.md "Read path", "Block cache"): sample
+         * reads that missed the cache and played silence, since boot (mgr+0x8F70); block requests
+         * waiting for pcmStreamer (ring write mgr+0x4FFC - read mgr+0x4FF8); cache entries holding
+         * no wave (wave id 0xFFFF at entry+0x18). For the stem dropouts with Bungee + master chain. */
+        uint32_t mgr = 0x2400A9C0u, i, free = 0;
+        *p++ = ' ';
+        *p++ = 'S';
+        p = put_uint(p, *(volatile uint32_t *)(mgr + 0x8F70u));
+        *p++ = ' ';
+        *p++ = 'Q';
+        p = put_uint(p, (*(volatile uint32_t *)(mgr + 0x4FFCu) - *(volatile uint32_t *)(mgr + 0x4FF8u)) & 0xFFFFu);
+        for (i = 0; i < DIAG_STREAM; i++)
+            if (*(volatile uint16_t *)(mgr + i * 0x1Cu + 0x18u) == 0xFFFFu)
+                free++;
+        *p++ = ' ';
+        *p++ = 'C';
+        p = put_uint(p, free);
+    }
+#endif
     *p = 0;
 }
 
@@ -256,7 +278,7 @@ static void compose(char *buf)
 void cpu_mid(uint8_t *label)
 {
     volatile struct diag_state *m = DIAG;
-    char buf[48];                /* "999/999%+99 R999/999 E9999/9999 M99999" at most */
+    char buf[56];                /* "999/999%+99 R999/999 E9999/9999 M99999" or "... S4294967295 Q65535 C615" */
     if (m->magic == DIAG_MAGIC && m->n) {
         m->avg_shown = (uint16_t)(m->sum / m->n);
         m->peak_shown = m->peak;

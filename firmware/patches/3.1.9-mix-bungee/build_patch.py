@@ -158,6 +158,18 @@ BUNGEE_CXX = ["-std=c++20", "-fwrapv", "-fno-exceptions", "-fno-rtti", "-fno-thr
               *([] if os.environ.get("BG_EXACT_PHASE") else ["-DBUNGEE_FAST_PHASE"]),
               "-Deigen_assert=BUNGEE_ASSERT1", "-DEIGEN_DONT_PARALLELIZE=1", "-DEIGEN_NO_IO",
               '-DBUNGEE_VERSION="b2"']
+# 3.1.U (as tested on the unit with Bungee, the master chain and a preset of long stems, 2026-11-25):
+#  - DIAG_STREAM: the Tools bar shows the stream counters (S misses, Q pending, C free cache entries) in
+#    place of M, and Bungee's Warp label its lock state and task CPU (bungee.cpp BG_DIAG_STATE).
+#    DIAG_STREAM=0 builds without them.
+#  - Bungee's 256-frame hop (BG_HOP_ADJUST -1): the same CPU on average as the 512 hop, but flat instead of a
+#    ~92 % grain every other block, so its task (priority 5) leaves pcmStreamer a turn and the stems stream.
+DIAG_STREAM = LINEUP and os.environ.get("DIAG_STREAM", "1") != "0"
+if DIAG_STREAM:
+    BUNGEE_CXX.append("-DBG_DIAG_STATE=1")
+BG_HOP = int(os.environ.get("BG_HOP", "-1" if LINEUP else "0"))
+if BG_HOP:
+    BUNGEE_CXX.append(f"-DBG_HOP_ADJUST={BG_HOP}")
 
 
 def run(cmd):
@@ -193,6 +205,7 @@ def compile_all(rb_id):
              *(["-DMC_NO_AUDIO"] if NO_MC_AUDIO else []),
              *(["-DMC_NO_DSP"] if MC_NODSP else []), *(["-DMC_KEEP_COMP"] if MC_COMP else []),
              *(["-DWITH_USBDEV"] if USBDEV else []), *(["-DMX_B2"] if LINEUP else []),
+             *([f"-DDIAG_STREAM={567 if not STOCK_CACHE else 615}u"] if DIAG_STREAM else []),
              "-I", BANK2, "-I", RUBBER, *(MC_INC if LINEUP else []), "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]

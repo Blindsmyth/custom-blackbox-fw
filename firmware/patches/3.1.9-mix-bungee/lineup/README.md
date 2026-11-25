@@ -112,6 +112,37 @@ Measured on the bench at 90 BPM on a 130 BPM Clip (0.69x), with a click at every
 - `d`: Clip Deck sequences the Clip.
 `BG_DIAG 0` in `bungee.cpp` brings the CPU label back.
 
+## Bungee, the master chain and long stems (3.1.U, unit test 2026-11-25)
+
+With Bungee on one pad, the master chain on and a preset of 15 long 32-bit stems, every stem stuttered,
+from some point on or when the Presets page opened, until the transport stopped. It went back to before
+Deluge (`be3dd69` did the same).
+- **Cause:** CPU, not the card. Bungee's own task runs at FreeRTOS priority 5, above pcmStreamer (3),
+  which streams every stem. At the 512 hop a Bungee grain is ~2.35M cycles (~92 % of a block) every other
+  block, up to three in a row per wake: pcmStreamer got no turn and the stems ran dry. Opening the
+  Presets page reads only ~16 sectors of the card (bench, the same folder layout).
+- **Fix:** Bungee renders with its **256-frame hop** (`BG_HOP_ADJUST -1`): the same CPU on average
+  (~1.1M instructions a block on the bench), but flat, and at most 2 grains per task wake.
+- **Not the fix:** Bungee at priority 3 got no CPU at all on the unit (equal-priority tasks don't take
+  turns there): it never left the raw Clip and drifted 3 %. pcmStreamer at priority 4 starved the UI
+  while bank 2 was written: the watchdog reset the unit at every boot.
+- **Bungee late:** a block Bungee is late for plays silent, and its frames are now skipped once they
+  come, so it stays on the clock (played late, each late block put it a block behind: 34–63 ms on the
+  bench).
+- **The 256 hop's input** slides between grains as the 512 hop's did (each clip frame read once).
+
+Diagnostics in this build (`DIAG_STREAM=0` builds without them):
+- **Tools bar:** `S` sample reads that missed the cache since boot, `Q` block requests waiting for
+  pcmStreamer, `C` free cache entries, in place of `M`.
+- **Bungee's Warp label:** `e+0j0u0=b45d`: lock error (ms), re-launches and late blocks in the last
+  second, the state (`=` locked, `L` launching on the raw Clip, `P` priming, `x` lock off), the task's CPU
+  % and `d` under Clip Deck.
+
+**Room in the cave:** 3.1.U's Seq MIDI out didn't fit next to 3.1.T. The Song DJ mixer's block and the
+master chain's glue (`mixer.c` `mx_block_dsp`, `mx_master_dsp`) now run from bank 2 (`RbExt.mixer`);
+without bank 2 the DJ FX play as stock. Same cost on the bench (202,470 cycles a block with the chain
+on, against 202,436 in the cave).
+
 ## Clip Deck in this build
 
 Clip Deck works as on 3.1.E (`../../3.1.9-clip-deck/README.md`), on **every** Warp mode, wherever the Clip is on a note-value Sync grid (as on 3.1.E: not with Sync None or Sync = Slice).

@@ -102,7 +102,10 @@ typedef struct RbVoice {
 /* A leaf with a background task (Bungee): rubber_boot and the audio-side mix use the top part,
  * the task the bottom part, so the audio task preempting the leaf task never shares a stack. */
 #define RB_TASK_STACK_TOP  0x30047000u   /* 0x30045000-0x30047000: 8 KB for the task */
-#define RB_TASK_PRIO       5u            /* FreeRTOS: UI and disk 3, USB host 4, audio 6 */
+/* FreeRTOS: UI and disk (pcmStreamer) 3, USB host 4, audio 6. At 3 (tried, 3.1.U) the leaf task got
+ * no CPU at all on the unit (the UI and pcmStreamer never leave it a turn): Bungee never handed over
+ * from the raw Clip. It stays above them; bungee.cpp WAKE_GRAINS and the hop bound each turn. */
+#define RB_TASK_PRIO       5u
 #define RB_TASK_WORDS      128u          /* its FreeRTOS stack: the switch to its own stack only */
 
 #endif

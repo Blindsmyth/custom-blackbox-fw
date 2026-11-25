@@ -4054,11 +4054,17 @@ def t_lineup_bungee_sync(bench, res):
     b.w32(RB_VOICE + 20, 1)
     per = 3000 / bpm * 240                                     # 8000 output frames per unit
     now = 0
-    for _ in range(int((units + 6) * per / 256)):              # past the wrap at unit 16
+    dbg_labels = []
+    for blk in range(int((units + 6) * per / 256)):            # past the wrap at unit 16
         b.mu.mem_write(tp, struct.pack("<qqqf", now, 0, 0, bpm))
         b.mu.mem_write(tp + 0x38, b"\x01")
         b.call(bench.sym["rb_mix"], clip, lane, mixbuf, ctx, limit=400_000_000)
-        b.call(bench.sym["rb_work"], limit=400_000_000)
+        # units 8-13: the leaf task held off for 12 blocks in every 60 (below pcmStreamer, a busy
+        # card): its ring runs dry, the audio side plays silence
+        if not (8 * per <= now < 14 * per and blk % 60 < 12):
+            b.call(bench.sym["rb_work"], limit=400_000_000)
+        if blk % 60 == 59 and 8 * per <= now < 15 * per:
+            dbg_labels.append(rb_label(bench))
         now += 256
     offs = {}
     for i in range(1, units + 5):
@@ -4066,6 +4072,15 @@ def t_lineup_bungee_sync(bench, res):
         e = [out[t] ** 2 for t in range(t0, t1)]
         if sum(e) > 1e-6:
             offs[i] = (t0 + sum(k * x for k, x in enumerate(e)) / sum(e) - (i * per + 40)) / 48.0
+    late = [offs.get(i) for i in range(9, 15)]
+    got = [o for o in late if o is not None]
+    # a unit whose click falls in the silent blocks measures off (its start is missing), so the check
+    # is on the median: played late instead of skipped, units 10-13 were 34-63 ms behind (lock error
+    # +44 ms); skipped, the units the silence misses are within ~1 ms.
+    med = sorted(abs(o) for o in got)[len(got) // 2] if got else 99
+    res.check(len(got) >= 4 and med < 4.0 and all(abs(o) < 30.0 for o in got),
+              f"... with the leaf task held off 12 blocks in 60 (units 8-13, labels {dbg_labels[-2:]}): units 9-14 at "
+              f"{[None if o is None else round(o, 1) for o in late]} ms (late frames skipped, not played late)")
     early = [offs.get(i) for i in range(1, 7)]
     wrap = [offs.get(i) for i in range(units - 1, units + 5)]
     res.check(all(o is not None and abs(o) < 4.0 for o in early),
@@ -4806,7 +4821,15 @@ def diag_tools_label(bench):
 
 
 def _diag_mem(b, mid):
-    """Split the Tools label's " M<KB>" (SDRAM free, diag.c) off; check it against the two pointers."""
+    """Split the Tools label's " M<KB>" (SDRAM free, diag.c) off; check it against the two pointers. The
+    lineup build (DIAG_STREAM) shows the stream counters " S<misses> Q<pending> C<free entries>" there
+    instead: they are checked against pcmStreamer's manager (0x2400A9C0)."""
+    m = re.search(r" S(\d+) Q(\d+) C(\d+)$", mid)
+    if m:
+        mgr = 0x2400A9C0
+        q = (b.u32(mgr + 0x4FFC) - b.u32(mgr + 0x4FF8)) & 0xFFFF
+        ok = int(m.group(1)) == b.u32(mgr + 0x8F70) and int(m.group(2)) == q and int(m.group(3)) <= 615
+        return mid[:m.start()], ok
     m = re.search(r" M(\d+)$", mid)
     want = max(b.u32(0x24000088) - b.u32(0x2400008C), 0) >> 10
     return (mid[:m.start()] if m else mid), (m is not None and int(m.group(1)) == want)
@@ -5043,7 +5066,7 @@ def t_rubber_cpu_guard(bench, res):
         b.call(bench.sym["cpu_wait"], 0, 0, 0, 0)
     mid, _ = diag_tools_label(bench)
     import re
-    m = re.search(r"R(\d+)/\d+(?: M\d+)?$", mid or "")
+    m = re.search(r"R(\d+)/\d+(?: M\d+| S\d+ Q\d+ C\d+)?$", mid or "")   # M, or the stream counters (DIAG_STREAM)
     res.check(m is not None and 25 <= int(m.group(1)) <= 40, f"cost still on Tools (the last, 30 % leaf): {mid!r}")
 
 
@@ -5133,10 +5156,13 @@ def t_rubber_cost_flat(bench, res):
             # The window slides (bungee.cpp fill_window): each clip frame is read once, so frames
             # read per output frame is the tempo too (it was ~8 when every grain read its 4096).
             res.check(abs(rate - ratio) < 0.03 * ratio + 0.01, f"{ratio}x: clip frames read per output frame {rate:.3f}")
-            # The tempo itself from the window's step through the clip (input hop = ratio x 512).
+            # The tempo itself from the window's step through the clip (input hop = ratio x the output
+            # hop: 512, or 256 with BG_HOP=-1, which shows as half the step).
             starts = [p for p, c, _ in grains[-60:] if c >= 64]
             steps = sorted((b2 - a2) % n_src for a2, b2 in zip(starts, starts[1:]))
             rate = steps[len(steps) // 2] / 512 if steps else 0.0
+            if abs(2 * rate - ratio) < abs(rate - ratio):
+                rate *= 2                                # the 256 hop
         mean = sum(per) / len(per)
         means[ratio] = sum(task) / len(task)
         res.check(max(per) <= 1.35 * mean, f"{ratio}x: flat, peak/mean {max(per) / mean:.2f}")
