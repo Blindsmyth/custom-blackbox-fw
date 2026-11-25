@@ -6,7 +6,7 @@
 
 #define ID_TAPOUT   0x1D9          /* Tools -> Clock "Tap Out:", global */
 #define TAP_N       13             /* Off, then the Delay's 12 note values (1/64 ... 1 bar) */
-#define TAP_CH      1              /* MIDI channel of the tap */
+#define ID_TAPCH    0x1F3          /* Tools -> Clock "Tap Ch:" 1-16, global, under Tap Out */
 #define TAP_CC      15
 #define TAP_VAL     127
 

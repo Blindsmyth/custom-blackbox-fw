@@ -449,8 +449,8 @@ def add_rubber_sites(stock):
         mix.VTABLE.extend(vtable)
         # Presets +0x34: pcl_event in front of the Mix line's pset_on_event (which pcl_event calls on).
         mix.VTABLE[:] = [(va, "pcl_event" if va == pcl.VTABLE_EVENT else sym, orig) for va, sym, orig in mix.VTABLE]
-    if PERSONAL:    # Tools -> Clock: Tap Out after BPM Project / Global (0x1D8 at 0x080EEDF8), ../3.1.9-personal
-        mix.BYTES.append((0x080EEDFA, "d901", "0000"))
+    if PERSONAL:    # Tools -> Clock: Tap Out, Tap Ch after BPM Project / Global (0x1D8 at 0x080EEDF8), ../3.1.9-personal
+        mix.BYTES.append((0x080EEDFA, "d901f301", "00000000"))
     if LINEUP:      # "Installing" on screen while the card loader writes bank 2 (tools/bank2/b2msg.c)
         mix.SITES.append((0x0808B664, "b2msg_update", True, stock_bl(stock, 0x0808B664, 0x080A2258)))
         mix.VTABLE.append((0x080F19D8, "b2msg_event", 0x080C7025))   # message screen (screen 1) onEvent

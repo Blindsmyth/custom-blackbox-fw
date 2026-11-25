@@ -2241,7 +2241,7 @@ def t_seqrec_templates(bench, res):
     if "pcl_global_tpl" in bench.sym:                                 # 3.1.U: PC launcher, button n = Pgm n, Ch 1
         mixer += [(0x1E8 + i, i + 1) for i in range(4)]
     if "personal_msg" in bench.sym:                                   # personal: Tap Out, Off
-        mixer += [(0x1D9, 0)]
+        mixer += [(0x1D9, 0), (0x1F3, 1)]
     res.check(adds == [(0x19B, 0), (SR_DEF, 4), (0x1A0, 2), (0x1A1, 1)] + mixer,
               f"global template adds Seq Default = 1 bar, Loop BPM 80-160, Dbl Copy On {adds}")
     for glob, want in ((4, 4), (0, 0), (6, 6), (99, 4)):
@@ -9021,7 +9021,7 @@ def t_mpe_registry(bench, res):
     res.check(got == ["Off", "On"] and n and b.cstr(n) == "seqloop" and t and b.cstr(t) == "Loop:", f"Loop: {got}")
     res.check(b.u32(MP_BKP) == 0x3150504D and bytes(b.mu.mem_read(MP_BKP + 4, 32)) == b"\x00" * 32,
               "backup SRAM start counters cleared at boot")
-    for pid in (0x73, 0x75, 0x1E6, 0x1F3) + (() if "personal_msg" in bench.sym else (0x1D9,)):   # 0x1E8-0x1EB: PC launcher; 0x1D9: Tap Out
+    for pid in (0x73, 0x75, 0x1E6) + (() if "personal_msg" in bench.sym else (0x1D9, 0x1F3)):   # 0x1E8-0x1EB: PC launcher; 0x1D9, 0x1F3: Tap Out, Tap Ch
         t = b.call(PARAM_TITLE, pid)
         res.check(pid in (0x73, 0x75) and t != 0 or pid not in (0x73, 0x75) and t == 0,
                   f"{pid:#x} left as it was ({t and b.cstr(t)!r})")
@@ -9791,15 +9791,15 @@ def t_pcl_sites(bench, res):
               f"global template: slot n = program n, channel 1 {adds[-4:]}")
 
 
-TAP_ID, TAP_ST = 0x1D9, 0x38800638
+TAP_ID, TAP_ST, TAP_CH_ID = 0x1D9, 0x38800638, 0x1F3
 
 
 def t_tapout(bench, res):
     """Personal (not with --release): Tap Out, CC 15 on DIN locked to the clock ticks Pcm_PollMidi pops."""
     b, sym, img = bench.b, bench.sym, bench.b.image
     u16 = lambda a: struct.unpack_from("<H", img, a - bd.BASE)[0]
-    res.check([u16(0x080EEDF0 + 2 * i) for i in range(7)] == [0xEF, 0xF0, 0x10F, 0x110, 0x1D8, TAP_ID, 0],
-              "Tools -> Clock lists Tap Out after BPM")
+    res.check([u16(0x080EEDF0 + 2 * i) for i in range(8)] == [0xEF, 0xF0, 0x10F, 0x110, 0x1D8, TAP_ID, TAP_CH_ID, 0],
+              "Tools -> Clock lists Tap Out, Tap Ch after BPM")
     b.call(PARAM_REGISTER_ALL, 0)
     n, t = b.call(PARAM_XML_NAME, TAP_ID), b.call(PARAM_TITLE, TAP_ID)
     lab, cnt = b.call(0x0808E278, TAP_ID), b.call(0x0808E2A4, TAP_ID)
@@ -9811,7 +9811,11 @@ def t_tapout(bench, res):
     b.stub(BAG_ADD, lambda board: adds.append((board.arg(1), board.arg(2))))
     b.call(sym["mx_global_tpl"], BAG_SCRATCH)
     b.unstub(BAG_ADD)
-    res.check(adds[-1:] == [(TAP_ID, 0)], f"global template: Off {adds[-1:]}")
+    n, t = b.call(PARAM_XML_NAME, TAP_CH_ID), b.call(PARAM_TITLE, TAP_CH_ID)
+    mn, mx = b.call(0x0808E2D0, TAP_CH_ID), b.call(0x0808E304, TAP_CH_ID)
+    res.check(n and b.cstr(n) == "tapch" and t and b.cstr(t) == "Tap Ch:" and (mn, mx) == (1, 16),
+              f"{TAP_CH_ID:#x}: 'Tap Ch:' {mn}..{mx}")
+    res.check(adds[-2:] == [(TAP_ID, 0), (TAP_CH_ID, 1)], f"global template: Off, channel 1 {adds[-2:]}")
     sent = []
     b.stub(0x08044A0E, lambda board: sent.append((bytes(board.mu.mem_read(board.arg(1), 5)).hex(), board.arg(2), board.arg(3))))
     msg = 0x2001CF00
@@ -9862,6 +9866,11 @@ def t_tapout(bench, res):
     g = at(9, 25, start=False)
     res.check(g == [0, 24], f"turned on while playing: taps at once {g}")
     res.check(taps(9, 0x50, 0x51, 0x4E, 0x58) == [], "notes, a pass, Stop: no tap")
+    for ch, want_st in ((10, 0xB9), (16, 0xBF), (0, 0xB0), (17, 0xB0)):
+        _set_bag(b, [(TAP_ID, 9), (TAP_CH_ID, ch)])
+        sent.clear()
+        pop(0x57, 0x56)
+        res.check(sent and sent[0][0] == f"{want_st:02x}0f7f0003", f"Tap Ch {ch}: {sent[:1]}")
     b.unstub(0x08044A0E)
 
 

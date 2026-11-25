@@ -3,6 +3,7 @@
  * Tap Out (Tools -> Clock, under BPM): CC 15 on DIN, locked to the clock, at a note value.
  *   Off, then the Delay's own list (param 0x33, its labels): 1/64, 1/32, 1/16, 1/8T, 1/16D, 1/8, 1/4T, 1/8D, 1/4,
  *   1/2T, 1/2, 1 bar. Global (settings.tml "tapout"), default Off.
+ *   Tap Ch (under it): the tap's MIDI channel, 1-16, global ("tapch"), default 1.
  *   Counted from the engine's clock ticks (message 0x56, 24 PPQ) as Pcm_PollMidi pops them (audio task, through
  *   mpe_msg's hook at 0x0804D018); Start (0x57) puts the next tick on a tap, so taps sit on the beat.
  *   The ticks are counted whatever Tools -> Clock's MIDI clock send is: that only picks where F8 goes.
@@ -12,11 +13,13 @@
 #include "b2.h"
 #include "personal.h"
 
+typedef void (*reg_num_fn)(void *, unsigned, int, const char *, int, int, const char *);
 typedef void (*reg_enum_fn)(void *, unsigned, const char *, const char *const *, int, const char *);
 typedef void (*param_add_fn)(void *, unsigned, int);
 typedef int (*get_fn)(void *, unsigned);
 typedef void (*send_fn)(void *, const unsigned char *, int, int);
 #define PARAM_ENUM  ((reg_enum_fn)0x0808C0D9u)    /* reg, id, title, labels, count, xml */
+#define PARAM_NUMBER ((reg_num_fn)0x0808C12Du)   /* reg, id, type, title, min, max, xml */
 #define PARAM_ADD   ((param_add_fn)0x08093EF7u)   /* bag, id, default */
 #define PARAM_GET   ((get_fn)0x08093E9Du)         /* bag, id: a plain scan, no lock */
 #define GLOBAL_BAG  ((void *)0x24028D18u)
@@ -29,6 +32,8 @@ typedef void (*send_fn)(void *, const unsigned char *, int, int);
 static const char t_tap[] = "Tap Out:";
 static const char x_tap[] = "tapout";
 static const char s_off[] = "Off";
+static const char t_ch[] = "Tap Ch:";
+static const char x_ch[] = "tapch";
 /* Off, then the Delay time's labels (param 0x33, table 0x080ECD3C) */
 static const char *const tap_names[TAP_N] = {
     s_off,
@@ -46,11 +51,13 @@ void personal_register(void *reg)
     TAP->count = 0;
     TAP->due = 1;
     PARAM_ENUM(reg, ID_TAPOUT, t_tap, tap_names, TAP_N, x_tap);
+    PARAM_NUMBER(reg, ID_TAPCH, 1, t_ch, 1, 16, x_ch);   /* type 1 as stock's MIDI channels (0x28) */
 }
 
 void personal_global_tpl(void *bag)
 {
     PARAM_ADD(bag, ID_TAPOUT, 0);
+    PARAM_ADD(bag, ID_TAPCH, 1);
 }
 
 /* Pcm_PollMidi's dispatch (audio task), every message popped from the MIDI queue. */
@@ -76,7 +83,8 @@ void personal_msg(const unsigned char *msg)
         n = period;
     }
     if (n >= period) {
-        unsigned char pk[8] = {(unsigned char)(0xB0 | (TAP_CH - 1)), TAP_CC, TAP_VAL, 0, 3};
+        unsigned ch = (unsigned)PARAM_GET(GLOBAL_BAG, ID_TAPCH);
+        unsigned char pk[8] = {(unsigned char)(0xB0 | ((ch >= 1 && ch <= 16 ? ch : 1) - 1)), TAP_CC, TAP_VAL, 0, 3};
         MIDI_SEND(MIDI_MGR, pk, 1, 0);
         n -= period;
     }
