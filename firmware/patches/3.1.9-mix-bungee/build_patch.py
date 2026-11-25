@@ -60,6 +60,9 @@ DJ_DIR = HERE.parent / "3.1.9-song-dj"
 MPE_DIR = HERE.parent / "3.1.9-mpe-out"
 # And the Program Change launcher (../3.1.9-pc-launcher: PSET again on the Presets screen, docs/pc-launcher.md).
 PCL_DIR = HERE.parent / "3.1.9-pc-launcher"
+# And the personal features (../3.1.9-personal: Tap Out, for one setup). In the lineup build unless --release.
+PERSONAL_DIR = HERE.parent / "3.1.9-personal"
+PERSONAL = "--lineup" in sys.argv and "--release" not in sys.argv
 # And the master chain (docs/master-chain.md): its DSP links into bank 2 (RbExt.master), mixer.c
 # reaches it from the master render.
 MC = ROOT / "tools" / "master_chain"
@@ -128,7 +131,7 @@ if USBDEV:
         OUT, OUT_B2, SYMS = (HERE / "lineup" / "usbdev" / n for n in ("BLACKBOX.BIN", f"{PAYLOAD}.BIN", "BLACKBOX.sym.json"))
         OUT.parent.mkdir(exist_ok=True)
 B2_PLAIN = [MPE_DIR / "mpe_b2.c", PCL_DIR / "pcl_b2.c"] + ([USBDEV_DIR / "usbdev.c"] if USBDEV else [])
-BANK1_OBJS = 12 if LINEUP else 4               # compile_all: the cave asm, then the bank-1 C
+BANK1_OBJS = (13 if PERSONAL else 12) if LINEUP else 4               # compile_all: the cave asm, then the bank-1 C
 LETTER = ("UD" if USBDEV else "U") if LINEUP else "B"   # 3.1.U: 3.1.T + Seq MIDI out; 3.1.UD: + USB device
 B2_BASE, B2_LIMIT = 0x08100000, 0xC0000
 
@@ -159,7 +162,7 @@ if LINEUP:
                    *MC_SRC, MC / "src" / "dsp" / "mc_dsp.h", MC / "fw" / "mc_fw.h", *B2_PLAIN, MPE_DIR / "mpe.h", PCL_DIR / "pcl.h",
                    DJ_DIR / "dj.c", DJ_DIR / "djui_b2.c",
                    DJ_DIR / "mixer.c"]   # its mx_block_dsp links into bank 2 (MX_B2)
-BANK1_DEFS = ['-DRB_LABEL="Bungee"', f'-DRB_PAYLOAD_FILE="{PAYLOAD}.BIN"']
+BANK1_DEFS = ['-DRB_LABEL="Bungee"', f'-DRB_PAYLOAD_FILE="{PAYLOAD}.BIN"', *(["-DWITH_PERSONAL"] if PERSONAL else [])]
 BUNGEE_CXX = ["-std=c++20", "-fwrapv", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
               "-DBUNGEE_VISIBILITY=", "-DBUNGEE_SELF_TEST=0", "-DBUNGEE_NO_LOG", "-DBUNGEE_FIXED_PITCH",
               *([] if os.environ.get("BG_EXACT_PHASE") else ["-DBUNGEE_FAST_PHASE"]),
@@ -204,7 +207,8 @@ def compile_all(rb_id):
     objs.append(cave_o)
     bank1 = [BANK2 / "b2pair.c", BANK2 / "b2load.c", DIAG / "diag.c"] + \
         ([DECK_DIR / "deck.c", DJ_DIR / "dj.c", DJ_DIR / "mixer.c", MPE_DIR / "mpe.c", BANK2 / "b2msg.c",
-          DJ_DIR / "djui.c", PCL_DIR / "pcl.c"] if LINEUP else [])
+          DJ_DIR / "djui.c", PCL_DIR / "pcl.c"] if LINEUP else []) + \
+        ([PERSONAL_DIR / "tapout.c"] if PERSONAL else [])
     for src in bank1:
         o = BUILD / (src.stem + ".o")
         run([GCC, *BANK1_C, *BANK1_DEFS, f"-DDECK_ID_BASE={DECK_ID_BASE:#x}", *(["-DSONG_CUES", "-DWITH_SONG_DJ"] if LINEUP else []),
@@ -214,7 +218,7 @@ def compile_all(rb_id):
              *(["-DMC_NO_DSP"] if MC_NODSP else []), *(["-DMC_KEEP_COMP"] if MC_COMP else []),
              *(["-DWITH_USBDEV"] if USBDEV else []), *(["-DMX_B2"] if LINEUP else []),
              *([f"-DDIAG_STREAM={567 if not STOCK_CACHE else 615}u"] if DIAG_STREAM else []),
-             "-I", BANK2, "-I", RUBBER, "-I", PCL_DIR, *(MC_INC if LINEUP else []), "-c", "-o", o, src])
+             "-I", BANK2, "-I", RUBBER, "-I", PCL_DIR, "-I", PERSONAL_DIR, *(MC_INC if LINEUP else []), "-c", "-o", o, src])
         objs.append(o)
     defs = [f"-DRB_ID={rb_id:#x}u", *(["-DWARP_LANES", "-DWARP_DECK_SEQ", *LANE_DEFS] if LINEUP else [])]
     inc = ["-I", RUBBER, "-I", BG, "-I", BG / "submodules" / "eigen", "-I", CMSIS / "Include", "-I", STRETCH]
@@ -445,6 +449,8 @@ def add_rubber_sites(stock):
         mix.VTABLE.extend(vtable)
         # Presets +0x34: pcl_event in front of the Mix line's pset_on_event (which pcl_event calls on).
         mix.VTABLE[:] = [(va, "pcl_event" if va == pcl.VTABLE_EVENT else sym, orig) for va, sym, orig in mix.VTABLE]
+    if PERSONAL:    # Tools -> Clock: Tap Out after BPM Project / Global (0x1D8 at 0x080EEDF8), ../3.1.9-personal
+        mix.BYTES.append((0x080EEDFA, "d901", "0000"))
     if LINEUP:      # "Installing" on screen while the card loader writes bank 2 (tools/bank2/b2msg.c)
         mix.SITES.append((0x0808B664, "b2msg_update", True, stock_bl(stock, 0x0808B664, 0x080A2258)))
         mix.VTABLE.append((0x080F19D8, "b2msg_event", 0x080C7025))   # message screen (screen 1) onEvent

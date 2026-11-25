@@ -2240,6 +2240,8 @@ def t_seqrec_templates(bench, res):
                   (0x143, 500), (0x144, 500), (0x145, 400), (0x146, 300), (0x147, 1000), (0x148, 1000), (0x149, 650)]
     if "pcl_global_tpl" in bench.sym:                                 # 3.1.U: PC launcher, button n = Pgm n, Ch 1
         mixer += [(0x1E8 + i, i + 1) for i in range(4)]
+    if "personal_msg" in bench.sym:                                   # personal: Tap Out, Off
+        mixer += [(0x1D9, 0)]
     res.check(adds == [(0x19B, 0), (SR_DEF, 4), (0x1A0, 2), (0x1A1, 1)] + mixer,
               f"global template adds Seq Default = 1 bar, Loop BPM 80-160, Dbl Copy On {adds}")
     for glob, want in ((4, 4), (0, 0), (6, 6), (99, 4)):
@@ -9019,7 +9021,7 @@ def t_mpe_registry(bench, res):
     res.check(got == ["Off", "On"] and n and b.cstr(n) == "seqloop" and t and b.cstr(t) == "Loop:", f"Loop: {got}")
     res.check(b.u32(MP_BKP) == 0x3150504D and bytes(b.mu.mem_read(MP_BKP + 4, 32)) == b"\x00" * 32,
               "backup SRAM start counters cleared at boot")
-    for pid in (0x73, 0x75, 0x1E6, 0x1D9, 0x1F3):   # 0x1E8-0x1EB: the PC launcher
+    for pid in (0x73, 0x75, 0x1E6, 0x1F3) + (() if "personal_msg" in bench.sym else (0x1D9,)):   # 0x1E8-0x1EB: PC launcher; 0x1D9: Tap Out
         t = b.call(PARAM_TITLE, pid)
         res.check(pid in (0x73, 0x75) and t != 0 or pid not in (0x73, 0x75) and t == 0,
                   f"{pid:#x} left as it was ({t and b.cstr(t)!r})")
@@ -9789,6 +9791,80 @@ def t_pcl_sites(bench, res):
               f"global template: slot n = program n, channel 1 {adds[-4:]}")
 
 
+TAP_ID, TAP_ST = 0x1D9, 0x38800638
+
+
+def t_tapout(bench, res):
+    """Personal (not with --release): Tap Out, CC 15 on DIN locked to the clock ticks Pcm_PollMidi pops."""
+    b, sym, img = bench.b, bench.sym, bench.b.image
+    u16 = lambda a: struct.unpack_from("<H", img, a - bd.BASE)[0]
+    res.check([u16(0x080EEDF0 + 2 * i) for i in range(7)] == [0xEF, 0xF0, 0x10F, 0x110, 0x1D8, TAP_ID, 0],
+              "Tools -> Clock lists Tap Out after BPM")
+    b.call(PARAM_REGISTER_ALL, 0)
+    n, t = b.call(PARAM_XML_NAME, TAP_ID), b.call(PARAM_TITLE, TAP_ID)
+    lab, cnt = b.call(0x0808E278, TAP_ID), b.call(0x0808E2A4, TAP_ID)
+    got = [b.cstr(b.u32(lab + 4 * i)) for i in range(cnt)] if lab else []
+    res.check(n and b.cstr(n) == "tapout" and t and b.cstr(t) == "Tap Out:" and
+              got == ["Off", "1/64", "1/32", "1/16", "1/8T", "1/16D", "1/8", "1/4T", "1/8D", "1/4", "1/2T", "1/2", "1 bar"],
+              f"{TAP_ID:#x}: the Delay's note values {got}")
+    adds = []
+    b.stub(BAG_ADD, lambda board: adds.append((board.arg(1), board.arg(2))))
+    b.call(sym["mx_global_tpl"], BAG_SCRATCH)
+    b.unstub(BAG_ADD)
+    res.check(adds[-1:] == [(TAP_ID, 0)], f"global template: Off {adds[-1:]}")
+    sent = []
+    b.stub(0x08044A0E, lambda board: sent.append((bytes(board.mu.mem_read(board.arg(1), 5)).hex(), board.arg(2), board.arg(3))))
+    msg = 0x2001CF00
+
+    def pop(*types):
+        for ty in types:
+            b.mu.mem_write(msg, bytes([ty]) + b"\0" * 0x1F)
+            b.call(sym["mpe_msg"], msg, 0x2400A9C0)
+
+    def taps(setting, *types):
+        _set_bag(b, [(TAP_ID, setting)])
+        sent.clear()
+        pop(*types)
+        return list(sent)
+    tap = ("b00f7f0003", 1, 0)
+
+    def at(setting, ticks, start=True):
+        """the ticks (0 = the first after Start) that tap"""
+        _set_bag(b, [(TAP_ID, setting)])
+        if start:
+            pop(0x57)
+        out = []
+        for k in range(ticks):
+            sent.clear()
+            pop(0x56)
+            if sent:
+                out.append(k)
+        return out
+    res.check(taps(0, 0x57, *[0x56] * 96) == [], "Off: nothing")
+    got = taps(9, 0x57, *[0x56] * 96)
+    res.check(got == [tap] * 4, f"1/4: 4 taps a bar, CC 15 = 127 on channel 1, DIN only {got[:1]} x{len(got)}")
+    want = {1: [0, 2, 3, 5, 6, 8, 9], 2: [0, 3, 6, 9], 3: [0, 6, 12, 18], 4: [0, 8, 16, 24], 5: [0, 9, 18, 27],
+            6: [0, 12, 24], 7: [0, 16, 32, 48], 8: [0, 18, 36, 54], 10: [0, 32, 64, 96], 11: [0, 48, 96], 12: [0, 96, 192]}
+    bad = {}
+    for setting, ticks in want.items():
+        g = at(setting, ticks[-1] + 1)
+        if g != ticks:
+            bad[setting] = g
+    res.check(not bad, f"1/64 (1.5 ticks: 2, 1, ...), 1/32 ... 1 bar, triplets and dotted on their ticks {bad}")
+    g = at(9, 30)
+    res.check(g == [0, 24], f"1/4: on the beat from Start {g}")
+    g = at(9, 30, start=False)
+    res.check(g == [18], f"no Start: the phase goes on ({g})")
+    g = at(5, 10) + at(9, 30, start=False)
+    res.check(g == [0, 9, 23], f"1/16D, then 1/4 mid-way: the next tap a beat (24 ticks) after the last one {g}")
+    _set_bag(b, [(TAP_ID, 0)])
+    pop(0x56)
+    g = at(9, 25, start=False)
+    res.check(g == [0, 24], f"turned on while playing: taps at once {g}")
+    res.check(taps(9, 0x50, 0x51, 0x4E, 0x58) == [], "notes, a pass, Stop: no tap")
+    b.unstub(0x08044A0E)
+
+
 def t_pcl_layer(bench, res):
     """The real launcher code on a fake Presets screen: PSET again, the 2x2 layer, encoders, INFO, a press, the pump,
     leaving the screen."""
@@ -10117,6 +10193,8 @@ def main():
     if "pcl_pump" in sym:
         cases += [("PC launcher: sites, params, global template", t_pcl_sites),
                   ("PC launcher: PSET again, layer, encoders, INFO, press, pump, leave", t_pcl_layer)]
+    if "personal_msg" in sym:
+        cases += [("Tap Out: Tools row, note values, CC 15 on DIN", t_tapout)]
     if "usbdev_poll" in sym:
         kind = kind + "+usbdev"
         cases += [

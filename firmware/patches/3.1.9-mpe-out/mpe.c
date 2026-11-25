@@ -175,9 +175,15 @@ void mpe_out(void *mgr, unsigned char *pk, int din, int usb, const unsigned char
 }
 
 /* Pcm_PollMidi's dispatch (0x0804D018, audio task): bank 2's mpe_b2_msg (the program change). */
+#ifdef WITH_PERSONAL
+void personal_msg(const unsigned char *msg);   /* ../3.1.9-personal/tapout.c: Tap Out counts the clock ticks */
+#endif
 void mpe_msg(const unsigned char *msg, const unsigned char *pcm)
 {
     mpe_msg_fn f = (mpe_msg_fn)B2_FN(mpe_msg);
+#ifdef WITH_PERSONAL
+    personal_msg(msg);
+#endif
     if (f && mp_live())
         f(msg, pcm);
 }

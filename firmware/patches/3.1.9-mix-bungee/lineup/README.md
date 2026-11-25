@@ -7,6 +7,8 @@
 
 Without a matching `BBWARP.BIN` they fall back to stock (`docs/song-dj.md` "Bank 2", `docs/mpe-out.md`).
 
+**Personal features** (Tap Out, [../../3.1.9-personal](../../3.1.9-personal/README.md)) are in these builds; `build_patch.py --lineup --release` leaves them out.
+
 One image with everything on this line:
 - **The base:** 3.1.Q: folders, the Mix screen, Seq Rec, the looper, Tools → Master.
 - **Bungee** in flash bank 2 (3.1.B, `..`).
