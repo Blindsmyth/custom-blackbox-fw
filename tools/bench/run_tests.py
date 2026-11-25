@@ -9351,8 +9351,9 @@ def t_usbdev_midi(bench, res):
                        "0ee10040", "0ff80000"],
               f"to the computer: MCM RPN, bank, program change, notes on ch 2, bend, clock {ours}")
     res.check(core.get(UD_DIEPTSIZ1) == (1 << 19) | 36 and core.get(UD_DIEPCTL1) >> 31, "one 36-byte transfer")
-    res.check(stock == "09913c64" "08813c64" "0ff80000" and b.u32(UD_OUT_Q + 0x500) == b.u32(UD_OUT_Q + 0x504),
-              f"stock still packs the queue for the host jack (notes, clock) and consumes it {stock}")
+    res.check(stock == "0bb06500" "0bb06406" "0bb00604" "0bb00001" "0cc20400" "09913c64" "08813c64" "0ee10040" "0ff80000"
+              and b.u32(UD_OUT_Q + 0x500) == b.u32(UD_OUT_Q + 0x504),
+              f"the host jack gets every channel message too (midi_host_pack), and the queue is consumed {stock}")
     put([0x90, 62, 90])
     ours, stock = pump()
     res.check(ours == [] and stock == "09903e5a", "the computer has not taken the last packet: it waits; the host jack gets it now")
@@ -9454,6 +9455,29 @@ def _pcl_ev(b, kind, a, c=0):
 
 
 def t_pcl_sites(bench, res):
+    b, sym = bench.b, bench.sym
+    want = sym.get("usbdev_midi_out") or sym.get("midi_host_pack")
+    res.check(want and _bl_target(b.image, 0x08044B08) == want, "0x08044B08 -> the host jack's packer (midi_host_pack)")
+    if "midi_host_pack" in sym:
+        q, out, lenp = 0x24070800, 0x24070000, 0x24070400
+        b.w32(q + 0x500, 0); b.w32(q + 0x504, 0)
+        for m in ([0xC3, 5], [0xB0, 74, 64], [0x91, 60, 100], [0xF2, 1, 2], [0x0A, 1], [0xE1, 0, 64], [0xFA], [0xD2, 9], [0xA1, 60, 3]):
+            w = b.u32(q + 0x504)
+            b.mu.mem_write(q + (w & 0xFF) * 5, bytes(m).ljust(4, b"\0") + bytes([len(m)]))
+            b.w32(q + 0x504, w + 1)
+        r = b.call(sym["midi_host_pack"], 0x24002E88, q, out, 0x300, lenp)
+        got = bytes(b.mu.mem_read(out, b.u32(lenp))).hex()
+        res.check(r == 1 and got == "0cc30500" "0bb04a40" "09913c64" "0ee10040" "0ffa0000" "0dd20900" "0aa13c03"
+                  and b.u32(q + 0x500) == 9, f"host jack: program change, CC, note, bend, Start, pressure; F2 and a stray byte dropped {got}")
+        b.w32(lenp, 0xFFFF)
+        r = b.call(sym["midi_host_pack"], 0x24002E88, q, out, 0x300, lenp)
+        res.check(r == 0 and b.u32(lenp) == 0, "host jack: empty queue, nothing")
+        for k in range(10):
+            w = b.u32(q + 0x504)
+            b.mu.mem_write(q + (w & 0xFF) * 5, bytes([0x90, k, 1, 0, 3]))
+            b.w32(q + 0x504, w + 1)
+        b.call(sym["midi_host_pack"], 0x24002E88, q, out, 16, lenp)
+        res.check(b.u32(lenp) == 16 and b.u32(q + 0x504) - b.u32(q + 0x500) == 6, "host jack: a full buffer leaves the rest queued")
     b, sym = bench.b, bench.sym
     img = b.image
     for va, name in ((0x080A32EA, "pcl_pset_key"), (0x0804CED8, "pcl_pump")):

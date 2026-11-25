@@ -201,9 +201,44 @@ void mpe_pass(unsigned char *pl)
         pl[PL_STOP] = 1;
 }
 
+/*
+ * bl 0x08044B08 (FUN_08044AD8, the MIDI out pump, audio task, once a block): packs the "to USB" queue (mgr + 0x4B68)
+ * into USB-MIDI events for the USB-A host jack. Stock's FUN_08044896 packs only note on / off and F8 / FA / FC and
+ * drops the rest, so program changes (Seq MIDI out, the PC launcher) and MPE's bend and CCs never reached that jack.
+ * This one packs every channel message (CIN = status >> 4, cable 0) and the same real-time bytes; the rest it drops,
+ * as stock. Same arguments and result as FUN_08044896: queue = 256 five-byte slots (3 bytes, length at +4), read
+ * count +0x500, write count +0x504; out gets 4 bytes an event, at most max bytes; *len = bytes written.
+ */
+int midi_host_pack(void *manager, uint8_t *queue, uint8_t *out, unsigned max, unsigned *len)
+{
+    volatile uint32_t *rd = (volatile uint32_t *)(queue + 0x500);
+    const volatile uint32_t *wr = (const volatile uint32_t *)(queue + 0x504);
+    unsigned n = 0;
+    (void)manager;
+    while (n + 4 <= max && *rd != *wr) {
+        const uint8_t *m = queue + (*rd & 0xFFu) * 5;
+        uint8_t st = m[0], ml = m[4], cin;
+        uint8_t d1 = ml >= 2 ? m[1] : 0, d2 = ml >= 3 ? m[2] : 0;
+        __asm__ volatile("dmb" ::: "memory");
+        *rd = *rd + 1;
+        if (st >= 0x80 && st < 0xF0)
+            cin = st >> 4;
+        else if (st == 0xF8 || st == 0xFA || st == 0xFC)
+            cin = 0xF;
+        else
+            continue;
+        out[n] = cin;
+        out[n + 1] = st;
+        out[n + 2] = d1;
+        out[n + 3] = d2;
+        n += 4;
+    }
+    *len = n;
+    return n != 0;
+}
+
 #ifdef WITH_USBDEV
 /* The USB MIDI device (3.1.UD) is in bank 2 too (../3.1.9-usbdev/usbdev.c). */
-typedef int (*midi_pack_fn)(void *manager, uint8_t *queue, uint8_t *out, unsigned max, unsigned *len);
 
 /* diag.c cpu_wait, once per audio block. */
 void usbdev_poll(void)
@@ -213,12 +248,12 @@ void usbdev_poll(void)
         f();
 }
 
-/* bl 0x08044B08: the "to USB" queue to the computer first, then stock's packer for the USB-A jack. */
+/* bl 0x08044B08: the "to USB" queue to the computer first, then midi_host_pack for the USB-A jack. */
 int usbdev_midi_out(void *manager, uint8_t *queue, uint8_t *out, unsigned max, unsigned *len)
 {
     void (*f)(uint8_t *) = (void (*)(uint8_t *))B2_FN(usb_out);
     if (f)
         f(queue);
-    return ((midi_pack_fn)0x08044897u)(manager, queue, out, max, len);
+    return midi_host_pack(manager, queue, out, max, len);
 }
 #endif

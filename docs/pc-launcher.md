@@ -15,7 +15,7 @@ Status: built and bench-tested on the lineup image (3.1.U and 3.1.UD), **not yet
 
   By default they turn the **program** (1–128), one step per detent.
 - **INFO** switches the encoders to the **channel** (1–16), `Pgm 12  [Ch 3]`; INFO again switches back.
-- **Tap a button** to send its program change. It goes to DIN and USB as stock MIDI out does: USB when Tools → USB Dev Out is on, and the 3.1.UD USB device. The button lights for a moment.
+- **Tap a button** to send its program change. It goes to DIN and USB as stock MIDI out does: USB when Tools → USB Dev Out is on: the USB-A host jack and the 3.1.UD USB device. (Stock's host jack packer dropped program changes; 3.1.U replaces it, see below.) The button lights for a moment.
 - **Saved:** the four are global (`settings.tml`: `pcl1`–`pcl4`), the same on every preset. They are written to the card once, when the layer closes, if anything changed.
 - **Defaults:** button n has program n, channel 1.
 
@@ -30,6 +30,7 @@ The layer is in bank 2: without a matching `BBWARP.BIN`, PSET and the Presets sc
 | `0x080F14C8` | vtable | Presets +0x30 onChildEvent `0x080BD929` | `pcl_child`: a press on one of ours (ids `0x1D4`–`0x1D7`) fills the mailbox; everything else is stock's. |
 | `0x080F14CC` | vtable | Presets +0x34 (the Mix line's `pset_on_event`) | `pcl_event`: encoders (event `0x32`) while the layer is up; on leaving (`0xD3`) closes it and saves; everything else goes on to `pset_on_event`. |
 | `0x0804CED8` | bl | `bl FUN_08044AD8` (`Pcm_PollMidi`'s MIDI out pump, audio task) | `pcl_pump`: sends a pending program change `{0xC0 | ch, pgm}` with `FUN_08044A0E` (DIN `0x2401504B`, USB Dev Out `0x2401504D`), then stock's pump. |
+| `0x08044B08` | bl | `bl FUN_08044896` (the pump's packer for the USB-A host jack) | `midi_host_pack` (mpe.c; with 3.1.UD behind `usbdev_midi_out`): stock packs only note on / off and F8 / FA / FC and drops the rest. Ours packs every channel message (CIN = status >> 4), so program changes, CCs, bend and pressure reach the host jack too. |
 | `mx_register` / `mx_global_tpl` (mixer.c) | call | | `pcl_register` (params `0x1E8`–`0x1EB`, the state, the buttons' SDRAM) and `pcl_global_tpl` (defaults). |
 
 **Why the audio task.** `Pcm_PollMidi` runs in the audio task (`audioTask_loop` `0x08041470`), and `FUN_08044A0E` has no lock. So a press only fills a mailbox (backup SRAM: channel, program, then `seq`), and `pcl_pump` sends it from the audio task, once per block.

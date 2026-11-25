@@ -13,7 +13,7 @@ Ported from blackbox-mod's `src/usbdev.c` (© 2026 Justin Joe, MIT, [LICENSE-bla
 3. Turn on **Tools → USB Dev Out**. That setting fills the "to USB" queue this port sends from, so without it nothing goes out.
 4. On a sequence: MIDI Out on a channel, Port **Both** or **USB**.
 
-What goes out is everything the Blackbox would send to its USB-A host jack, but complete: CCs, program change and bend too. The port keeps its own place in that queue (the last 256 messages), so a burst over 64 events a block (the MPE setup for 15 channels is 102), or a block the computer hasn't collected yet, goes out over the next blocks instead of being dropped (blackbox-mod's sent at most 64 a block and skipped a busy block). Stock's own packer for the USB-A jack keeps only notes and clock. That makes it the way to see the MPE setup (MCM, bend range) and the layers' Bank / Sub / Pgm on a computer.
+What goes out is everything the Blackbox sends to its USB-A host jack: notes, CCs, program change, bend, clock. (Since 3.1.U the host jack gets all of these too: `midi_host_pack` in mpe.c replaces stock's packer, which kept only notes and clock.) The port keeps its own place in that queue (the last 256 messages), so a burst over 64 events a block (the MPE setup for 15 channels is 102), or a block the computer hasn't collected yet, goes out over the next blocks instead of being dropped (blackbox-mod's sent at most 64 a block and skipped a busy block). Stock's own packer for the USB-A jack keeps only notes and clock. That makes it the way to see the MPE setup (MCM, bend range) and the layers' Bank / Sub / Pgm on a computer.
 
 MIDI from the computer goes to stock's USB MIDI input, as if it came from the USB-A jack: MIDI In and Clock settings for USB apply.
 

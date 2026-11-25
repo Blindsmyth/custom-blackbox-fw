@@ -72,6 +72,7 @@ The audio task's `Pcm_PollMidi` (`FUN_0804CB1C`) builds the bytes for `0x50`–`
 
 - `FUN_08044A0E(mgr, packet, din, usb)`. The packet is 3 bytes plus a length byte at +4.
 - Notes take DIN from `pcm+0xA68B` and USB from `pcm+0xA68D` (USB Dev Out). Clock messages take `+0xA68C` / `+0xA68E`.
+- **The USB-A host jack:** USB goes into the "to USB" queue (`mgr+0x4B68`), which the pump `FUN_08044AD8` packs once a block with `FUN_08044896` (`bl` at `0x08044B08`). Stock's packer keeps only `0x90`, `0x80` and F8 / FA / FC and drops the rest, so program changes, MPE's bend and CCs never reached the host jack. 3.1.U hooks that call with `midi_host_pack` (mpe.c), which packs every channel message (CIN = status >> 4).
 - `0x52` / `0x53` (bend, CC) are never posted by a player.
 
 ### Params

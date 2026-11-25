@@ -432,8 +432,10 @@ def add_rubber_sites(stock):
     if LINEUP:      # "Installing" on screen while the card loader writes bank 2 (tools/bank2/b2msg.c)
         mix.SITES.append((0x0808B664, "b2msg_update", True, stock_bl(stock, 0x0808B664, 0x080A2258)))
         mix.VTABLE.append((0x080F19D8, "b2msg_event", 0x080C7025))   # message screen (screen 1) onEvent
-    if USBDEV:      # the MIDI manager's once-per-block pump: the "to USB" queue to the computer first (usbdev.c)
-        mix.SITES.append((0x08044B08, "usbdev_midi_out", True, stock_bl(stock, 0x08044B08, 0x08044896)))
+    if LINEUP:      # the "to USB" queue's packer for the USB-A host jack, every channel message (mpe.c midi_host_pack);
+                    # with the USB device, the queue goes to the computer first (usbdev.c), then the same packer
+        mix.SITES.append((0x08044B08, "usbdev_midi_out" if USBDEV else "midi_host_pack", True,
+                          stock_bl(stock, 0x08044B08, 0x08044896)))
     if not any(site[1] == "hook_lane" for site in mix.SITES):   # 3.1.S and later list it themselves
         mix.SITES.append((0x080667B8, "hook_lane", False, "2de9f04f"))   # per-lane render: the leaf renders
     mix.SITES.extend([
