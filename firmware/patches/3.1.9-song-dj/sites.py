@@ -11,6 +11,12 @@ BYTES = [
     (0x080B2458, "39f90c08", "38f90c08"),  # DJ FX screen: Hold A's second line "A" -> "" (dj.c places it)
     (0x080B245C, "39f90c08", "64ad0c08"),  # DJ FX screen: Hold B's "B" -> "" (the NUL after stock's "A")
     (0x080A30B6, "2521", "2921"),          # INFO on Tools -> Clock: back to Main (Master is in the FX row)
+    # Stream read-ahead (seek FUN_08074554 keeps or requests blocks b..b+N-1 of each read, docs/map-319.md
+    # "Read path"): stock's 3 blocks of 8192 frames leave a playing stem ~0.2-0.3 s while pcmStreamer
+    # waits for the UI building the Presets page; with long stems that dropped out now and then (the
+    # Tools S counter: tens of misses per press, sometimes a burst). 6 blocks: ~0.85-1 s. The request
+    # queue (128) drops duplicates over all pending requests; 16 stems x 6 blocks is 96.
+    (0x08074568, "02f10609", "02f10309"),  # seek: add.w sb, r2, #3 -> #6
 ]
 
 # The sample cache: 567 entries instead of stock's 615 (docs/map-319.md "Block cache"). Each entry

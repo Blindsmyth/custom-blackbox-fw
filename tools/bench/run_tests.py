@@ -5870,11 +5870,12 @@ def t_cue_prefetch_stock_seek(bench, res):
     ring = [(b.u8(MGR + 0x47F8 + i * 16), b.u32(MGR + 0x47FC + i * 16), b.u32(MGR + 0x4800 + i * 16))
             for i in range(b.u32(MGR + 0x4FFC))]
     blk = (5 * 32768 - 8) >> 13
-    res.check(ring == [(4, 7, blk), (4, 7, blk + 1), (4, 7, blk + 2)], f"block requests {ring}")
-    res.check(len(kicks) == 3 and set(kicks) == {0xC0400000}, f"pcmStreamer woken {len(kicks)}x")
+    ra = b.u8(0x08074568 + 2)                          # read-ahead: stock 3, the lineup's sites.py 6
+    res.check(ring == [(4, 7, blk + i) for i in range(ra)], f"block requests ({ra} read-ahead) {ring}")
+    res.check(len(kicks) == ra and set(kicks) == {0xC0400000}, f"pcmStreamer woken {len(kicks)}x")
     b.call(bench.sym["deck_wrap_unit"], clip, 3, _tick(b, 960 * 3))
     n = b.u32(MGR + 0x4FFC)
-    res.check(n <= 6, f"re-touch adds at most the 3 uncached blocks again ({n} queued; FUN_080740B4 skips cached ones)")
+    res.check(n <= 2 * ra, f"re-touch adds at most the {ra} uncached blocks again ({n} queued; FUN_080740B4 skips cached ones)")
     b.unstub(STREAM_KICK)
     res.check(b.reads == reads, "no card reads from the engine side")
 
@@ -6336,6 +6337,8 @@ def t_cache_size(bench, res):
     got = [imm(va) for va in count] + [imm(va) for va in end]
     want = [MX_CACHE_N] * len(count) + [MX_CACHE_N * 0x1C] * len(end)
     res.check(got == want, f"cache bounds {sorted(set(got))} (want {MX_CACHE_N}, {MX_CACHE_N * 0x1C:#x})")
+    ra = img[0x08074568 - 0x08040000:0x08074568 - 0x08040000 + 4].hex()
+    res.check(ra == "02f10609", f"stream read-ahead 6 blocks (seek 0x08074568: {ra})")
 
 
 def _mx_setup(bench):

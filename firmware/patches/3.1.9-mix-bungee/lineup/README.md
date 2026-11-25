@@ -130,6 +130,10 @@ Deluge (`be3dd69` did the same).
   come, so it stays on the clock (played late, each late block put it a block behind: 34–63 ms on the
   bench).
 - **The 256 hop's input** slides between grains as the 512 hop's did (each clip frame read once).
+- **The Presets page** still dropped the stems now and then: while the UI builds it, pcmStreamer waits
+  (the Tools `S` counter rose by tens of misses per press, sometimes a burst). Each stream now keeps
+  **6 blocks** (~1 s) read ahead instead of stock's 3 (`song-dj/sites.py`, the seek at `0x08074568`):
+  no dropouts on the unit since.
 
 Diagnostics in this build (`DIAG_STREAM=0` builds without them):
 - **Tools bar:** `S` sample reads that missed the cache since boot, `Q` block requests waiting for
