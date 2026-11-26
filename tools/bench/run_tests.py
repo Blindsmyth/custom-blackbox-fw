@@ -9860,30 +9860,48 @@ def t_tapout(bench, res):
     res.check(taps(0, 0x57, *[0x56] * 96) == [], "Off: nothing")
     got = taps(9, 0x57, *[0x56] * 96)
     res.check(got == [tap] * 4, f"1/4: 4 taps a bar, CC 28 = 127 on channel 1, DIN only {got[:1]} x{len(got)}")
-    want = {1: [0, 2, 3, 5, 6, 8, 9], 2: [0, 3, 6, 9], 3: [0, 6, 12, 18], 4: [0, 8, 16, 24], 5: [0, 9, 18, 27],
-            6: [0, 12, 24], 7: [0, 16, 32, 48], 8: [0, 18, 36, 54], 10: [0, 32, 64, 96], 11: [0, 48, 96], 12: [0, 96, 192]}
+    half = [0, 3, 6, 12, 16, 18, 24, 32, 36, 48, 64, 96, 192]
+
+    def grid(setting, ticks):
+        """the model: tick k covers half ticks q, q + 1 of the 4/4 bar; a multiple of the value there taps"""
+        p = half[setting]
+        if setting in (5, 8):            # dotted: from the downbeat, freely across the bars
+            return [k for k in range(ticks) if (2 * k) % p == 0]
+        return [k for k in range(ticks) if any(m % p == 0 for m in ((2 * k) % 192, (2 * k) % 192 + 1))]
     bad = {}
-    for setting, ticks in want.items():
-        g = at(setting, ticks[-1] + 1)
-        if g != ticks:
-            bad[setting] = g
-    res.check(not bad, f"1/64 (1.5 ticks: 2, 1, ...), 1/32 ... 1 bar, triplets and dotted on their ticks {bad}")
+    for setting in range(1, 13):
+        g = at(setting, 288)
+        if g != grid(setting, 288):
+            bad[setting] = g[:12]
+    res.check(not bad, f"every value on its grid in the bar (dotted: from the downbeat, on across bars), 3 bars {bad}")
+    g = at(1, 8)
+    res.check(g == [0, 1, 3, 4, 6, 7], f"1/64 (1.5 ticks) {g}")
+    g = at(5, 110)
+    res.check(g == list(range(0, 110, 9)), f"1/16D: from Start on, not reset at the bar {g}")
+    g = at(9, 30) + at(5, 90, start=False)
+    res.check(g == [0, 24, 66, 75, 84], f"1/4, then 1/16D at tick 30: waits for the next bar (tick 96), then every 9 {g}")
+    g = at(5, 100) + at(8, 140, start=False)
+    want = [k for k in range(0, 100, 9)] + [k for k in range(0, 140) if k >= 92 and (k - 92) % 18 == 0]
+    res.check(g == want, f"1/16D, then 1/8D mid-bar: on the next bar again {g}")
+    g = at(5, 200, start=False)
+    res.check(g and all(b2 - a2 == 9 for a2, b2 in zip(g, g[1:])), f"left on: runs freely across bar lines {g[:4]}")
     g = at(9, 30)
     res.check(g == [0, 24], f"1/4: on the beat from Start {g}")
     g = at(9, 30, start=False)
     res.check(g == [18], f"no Start: the phase goes on ({g})")
     g = at(5, 10) + at(9, 30, start=False)
-    res.check(g == [0, 9, 23], f"1/16D, then 1/4 mid-way: the next tap a beat (24 ticks) after the last one {g}")
-    _set_bag(b, [(TAP_ID, 0)])
-    pop(0x56)
-    g = at(9, 25, start=False)
-    res.check(g == [0, 24], f"turned on while playing: taps at once {g}")
+    res.check(g == [0, 9, 14], f"1/16D, then 1/4 mid-way: the next beat (tick 24), not a beat after the last tap {g}")
+    g = at(0, 30) + at(9, 25, start=False)
+    res.check(g == [18], f"Off, then 1/4 while playing: on the next beat (tick 48) {g}")
     res.check(taps(9, 0x50, 0x51, 0x4E, 0x58) == [], "notes, a pass, Stop: no tap")
     g = trace(3, 13)
     res.check(g == [(0, 127), (3, 0), (6, 127), (9, 0), (12, 127)], f"1/16: high on the 16ths, low on the 32nds between {g}")
     g = trace(1, 6)
-    res.check(g == [(0, 127), (1, 0), (2, 127), (3, 0), (3, 127), (4, 0), (5, 127)],
+    res.check(g == [(0, 127), (1, 0), (1, 127), (3, 0), (3, 127), (4, 0), (4, 127)],
               f"1/64: always a release before the next press {g}")
+    g = trace(8, 109)
+    res.check(g == [(k, v) for k in range(0, 109, 9) for v in ((127,) if k % 18 == 0 else (0,))],
+              f"1/8D: press every 18 ticks, release 9 after, across the bar line {g[-3:]}")
     g = trace(12, 97)
     res.check(g == [(0, 127), (48, 0), (96, 127)], f"1 bar: low after half a bar {g}")
     g = trace(9, 1)

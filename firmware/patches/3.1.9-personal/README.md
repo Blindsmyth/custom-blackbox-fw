@@ -11,8 +11,9 @@ Features for one setup. They are in every `--lineup` build; **`build_patch.py --
 - **Sends:** a tap per note value, locked to the Blackbox clock, **DIN only**: CC 28 = 127 (press) on the note value, CC 28 = 0 (release) half a note value later. At 1/16 that is high on each 16th and low on the 32nd between. Stop (or turning it Off) sends the release too.
 - **Tap Ch:** (under Tap Out) the MIDI channel, 1–16, default 1. Global too (`tapch`).
 - **1/64:** 1.5 clock ticks, so its taps are alternately 2 and 1 ticks apart (counted in half ticks).
-- **Changing the value while playing:** the next tap comes one new note value after the last tap.
-- **Phase:** Start puts the next tick on a tap, so taps sit on the beat.
+- **Phase:** Start is bar 1, beat 1. The position in the bar (4/4) is counted from there on the clock ticks, also while Tap Out is Off.
+  - **Straight and triplet values** tap on their grid in the bar, so they stay on the beats and bars, and a change lands on the grid at once.
+  - **Dotted values (1/16D, 1/8D)**, when switched to (or from Start), wait for the next downbeat. From there they run freely across the bar lines.
 - **Saved:** globally, `settings.tml` `tapout` / `tapch`; Tap Out defaults to Off.
 - **Change it:** the CC and its value are `TAP_CC` / `TAP_VAL` in `personal.h`.
 

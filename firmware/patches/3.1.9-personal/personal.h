@@ -12,10 +12,13 @@
 
 /* Backup SRAM 0x38800638-0x38800650: after the PC launcher's state, before the USB device's. Audio task only. */
 typedef struct {
-    uint8_t count;                 /* half clock ticks since the last tap (< 194) */
-    uint8_t due;                   /* the next tick taps (after Start, or when turned on) */
+    uint8_t pos;                   /* the last tick's place in the bar, in half ticks (0-190, 4/4) */
+    uint8_t due;                   /* the next tick is bar 1, beat 1 (after Start) */
     uint8_t high;                  /* the CC is at TAP_VAL: 0 goes out half a note value after the tap */
-    uint8_t pad;
+    uint8_t prev;                  /* the value last tick (a change to a dotted one waits for the next bar) */
+    uint8_t dacc;                  /* dotted: half ticks since its last grid point */
+    uint8_t wait;                  /* dotted: switched to, starts on the next downbeat */
+    uint8_t pad[2];
 } TapState;
 #define TAP ((volatile TapState *)0x38800638u)
 
