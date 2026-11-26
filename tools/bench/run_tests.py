@@ -9795,7 +9795,7 @@ TAP_ID, TAP_ST, TAP_CH_ID = 0x1D9, 0x38800638, 0x1F3
 
 
 def t_tapout(bench, res):
-    """Personal (not with --release): Tap Out, CC 15 on DIN locked to the clock ticks Pcm_PollMidi pops."""
+    """Personal (not with --release): Tap Out, CC 28 on DIN locked to the clock ticks Pcm_PollMidi pops."""
     b, sym, img = bench.b, bench.sym, bench.b.image
     u16 = lambda a: struct.unpack_from("<H", img, a - bd.BASE)[0]
     res.check([u16(0x080EEDF0 + 2 * i) for i in range(8)] == [0xEF, 0xF0, 0x10F, 0x110, 0x1D8, TAP_ID, TAP_CH_ID, 0],
@@ -9832,7 +9832,7 @@ def t_tapout(bench, res):
         sent.clear()
         pop(*types)
         return presses()
-    tap = ("b00f7f0003", 1, 0)
+    tap = ("b01c7f0003", 1, 0)
 
     def trace(setting, ticks):
         """(tick, CC value) from Start, after a Stop (released)"""
@@ -9859,7 +9859,7 @@ def t_tapout(bench, res):
         return out
     res.check(taps(0, 0x57, *[0x56] * 96) == [], "Off: nothing")
     got = taps(9, 0x57, *[0x56] * 96)
-    res.check(got == [tap] * 4, f"1/4: 4 taps a bar, CC 15 = 127 on channel 1, DIN only {got[:1]} x{len(got)}")
+    res.check(got == [tap] * 4, f"1/4: 4 taps a bar, CC 28 = 127 on channel 1, DIN only {got[:1]} x{len(got)}")
     want = {1: [0, 2, 3, 5, 6, 8, 9], 2: [0, 3, 6, 9], 3: [0, 6, 12, 18], 4: [0, 8, 16, 24], 5: [0, 9, 18, 27],
             6: [0, 12, 24], 7: [0, 16, 32, 48], 8: [0, 18, 36, 54], 10: [0, 32, 64, 96], 11: [0, 48, 96], 12: [0, 96, 192]}
     bad = {}
@@ -9889,17 +9889,17 @@ def t_tapout(bench, res):
     g = trace(9, 1)
     sent.clear()
     pop(0x58)
-    res.check(g == [(0, 127)] and [s[0] for s in sent] == ["b00f000003"], f"Stop while pressed: released {sent}")
+    res.check(g == [(0, 127)] and [s[0] for s in sent] == ["b01c000003"], f"Stop while pressed: released {sent}")
     trace(9, 1)
     _set_bag(b, [(TAP_ID, 0)])
     sent.clear()
     pop(0x56, 0x56)
-    res.check([s[0] for s in sent] == ["b00f000003"], f"turned Off while pressed: released once {sent}")
+    res.check([s[0] for s in sent] == ["b01c000003"], f"turned Off while pressed: released once {sent}")
     for ch, want_st in ((10, 0xB9), (16, 0xBF), (0, 0xB0), (17, 0xB0)):
         _set_bag(b, [(TAP_ID, 9), (TAP_CH_ID, ch)])
         sent.clear()
         pop(0x57, *[0x56] * 13)
-        res.check([s[0] for s in sent] == [f"{want_st:02x}0f7f0003", f"{want_st:02x}0f000003"],
+        res.check([s[0] for s in sent] == [f"{want_st:02x}1c7f0003", f"{want_st:02x}1c000003"],
                   f"Tap Ch {ch}: press, release on the channel {[s[0] for s in sent]}")
     b.unstub(0x08044A0E)
 
@@ -10233,7 +10233,7 @@ def main():
         cases += [("PC launcher: sites, params, global template", t_pcl_sites),
                   ("PC launcher: PSET again, layer, encoders, INFO, press, pump, leave", t_pcl_layer)]
     if "personal_msg" in sym:
-        cases += [("Tap Out: Tools row, note values, CC 15 on DIN", t_tapout)]
+        cases += [("Tap Out: Tools row, note values, CC 28 on DIN", t_tapout)]
     if "usbdev_poll" in sym:
         kind = kind + "+usbdev"
         cases += [

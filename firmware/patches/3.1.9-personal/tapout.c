@@ -1,6 +1,6 @@
 /* Personal (WITH_PERSONAL, left out by build_patch.py --release): features for one setup, not for a release.
  *
- * Tap Out (Tools -> Clock, under BPM): CC 15 on DIN, locked to the clock, at a note value.
+ * Tap Out (Tools -> Clock, under BPM): CC 28 on DIN, locked to the clock, at a note value.
  *   Off, then the Delay's own list (param 0x33, its labels): 1/64, 1/32, 1/16, 1/8T, 1/16D, 1/8, 1/4T, 1/8D, 1/4,
  *   1/2T, 1/2, 1 bar. Global (settings.tml "tapout"), default Off.
  *   Tap Ch (under it): the tap's MIDI channel, 1-16, global ("tapch"), default 1.

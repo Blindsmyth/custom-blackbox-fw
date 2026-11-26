@@ -8,7 +8,7 @@ Features for one setup. They are in every `--lineup` build; **`build_patch.py --
 
 > 1/64, 1/32, 1/16, 1/8T, 1/16D, 1/8, 1/4T, 1/8D, 1/4, 1/2T, 1/2, 1 bar
 
-- **Sends:** a tap per note value, locked to the Blackbox clock, **DIN only**: CC 15 = 127 (press) on the note value, CC 15 = 0 (release) half a note value later. At 1/16 that is high on each 16th and low on the 32nd between. Stop (or turning it Off) sends the release too.
+- **Sends:** a tap per note value, locked to the Blackbox clock, **DIN only**: CC 28 = 127 (press) on the note value, CC 28 = 0 (release) half a note value later. At 1/16 that is high on each 16th and low on the 32nd between. Stop (or turning it Off) sends the release too.
 - **Tap Ch:** (under Tap Out) the MIDI channel, 1–16, default 1. Global too (`tapch`).
 - **1/64:** 1.5 clock ticks, so its taps are alternately 2 and 1 ticks apart (counted in half ticks).
 - **Changing the value while playing:** the next tap comes one new note value after the last tap.
